@@ -10,3 +10,7 @@
 - 右侧明细按 `NORMAL` 着色，并去除 `偏` 列。
 - 主界面支持拖动 splitter，自定义中间区和右侧区宽度，并持久化保存。
 - 查询取消默认 500 条上限，不再自动 `TOP N` 截断。
+- 主列表增加 `审核者` 列，确认关系为 `LS_AS_REPORT.REP_OPER = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`。
+- 增加 `search_text.*`，统一 `trim` 和 UTF-8 / 宽字符转换，删除多处重复实现。
+- 增加 `search_ui_columns.h`，集中管理报告列表和项目明细列表列号。
+- `search_ui_events.*` 改为通过 `MainUiIds` 注入控件 ID，事件层不再硬编码按钮和列表 ID。

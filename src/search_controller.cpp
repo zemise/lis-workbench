@@ -1,28 +1,8 @@
 #include "search_controller.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "search_text.h"
 
 namespace search {
 namespace {
-
-std::string wide_to_utf8(const std::wstring& text) {
-    if (text.empty()) {
-        return "";
-    }
-#ifdef _WIN32
-    int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
-    if (!out.empty() && out.back() == '\0') {
-        out.pop_back();
-    }
-    return out;
-#else
-    return std::string(text.begin(), text.end());
-#endif
-}
 
 std::string make_connection_string_utf8(const DbSettings& settings) {
     return wide_to_utf8(build_connection_string_w(settings));

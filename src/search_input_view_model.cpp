@@ -1,48 +1,14 @@
 #include "search_input_view_model.h"
+#include "search_text.h"
 
 #ifdef _WIN32
 
 #include <commctrl.h>
 
-#include <algorithm>
-#include <cctype>
 #include <cstdio>
 
 namespace search {
 namespace {
-
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) {
-        return L"";
-    }
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
-    if (!out.empty() && out.back() == L'\0') {
-        out.pop_back();
-    }
-    return out;
-}
-
-std::string wide_to_utf8(const std::wstring& text) {
-    if (text.empty()) {
-        return "";
-    }
-    int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
-    if (!out.empty() && out.back() == '\0') {
-        out.pop_back();
-    }
-    return out;
-}
-
-std::string trim(std::string text) {
-    auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
-    text.erase(text.begin(), std::find_if(text.begin(), text.end(), not_space));
-    text.erase(std::find_if(text.rbegin(), text.rend(), not_space).base(), text.end());
-    return text;
-}
 
 std::string text_of(HWND hwnd) {
     int len = GetWindowTextLengthW(hwnd);
@@ -156,7 +122,7 @@ QueryInput build_query_input(const MainUiHandles& ui, const ViewState& state) {
     input.patient_id = text_of(ui.patient_id);
     input.barcode = text_of(ui.barcode);
     input.patient_name = text_of(ui.name);
-    input.bed_code = text_of(ui.bed);
+    input.patient_no = text_of(ui.patient_no);
     input.oper_no = text_of(ui.oper);
     input.start_date = date_picker_value(ui.start);
     input.end_date = date_picker_value(ui.end);

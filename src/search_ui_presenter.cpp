@@ -3,24 +3,13 @@
 #ifdef _WIN32
 
 #include "search_app.h"
+#include "search_text.h"
+#include "search_ui_columns.h"
 
 #include <commctrl.h>
 
 namespace search {
 namespace {
-
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) {
-        return L"";
-    }
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
-    if (!out.empty() && out.back() == L'\0') {
-        out.pop_back();
-    }
-    return out;
-}
 
 void set_cell(HWND list, int row, int col, const std::string& text) {
     const auto wide = utf8_to_wide(text);
@@ -34,19 +23,20 @@ void insert_report_row(HWND list, int index, const ReportRow& row) {
     std::wstring first = utf8_to_wide(row.oper_no);
     item.pszText = first.data();
     ListView_InsertItem(list, &item);
-    set_cell(list, index, 1, row.name);
-    set_cell(list, index, 2, row.txm_no);
-    set_cell(list, index, 3, row.chk_date);
-    set_cell(list, index, 4, row.sex);
-    set_cell(list, index, 5, row.age);
-    set_cell(list, index, 6, row.bed_code);
-    set_cell(list, index, 7, row.patient_type);
-    set_cell(list, index, 8, row.requester);
-    set_cell(list, index, 9, row.group_name);
-    set_cell(list, index, 10, display_conf(row.conf));
-    set_cell(list, index, 11, display_chk_flag(row.chk_flag));
-    set_cell(list, index, 12, display_binary_print_flag(row.zymz_print));
-    set_cell(list, index, 13, display_binary_print_flag(row.zzj_print));
+    set_cell(list, index, report_columns::Name, row.name);
+    set_cell(list, index, report_columns::Barcode, row.txm_no);
+    set_cell(list, index, report_columns::ReportTime, row.chk_date);
+    set_cell(list, index, report_columns::Sex, row.sex);
+    set_cell(list, index, report_columns::Age, row.age);
+    set_cell(list, index, report_columns::Bed, row.bed_code);
+    set_cell(list, index, report_columns::PatientType, row.patient_type);
+    set_cell(list, index, report_columns::Requester, row.requester);
+    set_cell(list, index, report_columns::Reviewer, row.reviewer);
+    set_cell(list, index, report_columns::GroupName, row.group_name);
+    set_cell(list, index, report_columns::ReviewStatus, display_conf(row.conf));
+    set_cell(list, index, report_columns::ConfirmStatus, display_chk_flag(row.chk_flag));
+    set_cell(list, index, report_columns::PrintStatus, display_binary_print_flag(row.zymz_print));
+    set_cell(list, index, report_columns::SelfServicePrintStatus, display_binary_print_flag(row.zzj_print));
 }
 
 void insert_result_row(HWND list, int index, const ResultRow& row) {
@@ -56,11 +46,11 @@ void insert_result_row(HWND list, int index, const ResultRow& row) {
     std::wstring first = utf8_to_wide(row.item_name);
     item.pszText = first.data();
     ListView_InsertItem(list, &item);
-    set_cell(list, index, 1, row.result);
-    set_cell(list, index, 2, row.downbound);
-    set_cell(list, index, 3, row.upbound);
-    set_cell(list, index, 4, row.unit);
-    set_cell(list, index, 5, row.item_eng);
+    set_cell(list, index, result_columns::Result, row.result);
+    set_cell(list, index, result_columns::LowerBound, row.downbound);
+    set_cell(list, index, result_columns::UpperBound, row.upbound);
+    set_cell(list, index, result_columns::Unit, row.unit);
+    set_cell(list, index, result_columns::EnglishName, row.item_eng);
 }
 
 }  // namespace

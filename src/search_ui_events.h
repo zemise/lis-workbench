@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "search_core.h"
+#include "search_ui_layout.h"
 
 #include <functional>
 
@@ -26,8 +27,8 @@ struct NotifyEventHandlers {
     const std::vector<ResultRow>* result_rows = nullptr;
 };
 
-bool handle_command(HWND hwnd, WPARAM wparam, const CommandEventHandlers& handlers);
-bool handle_notify(LPARAM lparam, const NotifyEventHandlers& handlers, LRESULT& result);
+bool handle_command(HWND hwnd, WPARAM wparam, const MainUiIds& ids, const CommandEventHandlers& handlers);
+bool handle_notify(LPARAM lparam, const MainUiIds& ids, const NotifyEventHandlers& handlers, LRESULT& result);
 
 }  // namespace search
 

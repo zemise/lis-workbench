@@ -16,6 +16,7 @@ add_executable(result_search
     src/search_ui_events.cpp
     src/search_ui_presenter.cpp
     src/search_settings_dialog.cpp
+    src/search_text.cpp
     src/search_ui_layout.cpp
     src/search_view_state.cpp
 )

@@ -10,7 +10,7 @@ struct MainUiIds {
     int patient_id;
     int barcode;
     int name;
-    int bed;
+    int patient_no;
     int oper;
     int start;
     int end;
@@ -36,7 +36,7 @@ struct MainUiHandles {
     HWND patient_id = nullptr;
     HWND barcode = nullptr;
     HWND name = nullptr;
-    HWND bed = nullptr;
+    HWND patient_no = nullptr;
     HWND oper = nullptr;
     HWND start = nullptr;
     HWND end = nullptr;

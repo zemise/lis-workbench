@@ -4,6 +4,7 @@
 #include "search_input_view_model.h"
 #include "search_settings_dialog.h"
 #include "search_core.h"
+#include "search_text.h"
 #include "search_ui_context.h"
 #include "search_ui_events.h"
 #include "search_ui_layout.h"
@@ -22,8 +23,6 @@ int main() {
 #include <windows.h>
 #include <commctrl.h>
 
-#include <algorithm>
-#include <cctype>
 #include <string>
 #include <vector>
 
@@ -34,7 +33,7 @@ namespace {
 constexpr int IDC_PATIENT_ID = 1002;
 constexpr int IDC_BARCODE = 1003;
 constexpr int IDC_NAME = 1004;
-constexpr int IDC_BED = 1005;
+constexpr int IDC_PATIENT_NO = 1005;
 constexpr int IDC_OPER = 1006;
 constexpr int IDC_START = 1007;
 constexpr int IDC_END = 1008;
@@ -55,7 +54,7 @@ constexpr int IDC_PRINT = 3005;
 constexpr int IDC_SETTINGS = 3006;
 constexpr int IDC_STATUS = 4001;
 search::MainUiIds g_main_ui_ids{
-    IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_BED, IDC_OPER, IDC_START, IDC_END,
+    IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER, IDC_START, IDC_END,
     IDC_ROOM, IDC_MACH, IDC_GROUP, IDC_ITEM, IDC_PATIENT_TYPE, IDC_REPORT_STATUS,
     IDC_REPORTS, IDC_RESULTS, IDC_SPLITTER,
     IDC_SETTINGS, IDC_QUERY, IDC_EXPORT, IDC_PREVIEW, IDC_PRINT, IDC_EXIT, IDC_STATUS
@@ -74,32 +73,6 @@ std::vector<search::PatientTypeOption>& g_patient_type_options = g_state.patient
 std::vector<search::MachineOption>& g_machine_options = g_state.machine_options;
 std::string& g_connection_string = g_state.connection_string;
 search::DbSettings& g_db_settings = g_state.settings.db;
-
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) {
-        return L"";
-    }
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
-    if (!out.empty() && out.back() == L'\0') {
-        out.pop_back();
-    }
-    return out;
-}
-
-std::string wide_to_utf8(const std::wstring& text) {
-    if (text.empty()) {
-        return "";
-    }
-    int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
-    if (!out.empty() && out.back() == '\0') {
-        out.pop_back();
-    }
-    return out;
-}
 
 void set_text(HWND hwnd, const std::wstring& text) {
     SetWindowTextW(hwnd, text.c_str());
@@ -209,7 +182,7 @@ void test_current_settings(HWND owner, const search::DbSettings& settings) {
     if (search::test_database_connection(settings, error)) {
         MessageBoxW(owner, L"数据库连接成功。", L"测试连接", MB_ICONINFORMATION);
     } else {
-        MessageBoxW(owner, utf8_to_wide(error).c_str(), L"数据库连接失败", MB_ICONERROR);
+        MessageBoxW(owner, search::utf8_to_wide(error).c_str(), L"数据库连接失败", MB_ICONERROR);
     }
 }
 
@@ -286,7 +259,7 @@ void query_selected_results(int selected) {
     }
     std::string error;
     if (!search::load_result_rows(g_connection_string, g_report_rows[static_cast<size_t>(selected)].rep_no, g_result_rows, error)) {
-        MessageBoxW(nullptr, utf8_to_wide(error).c_str(), L"查询项目明细失败", MB_ICONERROR);
+        MessageBoxW(nullptr, search::utf8_to_wide(error).c_str(), L"查询项目明细失败", MB_ICONERROR);
         return;
     }
     search::present_result_rows(g_ui, g_result_rows);
@@ -308,12 +281,12 @@ void run_query() {
     std::string error;
     if (!search::run_report_query(g_db_settings, input, g_report_rows, g_connection_string, error)) {
         set_status(L"查询失败");
-        MessageBoxW(nullptr, utf8_to_wide(error).c_str(), L"查询失败", MB_ICONERROR);
+        MessageBoxW(nullptr, search::utf8_to_wide(error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
 
     search::present_report_rows(g_ui, g_report_rows);
-    set_status(utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
+    set_status(search::utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
 }
 
 void create_ui(HWND hwnd) {
@@ -345,7 +318,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 MessageBoxW(owner, L"该功能暂未实现。", L"提示", MB_ICONINFORMATION);
             };
             handlers.on_exit = [](HWND owner) { DestroyWindow(owner); };
-            if (search::handle_command(hwnd, wparam, handlers)) {
+            if (search::handle_command(hwnd, wparam, g_main_ui_ids, handlers)) {
                 return 0;
             }
             break;
@@ -358,7 +331,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             handlers.report_rows = &g_report_rows;
             handlers.result_rows = &g_result_rows;
             LRESULT result = 0;
-            if (search::handle_notify(lparam, handlers, result)) {
+            if (search::handle_notify(lparam, g_main_ui_ids, handlers, result)) {
                 return result;
             }
             break;

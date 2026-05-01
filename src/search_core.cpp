@@ -1,4 +1,5 @@
 #include "search_core.h"
+#include "search_text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -12,13 +13,6 @@
 
 namespace search {
 namespace {
-
-std::string trim(std::string s) {
-    auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
-    s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
-    return s;
-}
 
 std::string sql_escape(std::string value) {
     size_t pos = 0;
@@ -108,32 +102,6 @@ struct DbContext {
     SQLHENV env = SQL_NULL_HENV;
     SQLHDBC dbc = SQL_NULL_HDBC;
 };
-
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) {
-        return L"";
-    }
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
-    if (!out.empty() && out.back() == L'\0') {
-        out.pop_back();
-    }
-    return out;
-}
-
-std::string wide_to_utf8(const std::wstring& text) {
-    if (text.empty()) {
-        return "";
-    }
-    int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string out(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
-    if (!out.empty() && out.back() == '\0') {
-        out.pop_back();
-    }
-    return out;
-}
 
 std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
     std::wstring buffer(2048, L'\0');
@@ -421,20 +389,28 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         sql << "TOP " << filters.limit << " ";
     }
     sql << "CAST(r.REP_NO AS varchar(20)),"
-        << " isnull(r.OPER_NO,''),isnull(r.NAME,''),isnull(RTRIM(r.TXM_NO),''),"
+        << " isnull(r.OPER_NO,''),isnull(r.NAME,''),isnull(r.TXM_NO,''),"
         << " isnull(CONVERT(varchar(19),r.REP_DATE,120),''),isnull(RTRIM(sx.SEX_NAME),''),isnull(r.AGE,''),"
-        << " isnull(r.BED_CODE,''),isnull(RTRIM(p.TYPE_NAME),''),isnull(r.REQ_DR,''),isnull(r.GROUP_NO,''),"
+        << " isnull(r.BED_CODE,''),isnull(RTRIM(p.TYPE_NAME),''),isnull(RTRIM(emp_oper.NAME),''),"
+        << " isnull(RTRIM(emp_rep.NAME),''),isnull(r.GROUP_NO,''),"
         << " isnull(r.CONF,''),isnull(r.CHK_FLAG,''),cast(isnull(r.ZYMZ_PRINT,0) as varchar(20)),"
         << " cast(isnull(r.ZZJ_PRINT,0) as varchar(20)),isnull(r.REG_NO,'')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper ON emp_oper.EMPLOYEE_ID = r.OPER_CODE"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_rep ON emp_rep.EMPLOYEE_ID = r.REP_OPER"
         << " WHERE r.DELETE_BIT=0";
 
     add_eq(sql, "r.REG_NO", filters.patient_id);
-    add_eq(sql, "RTRIM(r.TXM_NO)", filters.barcode);
+    add_eq(sql, "r.TXM_NO", filters.barcode);
     add_like(sql, "r.NAME", filters.patient_name);
-    add_eq(sql, "r.BED_CODE", filters.bed_code);
+    if (!trim(filters.patient_no).empty()) {
+        sql << " AND EXISTS (SELECT 1 FROM LS_AS_BARCODE b"
+            << " WHERE isnull(b.DELETE_BIT,0)=0"
+            << " AND b.REG_NO='" << sql_escape(trim(filters.patient_no)) << "'"
+            << " AND b.BARCODE = r.TXM_NO)";
+    }
     add_eq(sql, "r.OPER_NO", filters.oper_no);
     add_eq(sql, "r.ROOM_CODE", filters.room_code);
     add_eq(sql, "r.TYPE", filters.patient_type);
@@ -475,12 +451,13 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.bed_code = fetch_column(stmt, 8);
         row.patient_type = fetch_column(stmt, 9);
         row.requester = fetch_column(stmt, 10);
-        row.group_name = fetch_column(stmt, 11);
-        row.conf = fetch_column(stmt, 12);
-        row.chk_flag = fetch_column(stmt, 13);
-        row.zymz_print = fetch_column(stmt, 14);
-        row.zzj_print = fetch_column(stmt, 15);
-        row.reg_no = fetch_column(stmt, 16);
+        row.reviewer = fetch_column(stmt, 11);
+        row.group_name = fetch_column(stmt, 12);
+        row.conf = fetch_column(stmt, 13);
+        row.chk_flag = fetch_column(stmt, 14);
+        row.zymz_print = fetch_column(stmt, 15);
+        row.zzj_print = fetch_column(stmt, 16);
+        row.reg_no = fetch_column(stmt, 17);
         rows.push_back(row);
     }
 

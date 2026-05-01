@@ -11,8 +11,10 @@
 - `search_app.cpp` 负责界面无关的应用层规则，便于后续引入 Qt
 - `search_controller.cpp` 负责界面输入到查询执行的桥接，便于后续复用到 Qt
 - `search_input_view_model.cpp` 负责控件值读取、下拉回填和查询输入组装
+- `search_text.cpp` 负责公共字符串工具和 UTF-8 / 宽字符转换
 - `search_ui_context.h` 负责 UI 句柄和字体上下文
-- `search_ui_events.cpp` 负责 Win32 事件分发
+- `search_ui_columns.h` 负责报告列表和项目明细列表列号集中定义
+- `search_ui_events.cpp` 负责 Win32 事件分发，控件 ID 通过 `MainUiIds` 注入，不在事件层硬编码
 - `search_ui_layout.cpp` 负责 Win32 主界面控件创建与布局
 - `search_ui_presenter.cpp` 负责列表填充和状态显示
 - `search_settings_dialog.cpp` 负责 Win32 设置窗口
@@ -25,7 +27,7 @@
 - 通过 SQL Server ODBC 连接 LIS 数据库。
 - 从 `LS_AS_REPORT` 查询报告主记录。
 - 通过 `REP_NO` 联查 `LS_AS_REPENTRY` 中的项目结果。
-- 支持按姓名、病人号/住院号、条码号、样本号、床号、仪器、组合项目、日期范围等条件过滤。
+- 支持按姓名、诊疗卡号、病人号、条码号、样本号、仪器、组合项目、日期范围等条件过滤。
 
 ## 当前实现范围
 
@@ -39,6 +41,9 @@
 - `检验仪器` 下拉来源于 `LS_AS_MACHINE.MACH_NAME`，仅显示 `RUL='启用'` 的记录，查询时回写对应 `MACH_CODE` 过滤。
 - `检验科室 -> 检验仪器` 联动筛选，选定科室后，仪器列表自动缩小到该科室下启用的仪器。
 - 主列表补充 `打印`、`自助机` 两列，分别对应 `ZYMZ_PRINT`、`ZZJ_PRINT`。
+- 主列表补充 `检验者`、`审核者` 两列：
+  - `检验者`：`LS_AS_REPORT.OPER_CODE = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`
+  - `审核者`：`LS_AS_REPORT.REP_OPER = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`
 - 主列表支持按审核/打印状态着色：
   - 已打印整行白底
   - 已审核整行浅青底
@@ -65,6 +70,14 @@
 
 ```text
 LS_AS_REPORT.REP_NO = LS_AS_REPENTRY.REP_NO
+LS_AS_REPENTRY.ITEM_CODE = LS_AS_ITEM.ITEM_CODE
+LS_AS_REPORT.OPER_CODE = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID
+LS_AS_REPORT.REP_OPER = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID
+LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE
+LS_AS_REPORT.TYPE = LS_AS_PATTYPE.TYPE
+LS_AS_REPORT.SEX = LS_AS_SEX.SEX_CODE
+LS_AS_REPORT.ROOM_CODE = LS_AS_ROOM.ROOM_CODE
+LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 ```
 
 主表 `LS_AS_REPORT` 用于按病人和报告维度定位报告：
@@ -89,6 +102,18 @@ LS_AS_REPORT.REP_NO = LS_AS_REPENTRY.REP_NO
 - `ITEM_UNIT`
 - `ITEM_ENG`
 - `NORMAL`
+
+字典和辅助表：
+
+- `LS_AS_ITEM`：项目名称、单位、英文名。
+- `JC_EMPLOYEE_PROPERTY`：人员字典，当前用于“检验者”和“审核者”列；`审核者` 使用 `LS_AS_REPORT.REP_OPER` 关联。
+- `LS_AS_BARCODE`：条码/病人号关联，用于“病人号”筛选。
+- `LS_AS_PATTYPE`：病人类型字典。
+- `LS_AS_SEX`：性别字典。
+- `LS_AS_ROOM`：检验科室字典。
+- `LS_AS_MACHINE`：检验仪器字典。
+
+更完整的字段对应和表关系见 [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)。
 
 ## NORMAL 码值说明
 

@@ -29,11 +29,20 @@
     - 下拉框回填
     - 查询输入组装
   - 后续 Qt 可保留接口语义，替换具体实现。
+- `search_text.*`
+  - 负责公共文本处理：
+    - `trim`
+    - UTF-8 与宽字符转换
+  - 后续 Qt 层如果使用 `QString`，只需要在 Qt 适配层做转换，不应再复制这些工具函数。
 - `search_ui_context.*`
   - 负责 UI 上下文边界。
   - 后续 Qt 可替换为 Qt widget/context 持有结构。
+- `search_ui_columns.h`
+  - 集中定义报告列表和项目明细列表列号。
+  - 后续 Qt model/view 可参考这些语义列名，但不需要复用 Win32 列号本身。
 - `search_ui_events.*`
   - 负责 Win32 事件分发。
+  - 控件 ID 由 `MainUiIds` 注入，事件层不再硬编码按钮/列表 ID。
   - 后续 Qt 可替换为 signal/slot 或 Qt event 绑定层。
 - `search_ui_presenter.*`
   - 负责列表和状态呈现。
@@ -56,17 +65,13 @@
 
 ## 下一步建议拆分顺序
 
-1. `search_view_state.*`
-   - 聚合当前全局状态：
-     - 当前查询条件
-     - 当前报告列表
-     - 当前项目列表
-     - 当前字典下拉数据
-   - 减少 `main.cpp` 里的全局变量数量。
-
-2. 继续把少量剩余窗口过程胶水收口到更明确的 event/presenter 协作
+1. 继续把少量剩余窗口过程胶水收口到更明确的 event/presenter 协作
    - 统一管理当前字典数据、查询结果、选择状态。
    - 继续收口 Win32 全局变量。
+
+2. 将 splitter 拖动、字体应用、窗口注册拆出 Win32 shell 层
+   - 让 `main.cpp` 更接近纯入口。
+   - 为 Qt 入口保留独立实现空间。
 
 3. Qt UI 单独新建 `qt/` 或 `src_qt/`
    - 不直接修改现有 Win32 入口。
@@ -82,6 +87,6 @@
 
 如果未来某天要接 Qt，理想状态应该是：
 
-- `search_core.*`、`app_settings.*`、`search_app.*` 原样复用
+- `search_core.*`、`app_settings.*`、`search_app.*`、`search_text.*` 原样复用
 - Win32 和 Qt 仅分别维护自己的窗口层
 - 查询条件、结果映射、状态判断不需要在两套 GUI 中重复写一份

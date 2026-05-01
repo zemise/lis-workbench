@@ -11,7 +11,7 @@ struct QueryInput {
     std::string patient_id;
     std::string barcode;
     std::string patient_name;
-    std::string bed_code;
+    std::string patient_no;
     std::string oper_no;
     std::string start_date;
     std::string end_date;

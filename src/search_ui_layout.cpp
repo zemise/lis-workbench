@@ -1,4 +1,5 @@
 #include "search_ui_layout.h"
+#include "search_ui_columns.h"
 
 #ifdef _WIN32
 
@@ -67,7 +68,7 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
     create_label(hwnd, L"诊疗卡号", 8, y, 72, 22); ui.patient_id = create_edit(hwnd, ids.patient_id, 88, y, 120, 24); y += 28;
     create_label(hwnd, L"条码号", 8, y, 72, 22); ui.barcode = create_edit(hwnd, ids.barcode, 88, y, 120, 24); y += 28;
     create_label(hwnd, L"病人姓名", 8, y, 72, 22); ui.name = create_edit(hwnd, ids.name, 88, y, 120, 24); y += 28;
-    create_label(hwnd, L"病床号", 8, y, 72, 22); ui.bed = create_edit(hwnd, ids.bed, 88, y, 120, 24); y += 28;
+    create_label(hwnd, L"病人号", 8, y, 72, 22); ui.patient_no = create_edit(hwnd, ids.patient_no, 88, y, 120, 24); y += 28;
     create_label(hwnd, L"样本号", 8, y, 72, 22); ui.oper = create_edit(hwnd, ids.oper, 88, y, 120, 24); y += 28;
     create_label(hwnd, L"开始日期", 8, y, 72, 22); ui.start = create_date_picker(hwnd, ids.start, 88, y, 120, 24); y += 28;
     create_label(hwnd, L"结束日期", 8, y, 72, 22); ui.end = create_date_picker(hwnd, ids.end, 88, y, 120, 24); y += 28;
@@ -87,20 +88,21 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
                                  kReportsX, kListTop, kReportsWidth, kListHeight,
                                  hwnd, reinterpret_cast<HMENU>(ids.reports), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(ui.reports, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    add_list_column(ui.reports, 0, L"样本号", 70);
-    add_list_column(ui.reports, 1, L"姓名", 80);
-    add_list_column(ui.reports, 2, L"条码号", 110);
-    add_list_column(ui.reports, 3, L"上机时间", 130);
-    add_list_column(ui.reports, 4, L"性别", 50);
-    add_list_column(ui.reports, 5, L"年龄", 60);
-    add_list_column(ui.reports, 6, L"床号", 60);
-    add_list_column(ui.reports, 7, L"病人类型", 70);
-    add_list_column(ui.reports, 8, L"检验者", 80);
-    add_list_column(ui.reports, 9, L"项目名称", 110);
-    add_list_column(ui.reports, 10, L"审核", 60);
-    add_list_column(ui.reports, 11, L"确认", 60);
-    add_list_column(ui.reports, 12, L"打印", 60);
-    add_list_column(ui.reports, 13, L"自助机", 60);
+    add_list_column(ui.reports, report_columns::SampleNo, L"样本号", 70);
+    add_list_column(ui.reports, report_columns::Name, L"姓名", 80);
+    add_list_column(ui.reports, report_columns::Barcode, L"条码号", 110);
+    add_list_column(ui.reports, report_columns::ReportTime, L"上机时间", 130);
+    add_list_column(ui.reports, report_columns::Sex, L"性别", 50);
+    add_list_column(ui.reports, report_columns::Age, L"年龄", 60);
+    add_list_column(ui.reports, report_columns::Bed, L"床号", 60);
+    add_list_column(ui.reports, report_columns::PatientType, L"病人类型", 70);
+    add_list_column(ui.reports, report_columns::Requester, L"检验者", 80);
+    add_list_column(ui.reports, report_columns::Reviewer, L"审核者", 80);
+    add_list_column(ui.reports, report_columns::GroupName, L"项目名称", 110);
+    add_list_column(ui.reports, report_columns::ReviewStatus, L"审核", 60);
+    add_list_column(ui.reports, report_columns::ConfirmStatus, L"确认", 60);
+    add_list_column(ui.reports, report_columns::PrintStatus, L"打印", 60);
+    add_list_column(ui.reports, report_columns::SelfServicePrintStatus, L"自助机", 60);
 
     ui.splitter = CreateWindowExW(0, L"ResultSearchSplitter", L"",
                                   WS_CHILD | WS_VISIBLE,
@@ -112,12 +114,12 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
                                  kResultsX, kListTop, kResultsWidth, kListHeight,
                                  hwnd, reinterpret_cast<HMENU>(ids.results), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(ui.results, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    add_list_column(ui.results, 0, L"项目名称", 150);
-    add_list_column(ui.results, 1, L"结果", 80);
-    add_list_column(ui.results, 2, L"下限", 70);
-    add_list_column(ui.results, 3, L"上限", 70);
-    add_list_column(ui.results, 4, L"单位", 70);
-    add_list_column(ui.results, 5, L"英文名称", 80);
+    add_list_column(ui.results, result_columns::ItemName, L"项目名称", 150);
+    add_list_column(ui.results, result_columns::Result, L"结果", 80);
+    add_list_column(ui.results, result_columns::LowerBound, L"下限", 70);
+    add_list_column(ui.results, result_columns::UpperBound, L"上限", 70);
+    add_list_column(ui.results, result_columns::Unit, L"单位", 70);
+    add_list_column(ui.results, result_columns::EnglishName, L"英文名称", 80);
 
     ui.settings_button = create_button(hwnd, ids.settings, L"设置", 620, kButtonsY, 92, 32);
     ui.query_button = create_button(hwnd, ids.query, L"查询(&Q)", 720, kButtonsY, 92, 32);
@@ -182,7 +184,7 @@ void layout_main_window(HWND hwnd, MainUiHandles& ui, int& splitter_x) {
     MoveWindow(ui.patient_id, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
     MoveWindow(ui.barcode, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
     MoveWindow(ui.name, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
-    MoveWindow(ui.bed, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
+    MoveWindow(ui.patient_no, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
     MoveWindow(ui.oper, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
     MoveWindow(ui.start, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
     MoveWindow(ui.end, left_input_x, y, left_input_w, edit_h, TRUE); y += row_gap;
