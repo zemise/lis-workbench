@@ -151,6 +151,7 @@ cpp_search/build/windows-x64/result_search.exe
 - [CHANGELOG.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/CHANGELOG.md)
 - [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)
 - [QT_PREP_PLAN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QT_PREP_PLAN.md)
+- [TREND_CHART_PLAN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/TREND_CHART_PLAN.md)
 
 ## 使用说明
 
