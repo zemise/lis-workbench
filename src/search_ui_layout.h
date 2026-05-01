@@ -25,6 +25,7 @@ struct MainUiIds {
     int splitter;
     int settings;
     int query;
+    int trend;
     int export_;
     int preview;
     int print;
@@ -54,6 +55,7 @@ struct MainUiHandles {
     HWND group_patient = nullptr;
     HWND settings_button = nullptr;
     HWND query_button = nullptr;
+    HWND trend_button = nullptr;
     HWND export_button = nullptr;
     HWND preview_button = nullptr;
     HWND print_button = nullptr;

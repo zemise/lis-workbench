@@ -19,6 +19,8 @@ add_executable(result_search
     src/search_text.cpp
     src/search_ui_layout.cpp
     src/search_view_state.cpp
+    src/trend_core.cpp
+    src/trend_window.cpp
 )
 
 target_include_directories(result_search PRIVATE src)

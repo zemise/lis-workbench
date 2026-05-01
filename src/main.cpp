@@ -10,6 +10,7 @@
 #include "search_ui_layout.h"
 #include "search_ui_presenter.h"
 #include "search_view_state.h"
+#include "trend_window.h"
 #include "version.h"
 
 #ifndef _WIN32
@@ -52,12 +53,13 @@ constexpr int IDC_EXPORT = 3003;
 constexpr int IDC_PREVIEW = 3004;
 constexpr int IDC_PRINT = 3005;
 constexpr int IDC_SETTINGS = 3006;
+constexpr int IDC_TREND = 3007;
 constexpr int IDC_STATUS = 4001;
 search::MainUiIds g_main_ui_ids{
     IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER, IDC_START, IDC_END,
     IDC_ROOM, IDC_MACH, IDC_GROUP, IDC_ITEM, IDC_PATIENT_TYPE, IDC_REPORT_STATUS,
     IDC_REPORTS, IDC_RESULTS, IDC_SPLITTER,
-    IDC_SETTINGS, IDC_QUERY, IDC_EXPORT, IDC_PREVIEW, IDC_PRINT, IDC_EXIT, IDC_STATUS
+    IDC_SETTINGS, IDC_QUERY, IDC_TREND, IDC_EXPORT, IDC_PREVIEW, IDC_PRINT, IDC_EXIT, IDC_STATUS
 };
 search::UiContext g_ui_context;
 search::MainUiHandles& g_ui = g_ui_context.handles;
@@ -289,6 +291,18 @@ void run_query() {
     set_status(search::utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
 }
 
+void show_trend(HWND owner) {
+    if (search::build_connection_string_w(g_db_settings).empty()) {
+        MessageBoxW(owner, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
+        return;
+    }
+    const search::QueryInput input = search::build_query_input(g_ui, g_state);
+    search::show_trend_window(owner,
+                              g_ui_context.ui_font ? g_ui_context.ui_font : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+                              g_db_settings,
+                              input);
+}
+
 void create_ui(HWND hwnd) {
     HFONT font = g_ui_context.ui_font ? g_ui_context.ui_font : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     search::create_main_controls(hwnd, font, g_main_ui_ids, g_ui);
@@ -313,6 +327,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             search::CommandEventHandlers handlers;
             handlers.on_room_changed = [] { reload_machine_options(); };
             handlers.on_query = [] { run_query(); };
+            handlers.on_show_trend = [](HWND owner) { show_trend(owner); };
             handlers.on_show_settings = [](HWND owner) { show_settings(owner); };
             handlers.on_unimplemented_action = [](HWND owner) {
                 MessageBoxW(owner, L"该功能暂未实现。", L"提示", MB_ICONINFORMATION);

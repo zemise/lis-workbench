@@ -123,10 +123,11 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
 
     ui.settings_button = create_button(hwnd, ids.settings, L"设置", 620, kButtonsY, 92, 32);
     ui.query_button = create_button(hwnd, ids.query, L"查询(&Q)", 720, kButtonsY, 92, 32);
-    ui.export_button = create_button(hwnd, ids.export_, L"导出(&E)", 820, kButtonsY, 92, 32);
-    ui.preview_button = create_button(hwnd, ids.preview, L"预览(&V)", 920, kButtonsY, 92, 32);
-    ui.print_button = create_button(hwnd, ids.print, L"打印(&P)", 1020, kButtonsY, 92, 32);
-    ui.exit_button = create_button(hwnd, ids.exit, L"退出(&X)", 1120, kButtonsY, 92, 32);
+    ui.trend_button = create_button(hwnd, ids.trend, L"趋势图(&T)", 820, kButtonsY, 92, 32);
+    ui.export_button = create_button(hwnd, ids.export_, L"导出(&E)", 920, kButtonsY, 92, 32);
+    ui.preview_button = create_button(hwnd, ids.preview, L"预览(&V)", 1020, kButtonsY, 92, 32);
+    ui.print_button = create_button(hwnd, ids.print, L"打印(&P)", 1120, kButtonsY, 92, 32);
+    ui.exit_button = create_button(hwnd, ids.exit, L"退出(&X)", 1220, kButtonsY, 92, 32);
     ui.status = CreateWindowExW(0, L"STATIC", L"请输入条件后查询。", WS_CHILD | WS_VISIBLE,
                                 8, kButtonsY + 2, 600, 28, hwnd, reinterpret_cast<HMENU>(ids.status), GetModuleHandleW(nullptr), nullptr);
 
@@ -206,13 +207,14 @@ void layout_main_window(HWND hwnd, MainUiHandles& ui, int& splitter_x) {
     if (ui.splitter) MoveWindow(ui.splitter, splitter_x, list_top, splitter_w, list_h, TRUE);
     MoveWindow(ui.results, results_x, list_top, results_w, list_h, TRUE);
 
-    const int buttons_start_x = client_w - margin - (button_w * 6 + button_gap * 5);
+    const int buttons_start_x = client_w - margin - (button_w * 7 + button_gap * 6);
     MoveWindow(ui.settings_button, buttons_start_x, buttons_y, button_w, button_h, TRUE);
     MoveWindow(ui.query_button, buttons_start_x + (button_w + button_gap) * 1, buttons_y, button_w, button_h, TRUE);
-    MoveWindow(ui.export_button, buttons_start_x + (button_w + button_gap) * 2, buttons_y, button_w, button_h, TRUE);
-    MoveWindow(ui.preview_button, buttons_start_x + (button_w + button_gap) * 3, buttons_y, button_w, button_h, TRUE);
-    MoveWindow(ui.print_button, buttons_start_x + (button_w + button_gap) * 4, buttons_y, button_w, button_h, TRUE);
-    MoveWindow(ui.exit_button, buttons_start_x + (button_w + button_gap) * 5, buttons_y, button_w, button_h, TRUE);
+    MoveWindow(ui.trend_button, buttons_start_x + (button_w + button_gap) * 2, buttons_y, button_w, button_h, TRUE);
+    MoveWindow(ui.export_button, buttons_start_x + (button_w + button_gap) * 3, buttons_y, button_w, button_h, TRUE);
+    MoveWindow(ui.preview_button, buttons_start_x + (button_w + button_gap) * 4, buttons_y, button_w, button_h, TRUE);
+    MoveWindow(ui.print_button, buttons_start_x + (button_w + button_gap) * 5, buttons_y, button_w, button_h, TRUE);
+    MoveWindow(ui.exit_button, buttons_start_x + (button_w + button_gap) * 6, buttons_y, button_w, button_h, TRUE);
     MoveWindow(ui.status, margin, status_y, std::min(status_w, buttons_start_x - margin - 8), 28, TRUE);
 }
 

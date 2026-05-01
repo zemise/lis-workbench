@@ -29,6 +29,10 @@
     - Win32 设置窗口模块，负责设置对话框生命周期与回调桥接。
   - `search_view_state.h/.cpp`
     - 应用状态聚合：配置、查询结果、字典下拉缓存、连接状态。
+  - `trend_core.h/.cpp`
+    - 趋势图数据查询层：按患者/仪器/日期/项目查询历史结果点。
+  - `trend_window.h/.cpp`
+    - Win32 趋势窗口：项目选择、折线图绘制、趋势明细列表。
   - `app_settings.h/.cpp`
     - 本地配置读写、默认 `result_search.ini` 路径、数据库连接串生成。
   - `version.h`
@@ -67,6 +71,8 @@
 - `search_ui_presenter.cpp` 负责列表与状态显示，减少入口文件直接操作 `ListView`。
 - `search_settings_dialog.cpp` 负责 Win32 设置窗口，避免设置页逻辑继续堆积在入口文件。
 - `search_view_state.cpp` 负责把分散状态收口成统一结构，便于后续 Qt 数据绑定。
+- `trend_core.cpp` 负责趋势查询，不改变现有主查询链路。
+- `trend_window.cpp` 负责当前 Win32 趋势图窗口，后续 Qt 可替换该窗口层。
 - `app_settings.cpp` 只负责配置与连接串生成，不直接依赖业务查询逻辑。
 
 ## 当前成熟度

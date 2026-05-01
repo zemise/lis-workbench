@@ -14,6 +14,7 @@ namespace search {
 struct CommandEventHandlers {
     std::function<void()> on_room_changed;
     std::function<void()> on_query;
+    std::function<void(HWND)> on_show_trend;
     std::function<void(HWND)> on_show_settings;
     std::function<void(HWND)> on_unimplemented_action;
     std::function<void(HWND)> on_exit;
