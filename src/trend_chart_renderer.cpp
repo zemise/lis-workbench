@@ -111,7 +111,7 @@ std::wstring format_time_label(std::time_t time) {
     tm = *std::localtime(&time);
 #endif
     wchar_t buffer[32] = {};
-    std::wcsftime(buffer, 32, L"%m-%d", &tm);
+    std::wcsftime(buffer, 32, L"%m-%d %H:%M", &tm);
     return buffer;
 }
 
@@ -196,11 +196,11 @@ void draw_line(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, int width
     DeleteObject(pen);
 }
 
-int x_for_time(const RECT& plot, std::time_t time, std::time_t min_time, std::time_t max_time) {
-    if (max_time <= min_time) {
+int x_for_index(const RECT& plot, size_t index, size_t total) {
+    if (total <= 1) {
         return (plot.left + plot.right) / 2;
     }
-    const double ratio = static_cast<double>(time - min_time) / static_cast<double>(max_time - min_time);
+    const double ratio = static_cast<double>(index) / static_cast<double>(total - 1);
     return plot.left + static_cast<int>(ratio * (plot.right - plot.left));
 }
 
@@ -236,14 +236,25 @@ void draw_grid_and_axes(HDC dc, const RECT& plot, double min_value, double max_v
     draw_line(dc, plot.left, plot.bottom, plot.right, plot.bottom, RGB(40, 40, 40));
 }
 
-void draw_time_axis(HDC dc, const RECT& plot, std::time_t min_time, std::time_t max_time) {
-    constexpr int tick_count = 4;
-    for (int i = 0; i <= tick_count; ++i) {
-        const double ratio = static_cast<double>(i) / tick_count;
-        const auto time = min_time + static_cast<std::time_t>((max_time - min_time) * ratio);
-        const int x = x_for_time(plot, time, min_time, max_time);
+void draw_time_axis(HDC dc, const RECT& plot, const std::vector<PlotPoint>& points) {
+    if (points.empty()) {
+        return;
+    }
+    const size_t total = points.size();
+    const size_t desired_ticks = std::min<size_t>(5, total);
+    size_t last_index = static_cast<size_t>(-1);
+    for (size_t tick = 0; tick < desired_ticks; ++tick) {
+        const size_t index = desired_ticks <= 1
+                                 ? 0
+                                 : static_cast<size_t>(std::llround(static_cast<double>(tick) * (total - 1) /
+                                                                    static_cast<double>(desired_ticks - 1)));
+        if (index == last_index) {
+            continue;
+        }
+        last_index = index;
+        const int x = x_for_index(plot, index, total);
         draw_line(dc, x, plot.bottom, x, plot.bottom + 4, RGB(40, 40, 40));
-        const auto label = format_time_label(time);
+        const auto label = format_time_label(points[index].time);
         SIZE size{};
         GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &size);
         draw_text(dc, x - size.cx / 2, plot.bottom + 8, label);
@@ -315,17 +326,14 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
     max_value += padding;
 
     const int precision = value_precision(plot_points, bounds);
-    const auto min_time = plot_points.front().time;
-    const auto max_time = plot_points.back().time;
-
     auto title = chart_title(plot_points.front());
     DrawTextW(dc, title.c_str(), -1, &rect, DT_TOP | DT_CENTER | DT_SINGLELINE);
     draw_legend(dc, rect);
     draw_reference_band(dc, plot, bounds, min_value, max_value);
     draw_grid_and_axes(dc, plot, min_value, max_value, precision);
-    draw_time_axis(dc, plot, min_time, max_time);
+    draw_time_axis(dc, plot, plot_points);
 
-    draw_text(dc, (plot.left + plot.right) / 2 - 32, rect.bottom - 22, L"检测日期");
+    draw_text(dc, (plot.left + plot.right) / 2 - 86, rect.bottom - 22, L"检测日期（按结果顺序等距）");
     const std::string unit = trim_copy(plot_points.front().source->unit);
     const auto y_title = utf8_to_wide(unit.empty() ? "结果值" : "结果值 (" + unit + ")");
     draw_text(dc, 8, plot.top - 30, y_title);
@@ -333,7 +341,7 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
     HPEN line_pen = CreatePen(PS_SOLID, 2, RGB(30, 95, 180));
     HGDIOBJ old_pen = SelectObject(dc, line_pen);
     for (size_t i = 0; i < plot_points.size(); ++i) {
-        const int x = x_for_time(plot, plot_points[i].time, min_time, max_time);
+        const int x = x_for_index(plot, i, plot_points.size());
         const int y = y_for_value(plot, plot_points[i].value, min_value, max_value);
         if (i == 0) {
             MoveToEx(dc, x, y, nullptr);
@@ -346,8 +354,9 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
 
     HPEN point_pen = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
     old_pen = SelectObject(dc, point_pen);
-    for (const auto& point : plot_points) {
-        const int x = x_for_time(plot, point.time, min_time, max_time);
+    for (size_t i = 0; i < plot_points.size(); ++i) {
+        const auto& point = plot_points[i];
+        const int x = x_for_index(plot, i, plot_points.size());
         const int y = y_for_value(plot, point.value, min_value, max_value);
         HBRUSH brush = CreateSolidBrush(point_color(*point.source));
         HGDIOBJ old_brush = SelectObject(dc, brush);
