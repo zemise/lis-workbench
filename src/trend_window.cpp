@@ -3,14 +3,13 @@
 #ifdef _WIN32
 
 #include "search_text.h"
+#include "trend_chart_renderer.h"
 #include "trend_core.h"
 
 #include <commctrl.h>
 
 #include <algorithm>
-#include <cmath>
 #include <memory>
-#include <sstream>
 #include <vector>
 
 namespace search {
@@ -111,81 +110,16 @@ void fill_item_combo(TrendWindowContext& ctx) {
     }
 }
 
-void draw_centered_text(HDC dc, const RECT& rect, const wchar_t* text) {
-    DrawTextW(dc, text, -1, const_cast<RECT*>(&rect), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
 void draw_chart(HWND hwnd, HDC dc) {
     auto* ctx = reinterpret_cast<TrendWindowContext*>(GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
     RECT rect{};
     GetClientRect(hwnd, &rect);
-    FillRect(dc, &rect, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
     if (!ctx) {
-        draw_centered_text(dc, rect, L"趋势数据未加载");
+        FillRect(dc, &rect, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+        DrawTextW(dc, L"趋势数据未加载", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         return;
     }
-
-    const auto points = numeric_points(*ctx);
-    if (points.size() < 2) {
-        draw_centered_text(dc, rect, L"当前项目不足两个数值点，暂无法绘制趋势线");
-        return;
-    }
-
-    RECT plot = rect;
-    plot.left += 58;
-    plot.right -= 22;
-    plot.top += 22;
-    plot.bottom -= 42;
-    if (plot.right <= plot.left || plot.bottom <= plot.top) {
-        return;
-    }
-
-    double min_value = points.front()->result_value;
-    double max_value = points.front()->result_value;
-    for (const auto* point : points) {
-        min_value = std::min(min_value, point->result_value);
-        max_value = std::max(max_value, point->result_value);
-    }
-    if (std::fabs(max_value - min_value) < 1e-9) {
-        min_value -= 1.0;
-        max_value += 1.0;
-    }
-    const double padding = (max_value - min_value) * 0.1;
-    min_value -= padding;
-    max_value += padding;
-
-    HPEN axis_pen = CreatePen(PS_SOLID, 1, RGB(120, 120, 120));
-    HPEN line_pen = CreatePen(PS_SOLID, 2, RGB(30, 95, 180));
-    HGDIOBJ old_pen = SelectObject(dc, axis_pen);
-    MoveToEx(dc, plot.left, plot.top, nullptr);
-    LineTo(dc, plot.left, plot.bottom);
-    LineTo(dc, plot.right, plot.bottom);
-
-    SelectObject(dc, line_pen);
-    for (size_t i = 0; i < points.size(); ++i) {
-        const double x_ratio = points.size() == 1 ? 0.0 : static_cast<double>(i) / static_cast<double>(points.size() - 1);
-        const double y_ratio = (points[i]->result_value - min_value) / (max_value - min_value);
-        const int x = plot.left + static_cast<int>(x_ratio * (plot.right - plot.left));
-        const int y = plot.bottom - static_cast<int>(y_ratio * (plot.bottom - plot.top));
-        if (i == 0) {
-            MoveToEx(dc, x, y, nullptr);
-        } else {
-            LineTo(dc, x, y);
-        }
-        Ellipse(dc, x - 3, y - 3, x + 3, y + 3);
-    }
-
-    SelectObject(dc, old_pen);
-    DeleteObject(axis_pen);
-    DeleteObject(line_pen);
-
-    SetBkMode(dc, TRANSPARENT);
-    std::wstringstream min_label;
-    min_label << min_value;
-    std::wstringstream max_label;
-    max_label << max_value;
-    TextOutW(dc, 6, plot.top - 8, max_label.str().c_str(), static_cast<int>(max_label.str().size()));
-    TextOutW(dc, 6, plot.bottom - 8, min_label.str().c_str(), static_cast<int>(min_label.str().size()));
+    draw_trend_chart(hwnd, dc, numeric_points(*ctx));
 }
 
 LRESULT CALLBACK chart_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
