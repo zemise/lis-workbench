@@ -392,7 +392,11 @@ int get_encoder_clsid(const wchar_t* mime_type, CLSID& clsid) {
     return -1;
 }
 
-bool save_chart_png(HWND owner, const std::vector<const TrendPoint*>& points, const std::wstring& path, bool show_point_warning) {
+bool save_chart_png(HWND owner,
+                    const std::vector<const TrendPoint*>& points,
+                    const std::wstring& path,
+                    const CLSID& png_clsid,
+                    bool show_point_warning) {
     if (points.size() < 2) {
         if (show_point_warning) {
             MessageBoxW(owner, L"当前项目不足两个有效数值点，无法导出图片。", L"趋势图提示", MB_ICONWARNING);
@@ -402,29 +406,23 @@ bool save_chart_png(HWND owner, const std::vector<const TrendPoint*>& points, co
 
     constexpr int width = 1600;
     constexpr int height = 1000;
-    ULONG_PTR token = 0;
-    Gdiplus::GdiplusStartupInput startup_input;
-    if (Gdiplus::GdiplusStartup(&token, &startup_input, nullptr) != Gdiplus::Ok) {
-        MessageBoxW(owner, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
-        return false;
-    }
-
     HDC screen_dc = GetDC(nullptr);
     HDC memory_dc = CreateCompatibleDC(screen_dc);
     HBITMAP bitmap = CreateCompatibleBitmap(screen_dc, width, height);
     HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
     RECT rect{0, 0, width, height};
     draw_trend_chart_to_rect(memory_dc, rect, points);
-
-    Gdiplus::Bitmap image(bitmap, nullptr);
-    CLSID png_clsid{};
-    bool ok = get_encoder_clsid(L"image/png", png_clsid) >= 0 && image.Save(path.c_str(), &png_clsid, nullptr) == Gdiplus::Ok;
-
     SelectObject(memory_dc, old_bitmap);
+
+    bool ok = false;
+    {
+        Gdiplus::Bitmap image(bitmap, nullptr);
+        ok = image.Save(path.c_str(), &png_clsid, nullptr) == Gdiplus::Ok;
+    }
+
     DeleteObject(bitmap);
     DeleteDC(memory_dc);
     ReleaseDC(nullptr, screen_dc);
-    Gdiplus::GdiplusShutdown(token);
     if (!ok) {
         MessageBoxW(owner, L"PNG 图片保存失败。", L"趋势图", MB_ICONERROR);
     }
@@ -457,6 +455,19 @@ void export_checked_chart_images(TrendWindowContext& ctx) {
         return;
     }
 
+    ULONG_PTR token = 0;
+    Gdiplus::GdiplusStartupInput startup_input;
+    if (Gdiplus::GdiplusStartup(&token, &startup_input, nullptr) != Gdiplus::Ok) {
+        MessageBoxW(ctx.hwnd, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
+        return;
+    }
+    CLSID png_clsid{};
+    if (get_encoder_clsid(L"image/png", png_clsid) < 0) {
+        Gdiplus::GdiplusShutdown(token);
+        MessageBoxW(ctx.hwnd, L"未找到 PNG 编码器，无法导出图片。", L"趋势图", MB_ICONERROR);
+        return;
+    }
+
     int exported = 0;
     int skipped = 0;
     for (const auto& item : ctx.items) {
@@ -468,12 +479,13 @@ void export_checked_chart_images(TrendWindowContext& ctx) {
             ++skipped;
             continue;
         }
-        if (save_chart_png(ctx.hwnd, points, join_path(folder, default_chart_filename(ctx.input, &item)), false)) {
+        if (save_chart_png(ctx.hwnd, points, join_path(folder, default_chart_filename(ctx.input, &item)), png_clsid, false)) {
             ++exported;
         } else {
             ++skipped;
         }
     }
+    Gdiplus::GdiplusShutdown(token);
 
     std::wstringstream message;
     message << L"图片导出完成：" << exported << L" 张";
