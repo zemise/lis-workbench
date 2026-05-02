@@ -292,9 +292,7 @@ void draw_legend(HDC dc, const RECT& rect) {
 
 }  // namespace
 
-void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& points) {
-    RECT rect{};
-    GetClientRect(hwnd, &rect);
+void draw_trend_chart_to_rect(HDC dc, const RECT& rect, const std::vector<const TrendPoint*>& points) {
     FillRect(dc, &rect, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
     SetBkMode(dc, TRANSPARENT);
 
@@ -336,7 +334,8 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
 
     const int precision = value_precision(plot_points, bounds);
     auto title = chart_title(plot_points.front());
-    DrawTextW(dc, title.c_str(), -1, &rect, DT_TOP | DT_CENTER | DT_SINGLELINE);
+    RECT title_rect = rect;
+    DrawTextW(dc, title.c_str(), -1, &title_rect, DT_TOP | DT_CENTER | DT_SINGLELINE);
     draw_legend(dc, rect);
     draw_reference_band(dc, plot, bounds, min_value, max_value);
     draw_grid_and_axes(dc, plot, min_value, max_value, precision);
@@ -375,6 +374,12 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
     }
     SelectObject(dc, old_pen);
     DeleteObject(point_pen);
+}
+
+void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& points) {
+    RECT rect{};
+    GetClientRect(hwnd, &rect);
+    draw_trend_chart_to_rect(dc, rect, points);
 }
 
 }  // namespace search

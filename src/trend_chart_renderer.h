@@ -11,6 +11,7 @@
 namespace search {
 
 #ifdef _WIN32
+void draw_trend_chart_to_rect(HDC dc, const RECT& rect, const std::vector<const TrendPoint*>& points);
 void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& points);
 #endif
 

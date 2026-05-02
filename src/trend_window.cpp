@@ -8,6 +8,7 @@
 
 #include <commdlg.h>
 #include <commctrl.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -24,6 +25,7 @@ constexpr int IDC_TREND_ITEM = 5101;
 constexpr int IDC_TREND_LIST = 5102;
 constexpr int IDC_TREND_CHART = 5103;
 constexpr int IDC_TREND_EXPORT = 5104;
+constexpr int IDC_TREND_EXPORT_IMAGE = 5105;
 constexpr UINT WM_TREND_LOADED = WM_APP + 51;
 
 struct TrendWindowContext {
@@ -33,6 +35,7 @@ struct TrendWindowContext {
     HWND hwnd = nullptr;
     HWND item_list = nullptr;
     HWND export_button = nullptr;
+    HWND export_image_button = nullptr;
     HWND chart = nullptr;
     HWND list = nullptr;
     std::vector<TrendPoint> points;
@@ -225,23 +228,43 @@ std::wstring default_export_filename(const QueryInput& input) {
     return utf8_to_wide(filename);
 }
 
-bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path) {
+std::wstring default_chart_filename(const QueryInput& input, const TrendItemOption* item) {
+    auto filename = default_export_filename(input);
+    if (filename.size() >= 4 && filename.substr(filename.size() - 4) == L".csv") {
+        filename.resize(filename.size() - 4);
+    }
+    if (item && !trim(item->item_name).empty()) {
+        filename += L"-";
+        filename += utf8_to_wide(sanitize_filename_part(item->item_name));
+    }
+    filename += L".png";
+    return filename;
+}
+
+bool choose_save_path(HWND owner, const std::wstring& default_name, const wchar_t* filter, const wchar_t* default_ext, std::wstring& path) {
     wchar_t buffer[MAX_PATH] = {};
-    const auto default_name = default_export_filename(input);
     lstrcpynW(buffer, default_name.c_str(), MAX_PATH);
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFilter = filter;
     ofn.lpstrFile = buffer;
     ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrDefExt = L"csv";
+    ofn.lpstrDefExt = default_ext;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (!GetSaveFileNameW(&ofn)) {
         return false;
     }
     path = buffer;
     return true;
+}
+
+bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path) {
+    return choose_save_path(owner,
+                            default_export_filename(input),
+                            L"CSV 文件 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0",
+                            L"csv",
+                            path);
 }
 
 void export_checked_items(TrendWindowContext& ctx) {
@@ -298,6 +321,96 @@ void export_checked_items(TrendWindowContext& ctx) {
     MessageBoxW(ctx.hwnd, L"导出完成。", L"趋势图", MB_ICONINFORMATION);
 }
 
+const TrendItemOption* selected_item_option(const TrendWindowContext& ctx) {
+    for (const auto& item : ctx.items) {
+        if (item.item_code == ctx.selected_item_code) {
+            return &item;
+        }
+    }
+    return nullptr;
+}
+
+int get_encoder_clsid(const wchar_t* mime_type, CLSID& clsid) {
+    UINT count = 0;
+    UINT size = 0;
+    if (Gdiplus::GetImageEncodersSize(&count, &size) != Gdiplus::Ok || size == 0) {
+        return -1;
+    }
+    std::vector<unsigned char> buffer(size);
+    auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
+    if (Gdiplus::GetImageEncoders(count, size, encoders) != Gdiplus::Ok) {
+        return -1;
+    }
+    for (UINT i = 0; i < count; ++i) {
+        if (wcscmp(encoders[i].MimeType, mime_type) == 0) {
+            clsid = encoders[i].Clsid;
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool save_current_chart_png(TrendWindowContext& ctx, const std::wstring& path) {
+    const auto points = numeric_points(ctx);
+    if (points.size() < 2) {
+        MessageBoxW(ctx.hwnd, L"当前项目不足两个有效数值点，无法导出图片。", L"趋势图提示", MB_ICONWARNING);
+        return false;
+    }
+
+    constexpr int width = 1600;
+    constexpr int height = 1000;
+    ULONG_PTR token = 0;
+    Gdiplus::GdiplusStartupInput startup_input;
+    if (Gdiplus::GdiplusStartup(&token, &startup_input, nullptr) != Gdiplus::Ok) {
+        MessageBoxW(ctx.hwnd, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
+        return false;
+    }
+
+    HDC screen_dc = GetDC(nullptr);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+    HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
+    RECT rect{0, 0, width, height};
+    draw_trend_chart_to_rect(memory_dc, rect, points);
+
+    Gdiplus::Bitmap image(bitmap, nullptr);
+    CLSID png_clsid{};
+    bool ok = get_encoder_clsid(L"image/png", png_clsid) >= 0 && image.Save(path.c_str(), &png_clsid, nullptr) == Gdiplus::Ok;
+
+    SelectObject(memory_dc, old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    Gdiplus::GdiplusShutdown(token);
+    if (!ok) {
+        MessageBoxW(ctx.hwnd, L"PNG 图片保存失败。", L"趋势图", MB_ICONERROR);
+    }
+    return ok;
+}
+
+void export_current_chart_image(TrendWindowContext& ctx) {
+    if (ctx.loading) {
+        MessageBoxW(ctx.hwnd, L"趋势数据仍在加载，请稍后再导出图片。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+    if (ctx.selected_item_code.empty()) {
+        MessageBoxW(ctx.hwnd, L"请先选择需要导出的项目。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+
+    std::wstring path;
+    if (!choose_save_path(ctx.hwnd,
+                          default_chart_filename(ctx.input, selected_item_option(ctx)),
+                          L"PNG 图片 (*.png)\0*.png\0所有文件 (*.*)\0*.*\0",
+                          L"png",
+                          path)) {
+        return;
+    }
+    if (save_current_chart_png(ctx, path)) {
+        MessageBoxW(ctx.hwnd, L"图片导出完成。", L"趋势图", MB_ICONINFORMATION);
+    }
+}
+
 void draw_centered_text(HDC dc, const RECT& rect, const wchar_t* text) {
     DrawTextW(dc, text, -1, const_cast<RECT*>(&rect), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
@@ -335,6 +448,7 @@ LRESULT CALLBACK chart_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 void begin_load_trend_data(TrendWindowContext& ctx) {
     ctx.loading = true;
     EnableWindow(ctx.export_button, FALSE);
+    EnableWindow(ctx.export_image_button, FALSE);
     InvalidateRect(ctx.chart, nullptr, TRUE);
     const HWND hwnd = ctx.hwnd;
     const DbSettings settings = ctx.settings;
@@ -354,6 +468,7 @@ void begin_load_trend_data(TrendWindowContext& ctx) {
 void finish_load_trend_data(TrendWindowContext& ctx, std::unique_ptr<TrendLoadResult> result) {
     ctx.loading = false;
     EnableWindow(ctx.export_button, TRUE);
+    EnableWindow(ctx.export_image_button, TRUE);
     if (!result->ok) {
         MessageBoxW(ctx.hwnd, utf8_to_wide(result->error).c_str(), L"趋势查询失败", MB_ICONERROR);
         InvalidateRect(ctx.chart, nullptr, TRUE);
@@ -374,6 +489,7 @@ void layout_trend_window(TrendWindowContext& ctx) {
     const int margin = 10;
     const int side_w = std::min(320, std::max(240, client_w / 4));
     const int export_h = 32;
+    const int button_gap = 8;
     const int gap = 10;
     const int left_w = std::max(360, client_w - margin * 3 - side_w);
     const int chart_h = std::max(220, client_h / 2 + 20);
@@ -381,7 +497,8 @@ void layout_trend_window(TrendWindowContext& ctx) {
     MoveWindow(ctx.list, margin, margin + chart_h + gap, left_w,
                std::max(120, client_h - (margin + chart_h + gap + margin)), TRUE);
     MoveWindow(ctx.item_list, margin * 2 + left_w, margin, side_w,
-               std::max(120, client_h - margin * 2 - export_h - gap), TRUE);
+               std::max(120, client_h - margin * 2 - export_h * 2 - button_gap - gap), TRUE);
+    MoveWindow(ctx.export_image_button, margin * 2 + left_w, client_h - margin - export_h * 2 - button_gap, side_w, export_h, TRUE);
     MoveWindow(ctx.export_button, margin * 2 + left_w, client_h - margin - export_h, side_w, export_h, TRUE);
 }
 
@@ -397,6 +514,8 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                                              0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
             ctx->export_button = CreateWindowExW(0, L"BUTTON", L"导出勾选项目", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                                  0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT), GetModuleHandleW(nullptr), nullptr);
+            ctx->export_image_button = CreateWindowExW(0, L"BUTTON", L"导出当前图片", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                                       0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT_IMAGE), GetModuleHandleW(nullptr), nullptr);
             ctx->chart = CreateWindowExW(WS_EX_CLIENTEDGE, L"ResultTrendChart", L"", WS_CHILD | WS_VISIBLE,
                                         0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_CHART), GetModuleHandleW(nullptr), nullptr);
             ctx->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
@@ -414,6 +533,7 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             if (ctx->font) {
                 SendMessageW(ctx->item_list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->export_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->export_image_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->chart, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
             }
@@ -437,6 +557,10 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_COMMAND:
             if (LOWORD(wparam) == IDC_TREND_EXPORT && ctx) {
                 export_checked_items(*ctx);
+                return 0;
+            }
+            if (LOWORD(wparam) == IDC_TREND_EXPORT_IMAGE && ctx) {
+                export_current_chart_image(*ctx);
                 return 0;
             }
             break;
