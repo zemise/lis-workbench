@@ -52,6 +52,46 @@ struct TrendLoadResult {
     std::vector<TrendItemOption> items;
 };
 
+class ScopedComInit {
+public:
+    ScopedComInit() : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~ScopedComInit() {
+        if (SUCCEEDED(result_)) {
+            CoUninitialize();
+        }
+    }
+
+    ScopedComInit(const ScopedComInit&) = delete;
+    ScopedComInit& operator=(const ScopedComInit&) = delete;
+
+private:
+    HRESULT result_ = E_FAIL;
+};
+
+class ScopedGdiplus {
+public:
+    ScopedGdiplus() {
+        Gdiplus::GdiplusStartupInput startup_input;
+        ok_ = Gdiplus::GdiplusStartup(&token_, &startup_input, nullptr) == Gdiplus::Ok;
+    }
+    ~ScopedGdiplus() {
+        if (ok_) {
+            Gdiplus::GdiplusShutdown(token_);
+        }
+    }
+
+    ScopedGdiplus(const ScopedGdiplus&) = delete;
+    ScopedGdiplus& operator=(const ScopedGdiplus&) = delete;
+
+    bool ok() const {
+        return ok_;
+    }
+
+private:
+    ULONG_PTR token_ = 0;
+    bool ok_ = false;
+};
+
 void add_column(HWND list, int index, const wchar_t* title, int width) {
     LVCOLUMNW col{};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -273,25 +313,18 @@ bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path)
 }
 
 bool choose_export_folder(HWND owner, std::wstring& folder) {
-    const HRESULT co_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    const bool should_uninitialize = SUCCEEDED(co_result);
+    ScopedComInit com;
     BROWSEINFOW bi{};
     bi.hwndOwner = owner;
     bi.lpszTitle = L"请选择图片导出文件夹";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
     if (!pidl) {
-        if (should_uninitialize) {
-            CoUninitialize();
-        }
         return false;
     }
     wchar_t buffer[MAX_PATH] = {};
     const bool ok = SHGetPathFromIDListW(pidl, buffer) == TRUE;
     CoTaskMemFree(pidl);
-    if (should_uninitialize) {
-        CoUninitialize();
-    }
     if (!ok) {
         return false;
     }
@@ -455,15 +488,13 @@ void export_checked_chart_images(TrendWindowContext& ctx) {
         return;
     }
 
-    ULONG_PTR token = 0;
-    Gdiplus::GdiplusStartupInput startup_input;
-    if (Gdiplus::GdiplusStartup(&token, &startup_input, nullptr) != Gdiplus::Ok) {
+    ScopedGdiplus gdiplus;
+    if (!gdiplus.ok()) {
         MessageBoxW(ctx.hwnd, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
         return;
     }
     CLSID png_clsid{};
     if (get_encoder_clsid(L"image/png", png_clsid) < 0) {
-        Gdiplus::GdiplusShutdown(token);
         MessageBoxW(ctx.hwnd, L"未找到 PNG 编码器，无法导出图片。", L"趋势图", MB_ICONERROR);
         return;
     }
@@ -485,7 +516,6 @@ void export_checked_chart_images(TrendWindowContext& ctx) {
             ++skipped;
         }
     }
-    Gdiplus::GdiplusShutdown(token);
 
     std::wstringstream message;
     message << L"图片导出完成：" << exported << L" 张";
