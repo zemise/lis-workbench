@@ -14,6 +14,7 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 namespace search {
@@ -23,6 +24,7 @@ constexpr int IDC_TREND_ITEM = 5101;
 constexpr int IDC_TREND_LIST = 5102;
 constexpr int IDC_TREND_CHART = 5103;
 constexpr int IDC_TREND_EXPORT = 5104;
+constexpr UINT WM_TREND_LOADED = WM_APP + 51;
 
 struct TrendWindowContext {
     DbSettings settings;
@@ -36,6 +38,14 @@ struct TrendWindowContext {
     std::vector<TrendPoint> points;
     std::vector<TrendItemOption> items;
     std::string selected_item_code;
+    bool loading = false;
+};
+
+struct TrendLoadResult {
+    bool ok = false;
+    std::string error;
+    std::vector<TrendPoint> points;
+    std::vector<TrendItemOption> items;
 };
 
 void add_column(HWND list, int index, const wchar_t* title, int width) {
@@ -235,6 +245,10 @@ bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path)
 }
 
 void export_checked_items(TrendWindowContext& ctx) {
+    if (ctx.loading) {
+        MessageBoxW(ctx.hwnd, L"趋势数据仍在加载，请稍后再导出。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
     const auto codes = checked_item_codes(ctx);
     if (codes.empty()) {
         MessageBoxW(ctx.hwnd, L"请先勾选需要导出的项目。", L"趋势图提示", MB_ICONWARNING);
@@ -284,13 +298,22 @@ void export_checked_items(TrendWindowContext& ctx) {
     MessageBoxW(ctx.hwnd, L"导出完成。", L"趋势图", MB_ICONINFORMATION);
 }
 
+void draw_centered_text(HDC dc, const RECT& rect, const wchar_t* text) {
+    DrawTextW(dc, text, -1, const_cast<RECT*>(&rect), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
 void draw_chart(HWND hwnd, HDC dc) {
     auto* ctx = reinterpret_cast<TrendWindowContext*>(GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA));
     RECT rect{};
     GetClientRect(hwnd, &rect);
     if (!ctx) {
         FillRect(dc, &rect, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
-        DrawTextW(dc, L"趋势数据未加载", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        draw_centered_text(dc, rect, L"趋势数据未加载");
+        return;
+    }
+    if (ctx->loading) {
+        FillRect(dc, &rect, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+        draw_centered_text(dc, rect, L"趋势数据加载中...");
         return;
     }
     draw_trend_chart(hwnd, dc, numeric_points(*ctx));
@@ -309,13 +332,35 @@ LRESULT CALLBACK chart_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-void load_trend_data(TrendWindowContext& ctx) {
-    std::string error;
-    if (!query_trend_points(ctx.settings, ctx.input, ctx.points, error)) {
-        MessageBoxW(ctx.hwnd, utf8_to_wide(error).c_str(), L"趋势查询失败", MB_ICONERROR);
+void begin_load_trend_data(TrendWindowContext& ctx) {
+    ctx.loading = true;
+    EnableWindow(ctx.export_button, FALSE);
+    InvalidateRect(ctx.chart, nullptr, TRUE);
+    const HWND hwnd = ctx.hwnd;
+    const DbSettings settings = ctx.settings;
+    const QueryInput input = ctx.input;
+    std::thread([hwnd, settings, input]() {
+        auto* result = new TrendLoadResult;
+        result->ok = query_trend_points(settings, input, result->points, result->error);
+        if (result->ok) {
+            result->items = trend_item_options(result->points);
+        }
+        if (!PostMessageW(hwnd, WM_TREND_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
+}
+
+void finish_load_trend_data(TrendWindowContext& ctx, std::unique_ptr<TrendLoadResult> result) {
+    ctx.loading = false;
+    EnableWindow(ctx.export_button, TRUE);
+    if (!result->ok) {
+        MessageBoxW(ctx.hwnd, utf8_to_wide(result->error).c_str(), L"趋势查询失败", MB_ICONERROR);
+        InvalidateRect(ctx.chart, nullptr, TRUE);
         return;
     }
-    ctx.items = trend_item_options(ctx.points);
+    ctx.points = std::move(result->points);
+    ctx.items = std::move(result->items);
     fill_item_list(ctx);
     fill_trend_list(ctx);
     InvalidateRect(ctx.chart, nullptr, TRUE);
@@ -373,9 +418,17 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 SendMessageW(ctx->list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
             }
             layout_trend_window(*ctx);
-            load_trend_data(*ctx);
+            begin_load_trend_data(*ctx);
             return 0;
         }
+        case WM_TREND_LOADED:
+            if (ctx) {
+                std::unique_ptr<TrendLoadResult> result(reinterpret_cast<TrendLoadResult*>(lparam));
+                finish_load_trend_data(*ctx, std::move(result));
+            } else {
+                delete reinterpret_cast<TrendLoadResult*>(lparam);
+            }
+            return 0;
         case WM_SIZE:
             if (ctx) {
                 layout_trend_window(*ctx);
