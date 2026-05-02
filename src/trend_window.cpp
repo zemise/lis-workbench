@@ -152,8 +152,73 @@ std::string csv_escape(const std::string& text) {
     return out;
 }
 
-bool choose_export_path(HWND owner, std::wstring& path) {
-    wchar_t buffer[MAX_PATH] = L"trend_export.csv";
+std::string sanitize_filename_part(std::string text) {
+    text = trim(text);
+    for (char& ch : text) {
+        switch (ch) {
+            case '\\':
+            case '/':
+            case ':':
+            case '*':
+            case '?':
+            case '"':
+            case '<':
+            case '>':
+            case '|':
+                ch = '_';
+                break;
+            default:
+                break;
+        }
+    }
+    return text;
+}
+
+std::string query_date_label(const QueryInput& input) {
+    const auto start = sanitize_filename_part(input.start_date);
+    const auto end = sanitize_filename_part(input.end_date);
+    if (start.empty()) {
+        return end;
+    }
+    if (end.empty() || start == end) {
+        return start;
+    }
+    return start + "至" + end;
+}
+
+std::wstring default_export_filename(const QueryInput& input) {
+    std::vector<std::string> parts;
+    const auto name = sanitize_filename_part(input.patient_name);
+    const auto patient_no = sanitize_filename_part(input.patient_no);
+    const auto date = query_date_label(input);
+    if (!name.empty()) {
+        parts.push_back(name);
+    }
+    if (!patient_no.empty()) {
+        parts.push_back(patient_no);
+    }
+    if (!date.empty()) {
+        parts.push_back(date);
+    }
+    if (parts.empty()) {
+        parts.push_back("trend_export");
+    }
+
+    std::string filename;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) {
+            filename += "-";
+        }
+        filename += parts[i];
+    }
+    filename += ".csv";
+    return utf8_to_wide(filename);
+}
+
+bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path) {
+    wchar_t buffer[MAX_PATH] = {};
+    const auto default_name = default_export_filename(input);
+    lstrcpynW(buffer, default_name.c_str(), MAX_PATH);
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
@@ -177,7 +242,7 @@ void export_checked_items(TrendWindowContext& ctx) {
     }
 
     std::wstring path;
-    if (!choose_export_path(ctx.hwnd, path)) {
+    if (!choose_export_path(ctx.hwnd, ctx.input, path)) {
         return;
     }
 
