@@ -301,13 +301,13 @@ void show_trend(HWND owner) {
         return;
     }
     if (!g_has_last_query_input || g_report_rows.empty()) {
-        MessageBoxW(owner, L"请先查询出同一病人的结果后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+        MessageBoxW(owner, L"请先查询出同一病人的结果后再打开趋势图。", L"趋势图提示", MB_ICONWARNING);
         return;
     }
 
     search::QueryInput input = g_last_query_input;
     if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty()) {
-        MessageBoxW(owner, L"上次查询未使用病人姓名或病人号，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+        MessageBoxW(owner, L"上次查询未使用病人姓名或病人号，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图提示", MB_ICONWARNING);
         return;
     }
     search::show_trend_window(owner,
