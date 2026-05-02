@@ -27,7 +27,7 @@ add_executable(result_search
 target_include_directories(result_search PRIVATE src)
 
 if(WIN32)
-    target_link_libraries(result_search PRIVATE odbc32 comctl32 comdlg32 gdiplus)
+    target_link_libraries(result_search PRIVATE odbc32 comctl32 comdlg32 gdiplus shell32 ole32)
     target_compile_definitions(result_search PRIVATE UNICODE _UNICODE)
     if(MINGW)
         target_link_options(result_search PRIVATE -municode -static -static-libgcc -static-libstdc++)

@@ -9,6 +9,7 @@
 #include <commdlg.h>
 #include <commctrl.h>
 #include <gdiplus.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -233,9 +234,13 @@ std::wstring default_chart_filename(const QueryInput& input, const TrendItemOpti
     if (filename.size() >= 4 && filename.substr(filename.size() - 4) == L".csv") {
         filename.resize(filename.size() - 4);
     }
-    if (item && !trim(item->item_name).empty()) {
+    if (item) {
         filename += L"-";
-        filename += utf8_to_wide(sanitize_filename_part(item->item_name));
+        filename += utf8_to_wide(sanitize_filename_part(item->item_code));
+        if (!trim(item->item_name).empty()) {
+            filename += L"-";
+            filename += utf8_to_wide(sanitize_filename_part(item->item_name));
+        }
     }
     filename += L".png";
     return filename;
@@ -265,6 +270,33 @@ bool choose_export_path(HWND owner, const QueryInput& input, std::wstring& path)
                             L"CSV 文件 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0",
                             L"csv",
                             path);
+}
+
+bool choose_export_folder(HWND owner, std::wstring& folder) {
+    const HRESULT co_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool should_uninitialize = SUCCEEDED(co_result);
+    BROWSEINFOW bi{};
+    bi.hwndOwner = owner;
+    bi.lpszTitle = L"请选择图片导出文件夹";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) {
+        if (should_uninitialize) {
+            CoUninitialize();
+        }
+        return false;
+    }
+    wchar_t buffer[MAX_PATH] = {};
+    const bool ok = SHGetPathFromIDListW(pidl, buffer) == TRUE;
+    CoTaskMemFree(pidl);
+    if (should_uninitialize) {
+        CoUninitialize();
+    }
+    if (!ok) {
+        return false;
+    }
+    folder = buffer;
+    return true;
 }
 
 void export_checked_items(TrendWindowContext& ctx) {
@@ -321,13 +353,23 @@ void export_checked_items(TrendWindowContext& ctx) {
     MessageBoxW(ctx.hwnd, L"导出完成。", L"趋势图", MB_ICONINFORMATION);
 }
 
-const TrendItemOption* selected_item_option(const TrendWindowContext& ctx) {
+const TrendItemOption* item_option_by_code(const TrendWindowContext& ctx, const std::string& item_code) {
     for (const auto& item : ctx.items) {
-        if (item.item_code == ctx.selected_item_code) {
+        if (item.item_code == item_code) {
             return &item;
         }
     }
     return nullptr;
+}
+
+std::vector<const TrendPoint*> numeric_points_for_item(const TrendWindowContext& ctx, const std::string& item_code) {
+    std::vector<const TrendPoint*> out;
+    for (const auto& point : ctx.points) {
+        if (point.item_code == item_code && point.has_numeric_value) {
+            out.push_back(&point);
+        }
+    }
+    return out;
 }
 
 int get_encoder_clsid(const wchar_t* mime_type, CLSID& clsid) {
@@ -350,10 +392,11 @@ int get_encoder_clsid(const wchar_t* mime_type, CLSID& clsid) {
     return -1;
 }
 
-bool save_current_chart_png(TrendWindowContext& ctx, const std::wstring& path) {
-    const auto points = numeric_points(ctx);
+bool save_chart_png(HWND owner, const std::vector<const TrendPoint*>& points, const std::wstring& path, bool show_point_warning) {
     if (points.size() < 2) {
-        MessageBoxW(ctx.hwnd, L"当前项目不足两个有效数值点，无法导出图片。", L"趋势图提示", MB_ICONWARNING);
+        if (show_point_warning) {
+            MessageBoxW(owner, L"当前项目不足两个有效数值点，无法导出图片。", L"趋势图提示", MB_ICONWARNING);
+        }
         return false;
     }
 
@@ -362,7 +405,7 @@ bool save_current_chart_png(TrendWindowContext& ctx, const std::wstring& path) {
     ULONG_PTR token = 0;
     Gdiplus::GdiplusStartupInput startup_input;
     if (Gdiplus::GdiplusStartup(&token, &startup_input, nullptr) != Gdiplus::Ok) {
-        MessageBoxW(ctx.hwnd, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
+        MessageBoxW(owner, L"GDI+ 初始化失败，无法导出图片。", L"趋势图", MB_ICONERROR);
         return false;
     }
 
@@ -383,32 +426,61 @@ bool save_current_chart_png(TrendWindowContext& ctx, const std::wstring& path) {
     ReleaseDC(nullptr, screen_dc);
     Gdiplus::GdiplusShutdown(token);
     if (!ok) {
-        MessageBoxW(ctx.hwnd, L"PNG 图片保存失败。", L"趋势图", MB_ICONERROR);
+        MessageBoxW(owner, L"PNG 图片保存失败。", L"趋势图", MB_ICONERROR);
     }
     return ok;
 }
 
-void export_current_chart_image(TrendWindowContext& ctx) {
+std::wstring join_path(const std::wstring& folder, const std::wstring& filename) {
+    if (folder.empty()) {
+        return filename;
+    }
+    if (folder.back() == L'\\' || folder.back() == L'/') {
+        return folder + filename;
+    }
+    return folder + L"\\" + filename;
+}
+
+void export_checked_chart_images(TrendWindowContext& ctx) {
     if (ctx.loading) {
         MessageBoxW(ctx.hwnd, L"趋势数据仍在加载，请稍后再导出图片。", L"趋势图提示", MB_ICONWARNING);
         return;
     }
-    if (ctx.selected_item_code.empty()) {
-        MessageBoxW(ctx.hwnd, L"请先选择需要导出的项目。", L"趋势图提示", MB_ICONWARNING);
+    const auto codes = checked_item_codes(ctx);
+    if (codes.empty()) {
+        MessageBoxW(ctx.hwnd, L"请先勾选需要导出的项目。", L"趋势图提示", MB_ICONWARNING);
         return;
     }
 
-    std::wstring path;
-    if (!choose_save_path(ctx.hwnd,
-                          default_chart_filename(ctx.input, selected_item_option(ctx)),
-                          L"PNG 图片 (*.png)\0*.png\0所有文件 (*.*)\0*.*\0",
-                          L"png",
-                          path)) {
+    std::wstring folder;
+    if (!choose_export_folder(ctx.hwnd, folder)) {
         return;
     }
-    if (save_current_chart_png(ctx, path)) {
-        MessageBoxW(ctx.hwnd, L"图片导出完成。", L"趋势图", MB_ICONINFORMATION);
+
+    int exported = 0;
+    int skipped = 0;
+    for (const auto& item : ctx.items) {
+        if (codes.find(item.item_code) == codes.end()) {
+            continue;
+        }
+        const auto points = numeric_points_for_item(ctx, item.item_code);
+        if (points.size() < 2) {
+            ++skipped;
+            continue;
+        }
+        if (save_chart_png(ctx.hwnd, points, join_path(folder, default_chart_filename(ctx.input, &item)), false)) {
+            ++exported;
+        } else {
+            ++skipped;
+        }
     }
+
+    std::wstringstream message;
+    message << L"图片导出完成：" << exported << L" 张";
+    if (skipped > 0) {
+        message << L"，跳过：" << skipped << L" 项";
+    }
+    MessageBoxW(ctx.hwnd, message.str().c_str(), L"趋势图", MB_ICONINFORMATION);
 }
 
 void draw_centered_text(HDC dc, const RECT& rect, const wchar_t* text) {
@@ -514,7 +586,7 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                                              0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
             ctx->export_button = CreateWindowExW(0, L"BUTTON", L"导出勾选项目", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                                  0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT), GetModuleHandleW(nullptr), nullptr);
-            ctx->export_image_button = CreateWindowExW(0, L"BUTTON", L"导出当前图片", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            ctx->export_image_button = CreateWindowExW(0, L"BUTTON", L"导出勾选图片", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                                        0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT_IMAGE), GetModuleHandleW(nullptr), nullptr);
             ctx->chart = CreateWindowExW(WS_EX_CLIENTEDGE, L"ResultTrendChart", L"", WS_CHILD | WS_VISIBLE,
                                         0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_CHART), GetModuleHandleW(nullptr), nullptr);
@@ -560,7 +632,7 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 return 0;
             }
             if (LOWORD(wparam) == IDC_TREND_EXPORT_IMAGE && ctx) {
-                export_current_chart_image(*ctx);
+                export_checked_chart_images(*ctx);
                 return 0;
             }
             break;
