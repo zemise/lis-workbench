@@ -103,15 +103,20 @@ std::wstring format_value(double value, int precision) {
     return ss.str();
 }
 
-std::wstring format_time_label(std::time_t time) {
+std::tm local_time(std::time_t time) {
     std::tm tm{};
 #ifdef _MSC_VER
     localtime_s(&tm, &time);
 #else
     tm = *std::localtime(&time);
 #endif
+    return tm;
+}
+
+std::wstring format_time_part(std::time_t time, const wchar_t* format) {
+    const auto tm = local_time(time);
     wchar_t buffer[32] = {};
-    std::wcsftime(buffer, 32, L"%m-%d %H:%M", &tm);
+    std::wcsftime(buffer, 32, format, &tm);
     return buffer;
 }
 
@@ -175,6 +180,12 @@ std::wstring chart_title(const PlotPoint& point) {
 
 void draw_text(HDC dc, int x, int y, const std::wstring& text) {
     TextOutW(dc, x, y, text.c_str(), static_cast<int>(text.size()));
+}
+
+void draw_centered_at(HDC dc, int center_x, int y, const std::wstring& text) {
+    SIZE size{};
+    GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &size);
+    draw_text(dc, center_x - size.cx / 2, y, text);
 }
 
 void draw_centered_text(HDC dc, const RECT& rect, const wchar_t* text) {
@@ -254,10 +265,8 @@ void draw_time_axis(HDC dc, const RECT& plot, const std::vector<PlotPoint>& poin
         last_index = index;
         const int x = x_for_index(plot, index, total);
         draw_line(dc, x, plot.bottom, x, plot.bottom + 4, RGB(40, 40, 40));
-        const auto label = format_time_label(points[index].time);
-        SIZE size{};
-        GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &size);
-        draw_text(dc, x - size.cx / 2, plot.bottom + 8, label);
+        draw_centered_at(dc, x, plot.bottom + 8, format_time_part(points[index].time, L"%m-%d"));
+        draw_centered_at(dc, x, plot.bottom + 24, format_time_part(points[index].time, L"%H:%M"));
     }
 }
 
@@ -333,7 +342,7 @@ void draw_trend_chart(HWND hwnd, HDC dc, const std::vector<const TrendPoint*>& p
     draw_grid_and_axes(dc, plot, min_value, max_value, precision);
     draw_time_axis(dc, plot, plot_points);
 
-    draw_text(dc, (plot.left + plot.right) / 2 - 86, rect.bottom - 22, L"检测日期（按结果顺序等距）");
+    draw_text(dc, (plot.left + plot.right) / 2 - 86, rect.bottom - 16, L"检测日期（按结果顺序等距）");
     const std::string unit = trim_copy(plot_points.front().source->unit);
     const auto y_title = utf8_to_wide(unit.empty() ? "结果值" : "结果值 (" + unit + ")");
     draw_text(dc, 8, plot.top - 30, y_title);
