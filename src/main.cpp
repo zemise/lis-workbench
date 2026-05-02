@@ -295,45 +295,6 @@ void run_query() {
     set_status(search::utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
 }
 
-bool fill_unique_patient_identity_from_results(search::QueryInput& input) {
-    std::string unique_name;
-    std::string unique_patient_id;
-    bool has_name = false;
-    bool has_patient_id = false;
-    for (const auto& row : g_report_rows) {
-        const auto name = search::trim(row.name);
-        if (!name.empty()) {
-            if (!has_name) {
-                unique_name = name;
-                has_name = true;
-            } else if (unique_name != name) {
-                return false;
-            }
-        }
-
-        const auto patient_id = search::trim(row.reg_no);
-        if (!patient_id.empty()) {
-            if (!has_patient_id) {
-                unique_patient_id = patient_id;
-                has_patient_id = true;
-            } else if (unique_patient_id != patient_id) {
-                return false;
-            }
-        }
-    }
-
-    if (!has_name && !has_patient_id) {
-        return false;
-    }
-    if (search::trim(input.patient_name).empty() && has_name) {
-        input.patient_name = unique_name;
-    }
-    if (search::trim(input.patient_id).empty() && has_patient_id) {
-        input.patient_id = unique_patient_id;
-    }
-    return true;
-}
-
 void show_trend(HWND owner) {
     if (search::build_connection_string_w(g_db_settings).empty()) {
         MessageBoxW(owner, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
@@ -345,9 +306,8 @@ void show_trend(HWND owner) {
     }
 
     search::QueryInput input = g_last_query_input;
-    if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty() &&
-        !fill_unique_patient_identity_from_results(input)) {
-        MessageBoxW(owner, L"当前查询结果无法确认是同一病人，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+    if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty()) {
+        MessageBoxW(owner, L"上次查询未使用病人姓名或病人号，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
         return;
     }
     search::show_trend_window(owner,
