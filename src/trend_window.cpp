@@ -6,10 +6,14 @@
 #include "trend_chart_renderer.h"
 #include "trend_core.h"
 
+#include <commdlg.h>
 #include <commctrl.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <vector>
 
 namespace search {
@@ -18,13 +22,15 @@ namespace {
 constexpr int IDC_TREND_ITEM = 5101;
 constexpr int IDC_TREND_LIST = 5102;
 constexpr int IDC_TREND_CHART = 5103;
+constexpr int IDC_TREND_EXPORT = 5104;
 
 struct TrendWindowContext {
     DbSettings settings;
     QueryInput input;
     HFONT font = nullptr;
     HWND hwnd = nullptr;
-    HWND item_combo = nullptr;
+    HWND item_list = nullptr;
+    HWND export_button = nullptr;
     HWND chart = nullptr;
     HWND list = nullptr;
     std::vector<TrendPoint> points;
@@ -86,8 +92,7 @@ void fill_trend_list(TrendWindowContext& ctx) {
     }
 }
 
-void refresh_selected_item(TrendWindowContext& ctx) {
-    const int index = static_cast<int>(SendMessageW(ctx.item_combo, CB_GETCURSEL, 0, 0));
+void refresh_selected_item(TrendWindowContext& ctx, int index) {
     if (index >= 0 && static_cast<size_t>(index) < ctx.items.size()) {
         ctx.selected_item_code = ctx.items[static_cast<size_t>(index)].item_code;
     }
@@ -95,19 +100,123 @@ void refresh_selected_item(TrendWindowContext& ctx) {
     InvalidateRect(ctx.chart, nullptr, TRUE);
 }
 
-void fill_item_combo(TrendWindowContext& ctx) {
-    SendMessageW(ctx.item_combo, CB_RESETCONTENT, 0, 0);
-    for (const auto& item : ctx.items) {
+void fill_item_list(TrendWindowContext& ctx) {
+    ListView_DeleteAllItems(ctx.item_list);
+    for (size_t i = 0; i < ctx.items.size(); ++i) {
+        const auto& item = ctx.items[i];
         std::string label = item.item_code + " - " + item.item_name;
         if (!item.unit.empty()) {
             label += " (" + item.unit + ")";
         }
-        SendMessageW(ctx.item_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(utf8_to_wide(label).c_str()));
+        LVITEMW row{};
+        row.mask = LVIF_TEXT;
+        row.iItem = static_cast<int>(i);
+        auto wide = utf8_to_wide(label);
+        row.pszText = wide.data();
+        ListView_InsertItem(ctx.item_list, &row);
+        ListView_SetCheckState(ctx.item_list, static_cast<int>(i), i == 0);
     }
     if (!ctx.items.empty()) {
-        SendMessageW(ctx.item_combo, CB_SETCURSEL, 0, 0);
         ctx.selected_item_code = ctx.items.front().item_code;
+        ListView_SetItemState(ctx.item_list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     }
+}
+
+std::set<std::string> checked_item_codes(const TrendWindowContext& ctx) {
+    std::set<std::string> codes;
+    for (size_t i = 0; i < ctx.items.size(); ++i) {
+        if (ListView_GetCheckState(ctx.item_list, static_cast<int>(i))) {
+            codes.insert(ctx.items[i].item_code);
+        }
+    }
+    return codes;
+}
+
+std::string csv_escape(const std::string& text) {
+    bool quote = text.find_first_of(",\"\r\n") != std::string::npos;
+    std::string out;
+    out.reserve(text.size() + 2);
+    if (quote) {
+        out.push_back('"');
+    }
+    for (const char ch : text) {
+        if (ch == '"') {
+            out += "\"\"";
+        } else {
+            out.push_back(ch);
+        }
+    }
+    if (quote) {
+        out.push_back('"');
+    }
+    return out;
+}
+
+bool choose_export_path(HWND owner, std::wstring& path) {
+    wchar_t buffer[MAX_PATH] = L"trend_export.csv";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buffer;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"csv";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileNameW(&ofn)) {
+        return false;
+    }
+    path = buffer;
+    return true;
+}
+
+void export_checked_items(TrendWindowContext& ctx) {
+    const auto codes = checked_item_codes(ctx);
+    if (codes.empty()) {
+        MessageBoxW(ctx.hwnd, L"请先勾选需要导出的项目。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+
+    std::wstring path;
+    if (!choose_export_path(ctx.hwnd, path)) {
+        return;
+    }
+
+    FILE* file = nullptr;
+#ifdef _MSC_VER
+    _wfopen_s(&file, path.c_str(), L"wb");
+#else
+    file = _wfopen(path.c_str(), L"wb");
+#endif
+    if (!file) {
+        MessageBoxW(ctx.hwnd, L"导出文件创建失败。", L"趋势图", MB_ICONERROR);
+        return;
+    }
+
+    std::ostringstream csv;
+    csv << "\xEF\xBB\xBF";
+    csv << "报告时间,项目代码,项目名称,英文名,结果,单位,下限,上限,NORMAL,报告号,条码号,样本号,患者姓名\n";
+    for (const auto& point : ctx.points) {
+        if (codes.find(point.item_code) == codes.end()) {
+            continue;
+        }
+        csv << csv_escape(point.report_time) << ','
+            << csv_escape(point.item_code) << ','
+            << csv_escape(point.item_name) << ','
+            << csv_escape(point.item_eng) << ','
+            << csv_escape(point.result_text) << ','
+            << csv_escape(point.unit) << ','
+            << csv_escape(point.lower_bound) << ','
+            << csv_escape(point.upper_bound) << ','
+            << csv_escape(point.normal) << ','
+            << csv_escape(point.rep_no) << ','
+            << csv_escape(point.txm_no) << ','
+            << csv_escape(point.oper_no) << ','
+            << csv_escape(point.patient_name) << '\n';
+    }
+    const auto text = csv.str();
+    fwrite(text.data(), 1, text.size(), file);
+    fclose(file);
+    MessageBoxW(ctx.hwnd, L"导出完成。", L"趋势图", MB_ICONINFORMATION);
 }
 
 void draw_chart(HWND hwnd, HDC dc) {
@@ -142,7 +251,7 @@ void load_trend_data(TrendWindowContext& ctx) {
         return;
     }
     ctx.items = trend_item_options(ctx.points);
-    fill_item_combo(ctx);
+    fill_item_list(ctx);
     fill_trend_list(ctx);
     InvalidateRect(ctx.chart, nullptr, TRUE);
 }
@@ -153,13 +262,17 @@ void layout_trend_window(TrendWindowContext& ctx) {
     const int client_w = static_cast<int>(rc.right - rc.left);
     const int client_h = static_cast<int>(rc.bottom - rc.top);
     const int margin = 10;
-    const int combo_h = 26;
-    const int content_w = std::max(280, client_w - margin * 2);
-    const int chart_h = std::max(180, client_h / 2);
-    MoveWindow(ctx.item_combo, margin, margin, content_w, combo_h, TRUE);
-    MoveWindow(ctx.chart, margin, margin + combo_h + 8, content_w, chart_h, TRUE);
-    MoveWindow(ctx.list, margin, margin + combo_h + chart_h + 16, content_w,
-               std::max(120, client_h - (margin + combo_h + chart_h + 26)), TRUE);
+    const int side_w = std::min(320, std::max(240, client_w / 4));
+    const int export_h = 32;
+    const int gap = 10;
+    const int left_w = std::max(360, client_w - margin * 3 - side_w);
+    const int chart_h = std::max(220, client_h / 2 + 20);
+    MoveWindow(ctx.chart, margin, margin, left_w, chart_h, TRUE);
+    MoveWindow(ctx.list, margin, margin + chart_h + gap, left_w,
+               std::max(120, client_h - (margin + chart_h + gap + margin)), TRUE);
+    MoveWindow(ctx.item_list, margin * 2 + left_w, margin, side_w,
+               std::max(120, client_h - margin * 2 - export_h - gap), TRUE);
+    MoveWindow(ctx.export_button, margin * 2 + left_w, client_h - margin - export_h, side_w, export_h, TRUE);
 }
 
 LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -170,12 +283,16 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             ctx = reinterpret_cast<TrendWindowContext*>(createstruct->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
             ctx->hwnd = hwnd;
-            ctx->item_combo = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            ctx->item_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                              0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
+            ctx->export_button = CreateWindowExW(0, L"BUTTON", L"导出勾选项目", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                                 0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT), GetModuleHandleW(nullptr), nullptr);
             ctx->chart = CreateWindowExW(WS_EX_CLIENTEDGE, L"ResultTrendChart", L"", WS_CHILD | WS_VISIBLE,
                                         0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_CHART), GetModuleHandleW(nullptr), nullptr);
             ctx->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                        0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_LIST), GetModuleHandleW(nullptr), nullptr);
+            ListView_SetExtendedListViewStyle(ctx->item_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_CHECKBOXES);
+            add_column(ctx->item_list, 0, L"项目", 260);
             ListView_SetExtendedListViewStyle(ctx->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
             add_column(ctx->list, 0, L"时间", 140);
             add_column(ctx->list, 1, L"项目", 150);
@@ -185,7 +302,8 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             add_column(ctx->list, 5, L"上限", 80);
             add_column(ctx->list, 6, L"报告号", 90);
             if (ctx->font) {
-                SendMessageW(ctx->item_combo, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->item_list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->export_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->chart, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
             }
@@ -199,9 +317,21 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             }
             return 0;
         case WM_COMMAND:
-            if (LOWORD(wparam) == IDC_TREND_ITEM && HIWORD(wparam) == CBN_SELCHANGE && ctx) {
-                refresh_selected_item(*ctx);
+            if (LOWORD(wparam) == IDC_TREND_EXPORT && ctx) {
+                export_checked_items(*ctx);
                 return 0;
+            }
+            break;
+        case WM_NOTIFY:
+            if (ctx) {
+                auto* hdr = reinterpret_cast<NMHDR*>(lparam);
+                if (hdr->idFrom == IDC_TREND_ITEM && hdr->code == LVN_ITEMCHANGED) {
+                    auto* item = reinterpret_cast<NMLISTVIEW*>(lparam);
+                    if ((item->uNewState & LVIS_SELECTED) != 0) {
+                        refresh_selected_item(*ctx, item->iItem);
+                    }
+                    return 0;
+                }
             }
             break;
         case WM_DESTROY:
