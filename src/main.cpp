@@ -70,6 +70,8 @@ int& g_font_size = g_state.settings.ui.font_size;
 int& g_splitter_x = g_state.settings.ui.splitter_x;
 std::vector<search::ReportRow>& g_report_rows = g_state.report_rows;
 std::vector<search::ResultRow>& g_result_rows = g_state.result_rows;
+search::QueryInput g_last_query_input;
+bool g_has_last_query_input = false;
 std::vector<search::RoomOption>& g_room_options = g_state.room_options;
 std::vector<search::PatientTypeOption>& g_patient_type_options = g_state.patient_type_options;
 std::vector<search::MachineOption>& g_machine_options = g_state.machine_options;
@@ -287,8 +289,49 @@ void run_query() {
         return;
     }
 
+    g_last_query_input = input;
+    g_has_last_query_input = true;
     search::present_report_rows(g_ui, g_report_rows);
     set_status(search::utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
+}
+
+bool fill_unique_patient_identity_from_results(search::QueryInput& input) {
+    std::string unique_name;
+    std::string unique_patient_id;
+    bool has_name = false;
+    bool has_patient_id = false;
+    for (const auto& row : g_report_rows) {
+        const auto name = search::trim(row.name);
+        if (!name.empty()) {
+            if (!has_name) {
+                unique_name = name;
+                has_name = true;
+            } else if (unique_name != name) {
+                return false;
+            }
+        }
+
+        const auto patient_id = search::trim(row.reg_no);
+        if (!patient_id.empty()) {
+            if (!has_patient_id) {
+                unique_patient_id = patient_id;
+                has_patient_id = true;
+            } else if (unique_patient_id != patient_id) {
+                return false;
+            }
+        }
+    }
+
+    if (!has_name && !has_patient_id) {
+        return false;
+    }
+    if (search::trim(input.patient_name).empty() && has_name) {
+        input.patient_name = unique_name;
+    }
+    if (search::trim(input.patient_id).empty() && has_patient_id) {
+        input.patient_id = unique_patient_id;
+    }
+    return true;
 }
 
 void show_trend(HWND owner) {
@@ -296,9 +339,15 @@ void show_trend(HWND owner) {
         MessageBoxW(owner, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return;
     }
-    const search::QueryInput input = search::build_query_input(g_ui, g_state);
-    if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty()) {
-        MessageBoxW(owner, L"请填写病人姓名或病人号后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+    if (!g_has_last_query_input || g_report_rows.empty()) {
+        MessageBoxW(owner, L"请先查询出同一病人的结果后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+        return;
+    }
+
+    search::QueryInput input = g_last_query_input;
+    if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty() &&
+        !fill_unique_patient_identity_from_results(input)) {
+        MessageBoxW(owner, L"当前查询结果无法确认是同一病人，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
         return;
     }
     search::show_trend_window(owner,
