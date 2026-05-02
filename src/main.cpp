@@ -297,6 +297,10 @@ void show_trend(HWND owner) {
         return;
     }
     const search::QueryInput input = search::build_query_input(g_ui, g_state);
+    if (search::trim(input.patient_name).empty() || search::trim(input.patient_no).empty()) {
+        MessageBoxW(owner, L"请同时填写病人姓名和病人号后再打开趋势图。", L"趋势图防呆提示", MB_ICONWARNING);
+        return;
+    }
     search::show_trend_window(owner,
                               g_ui_context.ui_font ? g_ui_context.ui_font : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
                               g_db_settings,
