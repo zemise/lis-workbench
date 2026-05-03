@@ -54,10 +54,5 @@ if(BUILD_QT_GUI)
         src_qt/main.cpp
     )
     target_include_directories(result_search_qt PRIVATE src)
-    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets)
-
-    if(MSVC)
-        set_property(TARGET result_search_qt PROPERTY
-                     WIN32_EXECUTABLE TRUE)
-    endif()
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain)
 endif()
