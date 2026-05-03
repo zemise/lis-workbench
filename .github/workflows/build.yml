@@ -77,7 +77,7 @@ jobs:
 
       - name: Build Qt
         shell: bash
-        run: cmake --build build/windows-qt --config Release -j
+        run: cmake --build build/windows-qt --target result_search_qt --config Release -j
 
       - name: Package NSIS installer (Qt)
         shell: cmd
