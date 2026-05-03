@@ -88,7 +88,7 @@ jobs:
             /DAPP_VERSION=${{ steps.version.outputs.value }} ^
             /DAPP_EXE=result_search_qt.exe ^
             /DBUILD_DIR=..\build\windows-qt\Release ^
-            /DOUTPUT_DIR=out\windows\installer ^
+            /DOUTPUT_DIR=..\out\windows\installer ^
             /DOUTPUT_NAME=ResultSearch-Qt-Setup.exe ^
             packaging\ResultSearch.nsi
 
