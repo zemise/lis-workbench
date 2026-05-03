@@ -62,6 +62,8 @@ struct MainUiHandles {
     HWND exit_button = nullptr;
 };
 
+float dpi_scale_factor(HWND hwnd);
+
 HWND create_label(HWND parent, const wchar_t* text, int x, int y, int w, int h);
 HWND create_groupbox(HWND parent, const wchar_t* text, int x, int y, int w, int h);
 HWND create_edit(HWND parent, int id, int x, int y, int w, int h);

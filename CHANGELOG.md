@@ -1,5 +1,23 @@
 # Changelog
 
+## v2026.05.03
+
+- 添加应用图标（16+32px），所有窗口标题栏/任务栏/Alt+Tab 统一显示。
+- 程序编译为 Windows GUI 子系统，启动不再弹出终端窗口。
+- 安装包（NSIS）嵌入应用图标。
+- 增加 DPI 感知支持（PerMonitorV2），高 DPI 显示器下界面清晰不模糊。
+- 所有布局坐标按 DPI 缩放，适配 100%/125%/150%/200% 等多种缩放比。
+- 拖拽 splitter 时防闪烁优化（`DeferWindowPos` 批量移动 + `WS_CLIPCHILDREN` + `WM_SETREDRAW`）。
+- 整理 `search_text.cpp` 非 Win32 fallback，标注 Qt 迁移路径。
+- 编写 `QT_MIGRATION_GUIDE.md`，明确 Qt 5.15 迁移方案与文件分类。
+- 更新 `PROJECT_STRUCTURE.md`，标注每个文件的 Qt 迁移状态。
+- 提取 `search_core` 静态库（228KB），核心层与 Win32 界面层在 CMake 中分离。
+- 拆分 `app_settings_io.*`：INI 持久化独立为 UI 层文件，核心层仅保留纯字符串 `build_connection_string_w`。
+- `search_view_state` 改为 header-only 纯数据结构，IO 逻辑移至主入口。
+- 修复 `LoadCursorW` 与 `ListView_SetItemText` 的 UNICODE 兼容问题。
+- CMake 预留 `BUILD_QT_GUI` 选项，移除 `search_view_state.cpp`（已无实现体）。
+- 版本号更新为 v2026.05.03。
+
 ## v2026.04.30.2
 
 - 完成 `LS_AS_REPORT` / `LS_AS_REPENTRY` 双列表查询链路。

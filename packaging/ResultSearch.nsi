@@ -4,7 +4,7 @@ Unicode false
 !define APP_NAME "Result Search"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.04.30.1"
+!define APP_VERSION "v2026.05.03"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
@@ -28,6 +28,8 @@ InstallDir "$PROGRAMFILES64\ResultSearch"
 RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
+Icon "..\resource\app.ico"
+UninstallIcon "..\resource\app.ico"
 
 Page directory
 Page instfiles

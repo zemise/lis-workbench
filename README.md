@@ -2,24 +2,33 @@
 
 `cpp_search` 是按截图复刻的 LIS 检验结果查询工具起步项目。
 
-当前版本：`v2026.04.30.2`
+当前版本：`v2026.05.03`
 
-项目已经整理为可长期演进的结构：
+项目已经整理为可长期演进的结构。
+详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
 
-- `main.cpp` 负责 Win32 界面与交互
-- `search_core.cpp` 负责数据库查询
-- `search_app.cpp` 负责界面无关的应用层规则，便于后续引入 Qt
-- `search_controller.cpp` 负责界面输入到查询执行的桥接，便于后续复用到 Qt
-- `search_input_view_model.cpp` 负责控件值读取、下拉回填和查询输入组装
-- `search_text.cpp` 负责公共字符串工具和 UTF-8 / 宽字符转换
-- `search_ui_context.h` 负责 UI 句柄和字体上下文
-- `search_ui_columns.h` 负责报告列表和项目明细列表列号集中定义
-- `search_ui_events.cpp` 负责 Win32 事件分发，控件 ID 通过 `MainUiIds` 注入，不在事件层硬编码
-- `search_ui_layout.cpp` 负责 Win32 主界面控件创建与布局
-- `search_ui_presenter.cpp` 负责列表填充和状态显示
-- `search_settings_dialog.cpp` 负责 Win32 设置窗口
-- `search_view_state.cpp` 负责统一收口应用状态，便于后续 Qt 数据绑定
-- `app_settings.cpp` 负责本地配置读写和连接串生成
+### 架构概要
+
+```
+┌─────────────────────┐
+│  main.cpp (Win32)   │  ← 入口层，Qt 迁移后由 src_qt/main.cpp 替代
+│  search_ui_*        │
+├─────────────────────┤
+│  search_input_*     │  ← 边界层：控件读写、事件分发、列表呈现
+│  search_settings_*  │
+│  trend_window.*     │
+├─────────────────────┤
+│  search_controller  │  ← 控制层：桥接查询请求与数据层
+├─────────────────────┤
+│  search_core        │  ← 核心层：ODBC 查询、数据映射
+│  search_app         │      Qt 迁移后原样复用
+│  app_settings       │      (ODBC → Qt SQL, INI → QSettings)
+│  search_text        │
+│  search_view_state  │
+│  trend_core         │
+└─────────────────────┘
+```
+
 - `build/`、`out/`、`result_search.ini` 视为本地产物，不纳入版本管理
 
 当前目标：
@@ -125,7 +134,7 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 - `LS_AS_ROOM`：检验科室字典。
 - `LS_AS_MACHINE`：检验仪器字典。
 
-更完整的字段对应和表关系见 [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)。
+更完整的字段对应和表关系见 [QUERY_DESIGN.md](QUERY_DESIGN.md)。
 
 ## NORMAL 码值说明
 
@@ -138,32 +147,28 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 
 说明：
 
-- 这是一条基于现场实测得到的显示规则，不是当前阶段从原程序或数据库设计文档直接推导出的语义定义。
-- 如果后续现场验证结论变化，只需要同步修改 [main.cpp](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/src/main.cpp) 中的 `result_row_color()`。
+- 这是一条基于现场实测得到的显示规则。
+- 如果后续现场验证结论变化，同步修改 `main.cpp` 中的 `result_row_color()`。
 
 ## Windows 交叉编译
 
 ```bash
-cmake -S cpp_search -B cpp_search/build/windows-x64 \
-  -DCMAKE_TOOLCHAIN_FILE=cpp_search/cmake/toolchains/mingw-w64-x86_64.cmake \
+cmake -S . -B build/windows-x64 \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build cpp_search/build/windows-x64 -j
+cmake --build build/windows-x64 -j
 ```
 
-输出：
-
-```text
-cpp_search/build/windows-x64/result_search.exe
-```
+输出：`build/windows-x64/result_search.exe`
 
 ## 项目文件
 
-- [PROJECT_STRUCTURE.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/PROJECT_STRUCTURE.md)
-- [CHANGELOG.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/CHANGELOG.md)
-- [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)
-- [QT_PREP_PLAN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QT_PREP_PLAN.md)
-- [TREND_CHART_PLAN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/TREND_CHART_PLAN.md)
+- [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
+- [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
 ## 使用说明
 

@@ -1,4 +1,5 @@
 #include "app_settings.h"
+#include "app_settings_io.h"
 #include "search_app.h"
 #include "search_controller.h"
 #include "search_input_view_model.h"
@@ -11,6 +12,7 @@
 #include "search_ui_presenter.h"
 #include "search_view_state.h"
 #include "trend_window.h"
+#include "resource.h"
 #include "version.h"
 
 #ifndef _WIN32
@@ -91,7 +93,7 @@ void save_settings_to_ini();
 LRESULT CALLBACK splitter_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
         case WM_LBUTTONDOWN:
             g_dragging_splitter = true;
@@ -145,12 +147,13 @@ void apply_font_to_window(HWND root) {
 }
 
 void load_settings() {
-    g_state = search::load_view_state();
+    g_state.ini_path = search::default_ini_path();
+    g_state.settings = search::load_settings(g_state.ini_path);
     g_font_size = clamp_font_size(g_font_size);
 }
 
 void save_settings_to_ini() {
-    search::save_view_state_settings(g_state);
+    search::save_settings(g_state.ini_path, g_state.settings);
 }
 
 COLORREF report_row_background(const search::ReportRow& row) {
@@ -336,6 +339,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_SIZE:
             search::layout_main_window(hwnd, g_ui, g_splitter_x);
             return 0;
+        case WM_DPICHANGED: {
+            auto* rect = reinterpret_cast<RECT*>(lparam);
+            SetWindowPos(hwnd, nullptr, rect->left, rect->top,
+                         rect->right - rect->left, rect->bottom - rect->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
         case WM_COMMAND: {
             search::CommandEventHandlers handlers;
             handlers.on_room_changed = [] { reload_machine_options(); };
@@ -374,6 +384,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     load_settings();
     g_ui_context.ui_font = create_ui_font(g_font_size);
     INITCOMMONCONTROLSEX icc{};
@@ -381,24 +392,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_DATE_CLASSES;
     InitCommonControlsEx(&icc);
 
-    WNDCLASSW wc{};
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = instance;
+    wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"ResultSearchWindow";
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
 
-    WNDCLASSW splitter_wc{};
+    WNDCLASSEXW splitter_wc{};
+    splitter_wc.cbSize = sizeof(splitter_wc);
     splitter_wc.lpfnWndProc = splitter_proc;
     splitter_wc.hInstance = instance;
     splitter_wc.hCursor = LoadCursor(nullptr, IDC_SIZEWE);
     splitter_wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DSHADOW + 1);
     splitter_wc.lpszClassName = L"ResultSearchSplitter";
-    RegisterClassW(&splitter_wc);
+    RegisterClassExW(&splitter_wc);
 
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, search::kAppTitle,
-                                WS_OVERLAPPEDWINDOW,
+                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1480, 760,
                                 nullptr, nullptr, instance, nullptr);
     g_ui_context.main_window = hwnd;

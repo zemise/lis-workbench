@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 
+#include "resource.h"
+#include "search_ui_layout.h"
 #include "search_text.h"
 #include "trend_chart_renderer.h"
 #include "trend_core.h"
@@ -600,18 +602,20 @@ void layout_trend_window(TrendWindowContext& ctx) {
     GetClientRect(ctx.hwnd, &rc);
     const int client_w = static_cast<int>(rc.right - rc.left);
     const int client_h = static_cast<int>(rc.bottom - rc.top);
-    const int margin = 10;
-    const int side_w = std::min(320, std::max(240, client_w / 4));
-    const int export_h = 32;
-    const int button_gap = 8;
-    const int gap = 10;
-    const int left_w = std::max(360, client_w - margin * 3 - side_w);
-    const int chart_h = std::max(220, client_h / 2 + 20);
+    const float s = search::dpi_scale_factor(ctx.hwnd);
+    auto S = [s](int v) { return static_cast<int>(v * s); };
+    const int margin = S(10);
+    const int side_w = std::min(S(320), std::max(S(240), client_w / 4));
+    const int export_h = S(32);
+    const int button_gap = S(8);
+    const int gap = S(10);
+    const int left_w = std::max(S(360), client_w - margin * 3 - side_w);
+    const int chart_h = std::max(S(220), client_h / 2 + S(20));
     MoveWindow(ctx.chart, margin, margin, left_w, chart_h, TRUE);
     MoveWindow(ctx.list, margin, margin + chart_h + gap, left_w,
-               std::max(120, client_h - (margin + chart_h + gap + margin)), TRUE);
+               std::max(S(120), client_h - (margin + chart_h + gap + margin)), TRUE);
     MoveWindow(ctx.item_list, margin * 2 + left_w, margin, side_w,
-               std::max(120, client_h - margin * 2 - export_h * 2 - button_gap - gap), TRUE);
+               std::max(S(120), client_h - margin * 2 - export_h * 2 - button_gap - gap), TRUE);
     MoveWindow(ctx.export_image_button, margin * 2 + left_w, client_h - margin - export_h * 2 - button_gap, side_w, export_h, TRUE);
     MoveWindow(ctx.export_button, margin * 2 + left_w, client_h - margin - export_h, side_w, export_h, TRUE);
 }
@@ -635,15 +639,17 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             ctx->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                        0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_LIST), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(ctx->item_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_CHECKBOXES);
-            add_column(ctx->item_list, 0, L"项目", 260);
+            const float ds = search::dpi_scale_factor(hwnd);
+            auto dS = [ds](int v) { return static_cast<int>(v * ds); };
+            add_column(ctx->item_list, 0, L"项目", dS(260));
             ListView_SetExtendedListViewStyle(ctx->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-            add_column(ctx->list, 0, L"时间", 140);
-            add_column(ctx->list, 1, L"项目", 150);
-            add_column(ctx->list, 2, L"结果", 80);
-            add_column(ctx->list, 3, L"单位", 80);
-            add_column(ctx->list, 4, L"下限", 80);
-            add_column(ctx->list, 5, L"上限", 80);
-            add_column(ctx->list, 6, L"报告号", 90);
+            add_column(ctx->list, 0, L"时间", dS(140));
+            add_column(ctx->list, 1, L"项目", dS(150));
+            add_column(ctx->list, 2, L"结果", dS(80));
+            add_column(ctx->list, 3, L"单位", dS(80));
+            add_column(ctx->list, 4, L"下限", dS(80));
+            add_column(ctx->list, 5, L"上限", dS(80));
+            add_column(ctx->list, 6, L"报告号", dS(90));
             if (ctx->font) {
                 SendMessageW(ctx->item_list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->export_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
@@ -703,21 +709,26 @@ void register_trend_classes() {
     if (registered) {
         return;
     }
-    WNDCLASSW window_class{};
+    WNDCLASSEXW window_class{};
+    window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = trend_proc;
     window_class.hInstance = GetModuleHandleW(nullptr);
-    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.hIcon = LoadIconW(window_class.hInstance, MAKEINTRESOURCEW(IDI_APP));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(window_class.hInstance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                                           GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     window_class.lpszClassName = L"ResultTrendWindow";
-    RegisterClassW(&window_class);
+    RegisterClassExW(&window_class);
 
-    WNDCLASSW chart_class{};
+    WNDCLASSEXW chart_class{};
+    chart_class.cbSize = sizeof(chart_class);
     chart_class.lpfnWndProc = chart_proc;
     chart_class.hInstance = GetModuleHandleW(nullptr);
-    chart_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    chart_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     chart_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     chart_class.lpszClassName = L"ResultTrendChart";
-    RegisterClassW(&chart_class);
+    RegisterClassExW(&chart_class);
     registered = true;
 }
 
@@ -730,9 +741,10 @@ void show_trend_window(HWND owner, HFONT font, const DbSettings& settings, const
     ctx->input = input;
     ctx->font = font;
 
+    const float s = search::dpi_scale_factor(owner);
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, L"ResultTrendWindow", L"检验结果趋势图",
                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                CW_USEDEFAULT, CW_USEDEFAULT, 980, 680,
+                                CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(980 * s), static_cast<int>(680 * s),
                                 owner, nullptr, GetModuleHandleW(nullptr), ctx);
     if (!hwnd) {
         delete ctx;

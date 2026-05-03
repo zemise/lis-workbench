@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 
+#include "resource.h"
 #include "search_ui_layout.h"
 
 #include <windows.h>
@@ -50,19 +51,21 @@ LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
             return TRUE;
         }
         case WM_CREATE: {
-            search::create_label(hwnd, L"服务器", 20, 24, 86, 22);
-            HWND server = search::create_edit(hwnd, IDC_SET_SERVER, 116, 22, 330, 24);
-            search::create_label(hwnd, L"初始数据库", 20, 58, 86, 22);
-            HWND initial_database = search::create_edit(hwnd, IDC_SET_INITIAL_DATABASE, 116, 56, 330, 24);
-            search::create_label(hwnd, L"用户名", 20, 92, 86, 22);
-            HWND user = search::create_edit(hwnd, IDC_SET_USER, 116, 90, 330, 24);
-            search::create_label(hwnd, L"密码", 20, 126, 86, 22);
-            HWND password = search::create_password_edit(hwnd, IDC_SET_PASSWORD, 116, 124, 330, 24);
-            search::create_label(hwnd, L"字号", 20, 160, 86, 22);
-            HWND font_size = search::create_edit(hwnd, IDC_SET_FONT_SIZE, 116, 158, 80, 24);
-            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", 116, 200, 92, 30);
-            search::create_button(hwnd, IDC_SET_SAVE, L"保存", 254, 200, 84, 30);
-            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", 362, 200, 84, 30);
+            const float s = search::dpi_scale_factor(hwnd);
+            auto S = [s](int v) { return static_cast<int>(v * s); };
+            search::create_label(hwnd, L"服务器", S(20), S(24), S(86), S(22));
+            HWND server = search::create_edit(hwnd, IDC_SET_SERVER, S(116), S(22), S(330), S(24));
+            search::create_label(hwnd, L"初始数据库", S(20), S(58), S(86), S(22));
+            HWND initial_database = search::create_edit(hwnd, IDC_SET_INITIAL_DATABASE, S(116), S(56), S(330), S(24));
+            search::create_label(hwnd, L"用户名", S(20), S(92), S(86), S(22));
+            HWND user = search::create_edit(hwnd, IDC_SET_USER, S(116), S(90), S(330), S(24));
+            search::create_label(hwnd, L"密码", S(20), S(126), S(86), S(22));
+            HWND password = search::create_password_edit(hwnd, IDC_SET_PASSWORD, S(116), S(124), S(330), S(24));
+            search::create_label(hwnd, L"字号", S(20), S(160), S(86), S(22));
+            HWND font_size = search::create_edit(hwnd, IDC_SET_FONT_SIZE, S(116), S(158), S(80), S(24));
+            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(200), S(92), S(30));
+            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(200), S(84), S(30));
+            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(200), S(84), S(30));
 
             set_text(server, state->settings.server);
             set_text(initial_database, state->settings.initial_database);
@@ -123,20 +126,25 @@ void show_settings_dialog(HWND owner,
                           const SettingsDialogCallbacks& callbacks) {
     static bool registered = false;
     if (!registered) {
-        WNDCLASSW wc{};
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = settings_proc;
         wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(IDI_APP));
+        wc.hIconSm = static_cast<HICON>(LoadImageW(wc.hInstance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                                     GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
         wc.lpszClassName = L"ResultSearchSettingsWindow";
-        RegisterClassW(&wc);
+        RegisterClassExW(&wc);
         registered = true;
     }
 
     auto* state = new SettingsDialogState{font, settings, font_size, callbacks};
+    const float s = search::dpi_scale_factor(owner);
     HWND win = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ResultSearchSettingsWindow", L"数据库设置",
                                WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-                               CW_USEDEFAULT, CW_USEDEFAULT, 490, 286,
+                               CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(490 * s), static_cast<int>(286 * s),
                                owner, nullptr, GetModuleHandleW(nullptr), state);
     EnableWindow(owner, FALSE);
     MSG msg{};

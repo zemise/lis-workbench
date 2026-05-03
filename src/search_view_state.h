@@ -20,7 +20,4 @@ struct ViewState {
     std::string connection_string;
 };
 
-ViewState load_view_state();
-bool save_view_state_settings(const ViewState& state);
-
 }  // namespace search
