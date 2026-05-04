@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QFileDialog>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
@@ -45,7 +47,8 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
     : QDialog(parent), db_(db), lastQuery_(lastQuery) {
     setWindowTitle(QString::fromWCharArray(L"检验结果趋势图"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
-    resize(1100, 720);
+    auto screen = QGuiApplication::primaryScreen()->availableGeometry();
+    resize(static_cast<int>(screen.width() * 0.8), static_cast<int>(screen.height() * 0.75));
     setupUi();
     loadTrendData();
 }
