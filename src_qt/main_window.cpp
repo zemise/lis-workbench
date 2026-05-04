@@ -71,9 +71,11 @@ void MainWindow::setupUi() {
     splitter_->addWidget(reportTable_);
     splitter_->addWidget(resultTable_);
     splitter_->setStretchFactor(0, 0);
-    splitter_->setStretchFactor(1, 1);
+    splitter_->setStretchFactor(1, 3);
     splitter_->setStretchFactor(2, 1);
-    splitter_->restoreState(settings_.value("UI/SplitterState").toByteArray());
+    if (!splitter_->restoreState(settings_.value("UI/SplitterState").toByteArray())) {
+        splitter_->setSizes({260, 800, 350});
+    }
 
     // Bottom bar
     auto* bottom = new QWidget;
