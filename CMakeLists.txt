@@ -64,27 +64,35 @@ if(BUILD_QT_GUI)
     # QCustomPlot 2.1.1 — single h/cpp chart library (MIT)
     set(QCP_DIR "${CMAKE_BINARY_DIR}/qcustomplot")
     file(MAKE_DIRECTORY "${QCP_DIR}")
-    if(NOT EXISTS "${QCP_DIR}/qcustomplot.h")
+    if(NOT EXISTS "${QCP_DIR}/qcustomplot.h" OR NOT EXISTS "${QCP_DIR}/qcustomplot.cpp")
         file(DOWNLOAD
             "https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz"
             "${QCP_DIR}/qcustomplot.tar.gz"
             TLS_VERIFY ON
+            STATUS QCP_DL_STATUS
         )
+        list(GET QCP_DL_STATUS 0 QCP_DL_CODE)
+        if(NOT QCP_DL_CODE EQUAL 0)
+            message(FATAL_ERROR "Failed to download QCustomPlot")
+        endif()
         file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
              DESTINATION "${QCP_DIR}")
-        # Archive may contain a subdirectory; find and move files up
-        file(GLOB_RECURSE QCP_CPP "${QCP_DIR}/qcustomplot.cpp")
-        file(GLOB_RECURSE QCP_H   "${QCP_DIR}/qcustomplot.h")
-        list(LENGTH QCP_CPP n_cpp)
-        list(LENGTH QCP_H   n_h)
-        if(n_cpp GREATER 0)
-            list(GET QCP_CPP 0 first)
-            file(RENAME "${first}" "${QCP_DIR}/qcustomplot.cpp")
+        # Archive may nest files in a subdirectory — search recursively
+        file(GLOB_RECURSE QCP_CPP_FILES "${QCP_DIR}/*.cpp")
+        file(GLOB_RECURSE QCP_H_FILES   "${QCP_DIR}/*.h")
+        list(LENGTH QCP_CPP_FILES n_cpp)
+        list(LENGTH QCP_H_FILES   n_h)
+        if(n_cpp EQUAL 0 OR n_h EQUAL 0)
+            message(FATAL_ERROR "QCustomPlot archive did not contain expected .cpp/.h files")
         endif()
-        if(n_h GREATER 0)
-            list(GET QCP_H 0 first)
-            file(RENAME "${first}" "${QCP_DIR}/qcustomplot.h")
-        endif()
+        foreach(f ${QCP_CPP_FILES})
+            get_filename_component(name "${f}" NAME)
+            file(RENAME "${f}" "${QCP_DIR}/${name}")
+        endforeach()
+        foreach(f ${QCP_H_FILES})
+            get_filename_component(name "${f}" NAME)
+            file(RENAME "${f}" "${QCP_DIR}/${name}")
+        endforeach()
     endif()
 
     add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
