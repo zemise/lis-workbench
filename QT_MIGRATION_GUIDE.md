@@ -59,54 +59,31 @@ QueryInput build_query_input_qt(QLineEdit* patient_id, QComboBox* room, ...);
 - **核心库提取**：`search_core` 静态库已从单体外分离，包含 7 个核心文件。
 - **持久化分离**：`app_settings_io.*` 独立承担 INI 读写，核心层只保留 `build_connection_string_w`（纯字符串操作）。
 - **ViewState 纯数据化**：`search_view_state.h` 仅含 `ViewState` 结构体，IO 逻辑移至 UI 层。
-- **CMake 已就绪**：`BUILD_QT_GUI` 选项已预留，核心库和 Win32 前端通过 `target_link_libraries(result_search PRIVATE search_core)` 连接。
+- **Qt 编译链路**：空窗口已跑通 — macOS 交叉编译 Win32 ✅ / Windows VS 2026 + Qt 5.15 ✅ / CI 双绿 ✅
+- **构建脚本**：`scripts/build_qt.ps1` 一键配置/编译/部署/运行
+- **MSVC UTF-8**：`/utf-8` 标志已添加，源文件中文字符正常编译
 
-## CMake 结构（当前）
+## Visual Studio 版本
 
-```cmake
-# 核心库 — 无 Qt 依赖，已实现
-add_library(search_core STATIC
-    src/search_core.cpp
-    src/search_app.cpp
-    src/search_controller.cpp
-    src/search_text.cpp
-    src/app_settings.cpp
-    src/trend_core.cpp
-)
-target_include_directories(search_core PUBLIC src)
-target_link_libraries(search_core PUBLIC odbc32)
+| VS 版本 | CMake Generator | CI / 实机 |
+|---------|----------------|-----------|
+| VS 2022 (17.x) | `Visual Studio 17 2022` | CI (`windows-2022`) |
+| VS 2026 (18.x) | `Visual Studio 18 2026` | 实机开发 |
 
-# Win32 前端 — 当前默认构建
-add_executable(result_search WIN32
-    src/main.cpp
-    src/app_settings_io.cpp        # Win32 INI 持久化
-    src/search_input_view_model.cpp
-    src/search_ui_events.cpp
-    src/search_ui_presenter.cpp
-    src/search_settings_dialog.cpp
-    src/search_ui_layout.cpp
-    src/trend_window.cpp
-    src/trend_chart_renderer.cpp
-    resource/app.rc
-)
-target_link_libraries(result_search PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32)
+构建脚本 (`scripts/build_qt.ps1`) 会自动检测可用 VS 版本。
 
-# Qt 前端 — 待实现
-# option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
-# add_executable(result_search_qt WIN32 ...)
-# target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets)
-```
+## 构建命令（Windows 实机）
 
-Qt 编译时指定 Windows 7 兼容：
-```cmake
-set(CMAKE_CXX_STANDARD 17)
-add_definitions(-DNTDDI_VERSION=0x06010000 -D_WIN32_WINNT=0x0601)
+```powershell
+.\scripts\build_qt.ps1           # 构建 + 部署 Qt DLL
+.\scripts\build_qt.ps1 -Run      # 构建 + 运行
+.\scripts\build_qt.ps1 -Clean -Run  # 全新构建 + 运行
 ```
 
 ## 迁移顺序（建议）
 
-1. ~~**提取 search_core 为静态库**~~ ✅ 已完成 — 验证 Win32 版仍正常编译运行
-2. **搭建 Qt CMake + 空窗口** — 验证 Qt 5.15 交叉编译链路，链接 `search_core`
+1. ~~**提取 search_core 为静态库**~~ ✅ 已完成
+2. ~~**搭建 Qt CMake + 空窗口**~~ ✅ 已完成 — 编译链路双绿
 3. **实现设置对话框** — 最小验证：连接测试 + 保存配置（用 `QSettings` 替代 `app_settings_io`）
 4. **实现主窗口布局** — QSplitter + 查询条件 + 报告列表 + 明细列表
 5. **实现查询流程** — QTableView 填充 + 报告选择联动明细

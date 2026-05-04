@@ -26,25 +26,39 @@ out/windows/portable/ResultSearch/result_search.exe
 out/windows/installer/ResultSearch-Setup.exe
 ```
 
+## 实机开发（Windows）
+
+前提：安装 Qt 5.15.2、CMake、Visual Studio 2022/2026。
+
+```powershell
+# 一键构建 Qt 版（自动检测 VS 版本）
+.\scripts\build_qt.ps1 -Run
+
+# 全新构建
+.\scripts\build_qt.ps1 -Clean -Run
+```
+
 ## 实机打包（Windows）
 
-前提：安装 Qt 5.15.2、CMake、NSIS。
-
-```cmd
-:: Win32 版
-cmake -S . -B build/windows-x64 -G "Visual Studio 17 2022" -A x64
+```powershell
+# Win32 版（MinGW 交叉编译或 VS 原生）
+cmake -S . -B build/windows-x64 -G "Visual Studio 18 2026" -A x64
 cmake --build build/windows-x64 --config Release -j
 
-:: Qt 版
-cmake -S . -B build/windows-qt -G "Visual Studio 17 2022" -A x64 ^
-  -DBUILD_QT_GUI=ON ^
-  -DCMAKE_PREFIX_PATH=C:\Qt\5.15.2\msvc2019_64
-cmake --build build/windows-qt --config Release -j
+# Qt 版
+.\scripts\build_qt.ps1
 
-:: NSIS 安装包
-makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64 ^
-  /DOUTPUT_DIR=out\windows\installer packaging\ResultSearch.nsi
+# NSIS 安装包
+makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64\Release ^
+  /DOUTPUT_DIR=..\out\windows\installer packaging\ResultSearch.nsi
 ```
+
+## Visual Studio 版本
+
+| VS 版本 | CMake Generator |
+|---------|----------------|
+| VS 2022 (17.x) | `"Visual Studio 17 2022"` |
+| VS 2026 (18.x) | `"Visual Studio 18 2026"` |
 
 ## 运行时依赖
 

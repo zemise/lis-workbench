@@ -1,5 +1,15 @@
 # Changelog
 
+## v2026.05.04
+
+- CI 双绿通过：`build-win32`（ubuntu MinGW 交叉）+ `build-qt`（windows + Qt 5.15 + MSVC）。
+- Qt 编译链路在 Windows 实机验证通过（VS 2026 + Qt 5.15.2 + MSVC）。
+- 添加 `/utf-8` MSVC 编译选项，修复中文源文件在 GBK 系统编码下的编译错误。
+- 添加 `scripts/build_qt.ps1` 一键构建脚本（配置/编译/部署/运行）。
+- 更新 Qt 迁移指南和项目文档，标注已完成步骤。
+- 修复 CMake `result_search_qt` 目标缺少 `Qt5::WinMain` 链接问题。
+- CI NSIS 路径修正（相对 NSI 脚本位置）。
+
 ## v2026.05.03
 
 - 添加应用图标（16+32px），所有窗口标题栏/任务栏/Alt+Tab 统一显示。
