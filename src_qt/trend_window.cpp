@@ -68,6 +68,7 @@ void TrendWindow::setupUi() {
     // Chart (top-left)
     chart_ = new QCustomPlot;
     chart_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
+    chart_->setMinimumHeight(250);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
     chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
     chart_->legend->setVisible(true);
@@ -101,12 +102,13 @@ void TrendWindow::setupUi() {
     detailTable_->horizontalHeader()->setStretchLastSection(true);
     detailTable_->verticalHeader()->setVisible(false);
 
-    // Left panel: chart (top) + detail table (bottom)
+    // Left panel: chart (top, ~55%) + detail table (bottom, ~45%)
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 3);  // chart
-    leftSplitter->setStretchFactor(1, 2);  // detail table
+    leftSplitter->setStretchFactor(0, 5);
+    leftSplitter->setStretchFactor(1, 4);
+    leftSplitter->setSizes({500, 350});
 
     // Right panel: item list (top) + buttons (bottom)
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
