@@ -80,7 +80,7 @@ void MainWindow::setupUi() {
 
     // Bottom bar
     auto* bottom = new QWidget;
-    bottom->setFixedHeight(40);
+    bottom->setFixedHeight(44);
     setupButtonBar(bottom);
 
     // Main layout
@@ -206,13 +206,12 @@ void MainWindow::setupResultTable() {
 
 void MainWindow::setupButtonBar(QWidget* panel) {
     auto* layout = new QHBoxLayout(panel);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
+    layout->setContentsMargins(4, 0, 4, 0);
+    layout->setSpacing(8);
 
     auto makeBtn = [&](const QString& text) {
         auto* btn = new QPushButton(text);
-        btn->setFixedSize(88, 32);
-        btn->setStyleSheet("QPushButton { padding: 2px 6px; }");
+        btn->setFixedSize(96, 34);
         return btn;
     };
 
