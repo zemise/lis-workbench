@@ -10,7 +10,8 @@ int main(int argc, char* argv[]) {
     app.setWindowIcon(QIcon(":/app.ico"));
 
     MainWindow window;
-    window.showMaximized();
+    window.show();
+    window.setWindowState(Qt::WindowMaximized);
 
     return app.exec();
 }
