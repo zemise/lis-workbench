@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
+#include <QStatusBar>
 #include <QTableView>
 #include <QVBoxLayout>
 
