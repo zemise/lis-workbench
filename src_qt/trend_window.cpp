@@ -283,8 +283,6 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         tickPositions.push_back(i);
         tickLabels.push_back(labels[i]);
     }
-    chart_->xAxis->setAutoTicks(false);
-    chart_->xAxis->setAutoTickLabels(false);
     chart_->xAxis->setTickVector(tickPositions);
     chart_->xAxis->setTickVectorLabels(tickLabels);
     chart_->xAxis->setTickLabelRotation(45);
