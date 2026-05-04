@@ -3,13 +3,11 @@
 #include "trend_core.h"
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QTableView>
@@ -62,9 +60,9 @@ void TrendWindow::setupUi() {
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->horizontalHeader()->setStretchLastSection(true);
     itemTable_->verticalHeader()->setVisible(false);
-    itemTable_->setMaximumWidth(220);
+    itemTable_->setMaximumWidth(320);
 
-    // Chart (center)
+    // Chart (top-left)
     chart_ = new QCustomPlot;
     chart_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
@@ -75,12 +73,13 @@ void TrendWindow::setupUi() {
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
     auto* chartArea = new QVBoxLayout;
+    chartArea->setContentsMargins(0, 0, 0, 0);
     chartArea->addWidget(chart_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
     chartContainer->setLayout(chartArea);
 
-    // Detail table (right/bottom)
+    // Detail table (bottom-left)
     detailModel_ = new QStandardItemModel(0, 7, this);
     detailModel_->setHorizontalHeaderLabels({
         QString::fromWCharArray(L"时间"),
@@ -98,30 +97,35 @@ void TrendWindow::setupUi() {
     detailTable_->horizontalHeader()->setStretchLastSection(true);
     detailTable_->verticalHeader()->setVisible(false);
 
-    // Buttons
+    // Left panel: chart (top) + detail table (bottom)
+    auto* leftSplitter = new QSplitter(Qt::Vertical);
+    leftSplitter->addWidget(chartContainer);
+    leftSplitter->addWidget(detailTable_);
+    leftSplitter->setStretchFactor(0, 1);
+    leftSplitter->setStretchFactor(1, 1);
+
+    // Right panel: item list (top) + buttons (bottom)
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
     exportImageBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选图片"));
     exportCsvBtn_->setEnabled(false);
     exportImageBtn_->setEnabled(false);
-    auto* btnLayout = new QHBoxLayout;
-    btnLayout->addStretch();
-    btnLayout->addWidget(exportCsvBtn_);
-    btnLayout->addWidget(exportImageBtn_);
-
-    // Main splitter: left items | center chart | detail table
-    mainSplitter_ = new QSplitter(Qt::Horizontal);
-    mainSplitter_->addWidget(itemTable_);
-    mainSplitter_->addWidget(chartContainer);
+    exportCsvBtn_->setFixedHeight(32);
+    exportImageBtn_->setFixedHeight(32);
 
     auto* rightPanel = new QWidget;
     auto* rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->addWidget(detailTable_);
-    rightLayout->addLayout(btnLayout);
+    rightLayout->setSpacing(8);
+    rightLayout->addWidget(itemTable_, 1);
+    rightLayout->addWidget(exportImageBtn_);
+    rightLayout->addWidget(exportCsvBtn_);
+
+    // Main splitter: left (chart+detail) | right (items+buttons)
+    mainSplitter_ = new QSplitter(Qt::Horizontal);
+    mainSplitter_->addWidget(leftSplitter);
     mainSplitter_->addWidget(rightPanel);
-    mainSplitter_->setStretchFactor(0, 0);
-    mainSplitter_->setStretchFactor(1, 1);
-    mainSplitter_->setStretchFactor(2, 1);
+    mainSplitter_->setStretchFactor(0, 1);
+    mainSplitter_->setStretchFactor(1, 0);
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->addWidget(mainSplitter_);
