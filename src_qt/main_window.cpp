@@ -11,12 +11,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
-#include <QStatusBar>
 #include <QTableView>
 #include <QVBoxLayout>
 
@@ -47,7 +45,6 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1480, 760);
     applySettings();
     setupUi();
-    setupMenuBar();
     setupConnections();
     loadInitialData();
 }
@@ -94,12 +91,6 @@ void MainWindow::setupUi() {
     statusBar()->addWidget(statusLabel_, 1);
 }
 
-void MainWindow::setupMenuBar() {
-    auto* fileMenu = menuBar()->addMenu(QString::fromWCharArray(L"文件"));
-    fileMenu->addAction(QString::fromWCharArray(L"数据库设置..."), this, &MainWindow::openSettings);
-    fileMenu->addSeparator();
-    fileMenu->addAction(QString::fromWCharArray(L"退出"), qApp, &QApplication::quit);
-}
 
 void MainWindow::setupQueryPanel(QWidget* panel) {
     auto* layout = new QVBoxLayout(panel);

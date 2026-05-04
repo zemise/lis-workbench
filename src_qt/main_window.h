@@ -30,7 +30,6 @@ private slots:
 
 private:
     void setupUi();
-    void setupMenuBar();
     void setupQueryPanel(QWidget* panel);
     void setupReportTable();
     void setupResultTable();
