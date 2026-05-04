@@ -61,20 +61,20 @@ option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 if(BUILD_QT_GUI)
     find_package(Qt5 REQUIRED COMPONENTS Widgets PrintSupport)
 
-    # QCustomPlot — single h/cpp chart library (MIT)
-    include(FetchContent)
-    FetchContent_Declare(
-        qcustomplot
-        URL https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz
-        URL_HASH SHA256=3e7577d8f00bc3e9fb80bc3e4e0a397e88fe9173e34a0c1f603c38966cd41458
-        SOURCE_DIR "${CMAKE_BINARY_DIR}/qcustomplot-src"
-    )
-    FetchContent_MakeAvailable(qcustomplot)
+    # QCustomPlot 2.1.1 — single h/cpp chart library (MIT)
+    set(QCP_DIR "${CMAKE_BINARY_DIR}/qcustomplot")
+    if(NOT EXISTS "${QCP_DIR}/qcustomplot.h")
+        file(DOWNLOAD
+            "https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz"
+            "${QCP_DIR}/qcustomplot.tar.gz"
+            EXPECTED_HASH SHA256=3e7577d8f00bc3e9fb80bc3e4e0a397e88fe9173e34a0c1f603c38966cd41458
+        )
+        file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
+             DESTINATION "${QCP_DIR}")
+    endif()
 
-    add_library(qcustomplot STATIC
-        "${CMAKE_BINARY_DIR}/qcustomplot-src/qcustomplot.cpp"
-    )
-    target_include_directories(qcustomplot PUBLIC "${CMAKE_BINARY_DIR}/qcustomplot-src")
+    add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
+    target_include_directories(qcustomplot PUBLIC "${QCP_DIR}")
     target_link_libraries(qcustomplot PUBLIC Qt5::Widgets Qt5::PrintSupport)
 
     add_executable(result_search_qt WIN32
@@ -82,6 +82,6 @@ if(BUILD_QT_GUI)
         src_qt/main_window.cpp
         src_qt/settings_dialog.cpp
     )
-    target_include_directories(result_search_qt PRIVATE src src_qt "${CMAKE_BINARY_DIR}/qcustomplot-src")
+    target_include_directories(result_search_qt PRIVATE src src_qt "${QCP_DIR}")
     target_link_libraries(result_search_qt PRIVATE search_core qcustomplot Qt5::Widgets Qt5::WinMain Qt5::PrintSupport)
 endif()
