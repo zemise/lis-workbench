@@ -71,6 +71,7 @@ void TrendWindow::setupUi() {
     chart_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables | QCP::iSelectAxes);
     chart_->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
     chart_->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
+    chart_->setAntialiasedElements(QCP::aeAll);
     chart_->setMinimumHeight(250);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
     chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
@@ -218,20 +219,23 @@ void TrendWindow::updateChart(const std::string& itemCode) {
 
     // Build data vectors
     QVector<double> x, y;
-    QVector<QString> labels;
+    QVector<double> xHigh, yHigh, xLow, yLow, xNormal, yNormal;
     double minVal = itemPoints[0]->result_value;
     double maxVal = itemPoints[0]->result_value;
     bool hasRef = false;
     double refLow = 0.0, refHigh = 0.0;
 
     for (const auto* p : itemPoints) {
-        x.push_back(static_cast<double>(x.size()));
+        double xi = static_cast<double>(x.size());
+        x.push_back(xi);
         y.push_back(p->result_value);
-        labels.push_back(fmt(p->report_time));
         minVal = std::min(minVal, p->result_value);
         maxVal = std::max(maxVal, p->result_value);
 
-        // Parse reference bounds
+        if (p->normal == "1")      { xHigh.push_back(xi);   yHigh.push_back(p->result_value); }
+        else if (p->normal == "5") { xLow.push_back(xi);    yLow.push_back(p->result_value); }
+        else                       { xNormal.push_back(xi); yNormal.push_back(p->result_value); }
+
         if (!p->lower_bound.empty() || !p->upper_bound.empty()) {
             hasRef = true;
             try { refLow = std::stod(p->lower_bound); } catch (...) {}
@@ -239,7 +243,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         }
     }
 
-    double padding = (maxVal - minVal) * 0.15;
+    double padding = (maxVal - minVal) * 0.2;
     if (padding < 1e-9) padding = 1.0;
     double yMin = minVal - padding;
     double yMax = maxVal + padding;
@@ -248,7 +252,16 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         yMax = std::max(yMax, refHigh + padding);
     }
 
-    // Reference range band
+    // ── Styling constants ──────────────────────────────────
+    const QColor lineColor(0x21, 0x6E, 0xC5);    // professional blue
+    const QColor normalColor(0x55, 0x55, 0x55);   // dark gray
+    const QColor highColor(0xDC, 0x32, 0x32);     // red
+    const QColor lowColor(0x32, 0x64, 0xDC);      // blue
+    const QColor refFill(0xE8, 0xE8, 0xE8);       // light gray reference band
+    const QColor gridColor(0xE0, 0xE0, 0xE0);     // subtle grid
+    const QColor axisColor(0x60, 0x60, 0x60);     // axis lines
+
+    // ── Reference range band ───────────────────────────────
     if (hasRef) {
         QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size()) - 1.0};
         QVector<double> bandHigh(bandX.size(), refHigh);
@@ -258,35 +271,58 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         upper->setPen(Qt::NoPen);
         auto* lower = chart_->addGraph();
         lower->setData(bandX, bandLow);
-        lower->setPen(QPen(Qt::gray, 1, Qt::DashLine));
+        lower->setPen(QPen(axisColor, 1, Qt::DashLine));
         lower->setChannelFillGraph(upper);
-        lower->setBrush(QColor(200, 200, 200, 80));
+        lower->setBrush(refFill);
         lower->setName(QString::fromWCharArray(L"参考区间"));
     }
 
-    // Main trend line
-    auto* graph = chart_->addGraph();
-    graph->setData(x, y);
-    graph->setPen(QPen(QColor(0x33, 0x6A, 0xE8), 2));
-    graph->setLineStyle(QCPGraph::lsLine);
-    graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, 6));
-    graph->setName(fmt(itemPoints[0]->item_name));
+    // ── Main trend line ───────────────────────────────────
+    auto* line = chart_->addGraph();
+    line->setData(x, y);
+    line->setPen(QPen(lineColor, 2.5));
+    line->setLineStyle(QCPGraph::lsLine);
+    line->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
+    line->setName(fmt(itemPoints[0]->item_name));
 
-    // Color points by normal status
-    for (int i = 0; i < y.size(); ++i) {
-        QColor color = Qt::darkGray;
-        if (i < static_cast<int>(itemPoints.size())) {
-            if (itemPoints[i]->normal == "1") color = Qt::red;
-            else if (itemPoints[i]->normal == "5") color = Qt::blue;
-        }
-        graph->selectionDecorator()->setPen(QPen(color, 2));
-    }
+    // ── Scatter points by normal status ───────────────────
+    auto addScatter = [&](const QVector<double>& xs, const QVector<double>& ys,
+                          const QColor& color, const QString& name) {
+        if (xs.isEmpty()) return;
+        auto* g = chart_->addGraph();
+        g->setData(xs, ys);
+        g->setPen(Qt::NoPen);
+        g->setLineStyle(QCPGraph::lsNone);
+        g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, color, 7));
+        g->setName(name);
+    };
+    addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
+    addScatter(xHigh,   yHigh,   highColor,   QString::fromWCharArray(L"偏高"));
+    addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
 
-    // Axes
+    // ── Axes styling ──────────────────────────────────────
     chart_->xAxis->setRange(-0.5, static_cast<double>(itemPoints.size()) - 0.5);
     chart_->yAxis->setRange(yMin, yMax);
 
-    // X-axis: max 5 ticks, two-line format (date + time) matching Win32
+    // Y-axis: auto ticks with clean format
+    chart_->yAxis->setBasePen(QPen(axisColor, 1));
+    chart_->yAxis->setTickPen(QPen(axisColor, 1));
+    chart_->yAxis->setSubTickPen(QPen(axisColor, 1));
+    chart_->yAxis->setTickLabelColor(axisColor);
+    chart_->yAxis->grid()->setPen(QPen(gridColor, 1, Qt::DotLine));
+    chart_->yAxis->grid()->setSubGridVisible(false);
+    chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
+    chart_->yAxis->setLabelColor(axisColor);
+
+    // X-axis: max 5 ticks, two-line format (date + time)
+    chart_->xAxis->setBasePen(QPen(axisColor, 1));
+    chart_->xAxis->setTickPen(QPen(axisColor, 1));
+    chart_->xAxis->setSubTickPen(QPen(axisColor, 1));
+    chart_->xAxis->setTickLabelColor(axisColor);
+    chart_->xAxis->grid()->setVisible(false);
+    chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序）"));
+    chart_->xAxis->setLabelColor(axisColor);
+
     QVector<double> tickPositions;
     QVector<QString> tickLabels;
     const int maxTicks = 5;
@@ -296,17 +332,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
                     : static_cast<int>(std::llround(static_cast<double>(tick) * (total - 1) /
                                                     static_cast<double>(maxTicks - 1)));
         if (index >= total) continue;
-        // Parse "YYYY-MM-DD HH:MM:SS" or similar → two-line label
         QString rt = fmt(itemPoints[static_cast<size_t>(index)]->report_time);
-        // Extract MM-DD and HH:MM parts
-        QString datePart, timePart;
-        if (rt.length() >= 16) {
-            datePart = rt.mid(5, 5);   // "MM-DD"
-            timePart = rt.mid(11, 5);  // "HH:MM"
-        } else {
-            datePart = rt.left(10);
-            timePart = rt.length() > 11 ? rt.mid(11, 5) : "";
-        }
+        QString datePart = (rt.length() >= 10) ? rt.mid(5, 5) : rt.left(10);   // "MM-DD"
+        QString timePart = (rt.length() >= 16) ? rt.mid(11, 5) : "";             // "HH:MM"
         tickPositions.push_back(static_cast<double>(index));
         tickLabels.push_back(datePart + "\n" + timePart);
     }
@@ -314,10 +342,10 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     for (int i = 0; i < tickPositions.size(); ++i) {
         ticker->addTick(tickPositions[i], tickLabels[i]);
     }
-    ticker->setTickStepStrategy(QCPAxisTicker::tssReadability);
     chart_->xAxis->setTicker(ticker);
     chart_->xAxis->setTickLabelRotation(0);
 
+    // ── Title ─────────────────────────────────────────────
     auto title = fmt(itemPoints[0]->item_name);
     if (!itemPoints[0]->item_eng.empty()) {
         title += " (" + fmt(itemPoints[0]->item_eng) + ")";
@@ -332,9 +360,14 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (existingTitle) {
         existingTitle->setText(title);
     } else {
-        chart_->plotLayout()->addElement(0, 0, new QCPTextElement(chart_, title, QFont("Microsoft YaHei", 11, QFont::Bold)));
+        auto* el = new QCPTextElement(chart_, title, QFont("Microsoft YaHei", 12, QFont::Bold));
+        el->setTextColor(QColor(0x33, 0x33, 0x33));
+        chart_->plotLayout()->addElement(0, 0, el);
     }
 
+    // ── Final ─────────────────────────────────────────────
+    chart_->setBackground(QBrush(Qt::white));
+    chart_->axisRect()->setBackground(QBrush(Qt::white));
     chart_->replot();
 
     // Populate detail table
@@ -348,14 +381,10 @@ void TrendWindow::updateChart(const std::string& itemCode) {
             << item(fmt(p->lower_bound))
             << item(fmt(p->upper_bound))
             << item(fmt(p->rep_no));
-        QColor bg = Qt::white;
         QColor fg = Qt::black;
-        if (p->normal == "1") fg = Qt::red;
-        else if (p->normal == "5") fg = Qt::blue;
-        for (auto* it : row) {
-            it->setBackground(bg);
-            it->setForeground(fg);
-        }
+        if (p->normal == "1") fg = highColor;
+        else if (p->normal == "5") fg = lowColor;
+        for (auto* it : row) { it->setForeground(fg); }
         detailModel_->appendRow(row);
     }
 }
