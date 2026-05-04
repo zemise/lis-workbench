@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "settings_dialog.h"
 #include "search_controller.h"
+#include "trend_window.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -313,6 +314,7 @@ void MainWindow::onQuery() {
     }
 
     const auto input = buildInput();
+    lastQuery_ = input;
     std::string error;
     state_.report_rows.clear();
     if (!search::run_report_query(db, input, state_.report_rows, state_.connection_string, error)) {
@@ -439,8 +441,13 @@ void MainWindow::openSettings() {
 }
 
 void MainWindow::onShowTrend() {
-    QMessageBox::information(this, QString::fromWCharArray(L"趋势图"),
-                             QString::fromWCharArray(L"趋势图功能即将实现。"));
+    if (lastQuery_.patient_name.empty() && lastQuery_.patient_no.empty()) {
+        QMessageBox::information(this, QString::fromWCharArray(L"趋势图"),
+                                 QString::fromWCharArray(L"请先使用病人姓名或病人号执行查询。"));
+        return;
+    }
+    TrendWindow dlg(state_.settings.db, lastQuery_, this);
+    dlg.exec();
 }
 
 // ── helpers ──────────────────────────────────────────────────

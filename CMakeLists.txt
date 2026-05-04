@@ -59,7 +59,7 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets PrintSupport)
+    find_package(Qt5 REQUIRED COMPONENTS Widgets PrintSupport Concurrent)
 
     # QCustomPlot 2.1.1 — single h/cpp chart library (MIT)
     set(QCP_DIR "${CMAKE_BINARY_DIR}/qcustomplot")
@@ -81,7 +81,8 @@ if(BUILD_QT_GUI)
         src_qt/main.cpp
         src_qt/main_window.cpp
         src_qt/settings_dialog.cpp
+        src_qt/trend_window.cpp
     )
     target_include_directories(result_search_qt PRIVATE src src_qt "${QCP_DIR}")
-    target_link_libraries(result_search_qt PRIVATE search_core qcustomplot Qt5::Widgets Qt5::WinMain Qt5::PrintSupport)
+    target_link_libraries(result_search_qt PRIVATE search_core qcustomplot Qt5::Widgets Qt5::WinMain Qt5::PrintSupport Qt5::Concurrent)
 endif()

@@ -71,5 +71,6 @@ private:
 
     // ── Data ─────────────────────────────────────────
     search::ViewState state_;
+    search::QueryInput lastQuery_;
     QSettings settings_{"result_search.ini", QSettings::IniFormat};
 };
