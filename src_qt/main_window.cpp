@@ -63,7 +63,8 @@ void MainWindow::setupUi() {
     auto* scrollArea = new QScrollArea;
     scrollArea->setWidget(queryPanel);
     scrollArea->setWidgetResizable(true);
-    scrollArea->setMaximumWidth(300);
+    scrollArea->setMinimumWidth(300);
+    scrollArea->setMaximumWidth(360);
 
     // Center report table
     setupReportTable();
@@ -111,7 +112,7 @@ void MainWindow::setupQueryPanel(QWidget* panel) {
     auto makeLine = [&](const QString& label, QWidget* widget) {
         auto* row = new QHBoxLayout;
         auto* lbl = new QLabel(label);
-        lbl->setFixedWidth(70);
+        lbl->setFixedWidth(80);
         lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         row->addWidget(lbl);
         row->addWidget(widget);
