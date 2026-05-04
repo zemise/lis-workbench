@@ -44,6 +44,7 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
                          QWidget* parent)
     : QDialog(parent), db_(db), lastQuery_(lastQuery) {
     setWindowTitle(QString::fromWCharArray(L"检验结果趋势图"));
+    setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     resize(1100, 720);
     setupUi();
     loadTrendData();

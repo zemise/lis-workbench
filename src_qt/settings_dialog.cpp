@@ -15,6 +15,7 @@ SettingsDialog::SettingsDialog(const search::DbSettings& settings,
                                QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QString::fromWCharArray(L"数据库设置"));
+    setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setMinimumWidth(460);
     setModal(true);
 
