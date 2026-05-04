@@ -67,7 +67,7 @@ if(BUILD_QT_GUI)
         file(DOWNLOAD
             "https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz"
             "${QCP_DIR}/qcustomplot.tar.gz"
-            EXPECTED_HASH SHA256=3e7577d8f00bc3e9fb80bc3e4e0a397e88fe9173e34a0c1f603c38966cd41458
+            TLS_VERIFY ON
         )
         file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
              DESTINATION "${QCP_DIR}")
