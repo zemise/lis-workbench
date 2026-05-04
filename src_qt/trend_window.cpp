@@ -80,6 +80,7 @@ void TrendWindow::setupUi() {
     chartArea->addWidget(chart_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
+    chartContainer->setMinimumHeight(220);
     chartContainer->setLayout(chartArea);
 
     // Detail table (bottom-left)
@@ -104,8 +105,8 @@ void TrendWindow::setupUi() {
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 1);
-    leftSplitter->setStretchFactor(1, 1);
+    leftSplitter->setStretchFactor(0, 3);  // chart
+    leftSplitter->setStretchFactor(1, 2);  // detail table
 
     // Right panel: item list (top) + buttons (bottom)
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
