@@ -68,6 +68,7 @@ void TrendWindow::setupUi() {
 
     // Chart (top-left)
     chart_ = new QCustomPlot;
+    chart_->setInteractions(0);
     chart_->setAntialiasedElements(QCP::aeAll);
     chart_->setMinimumHeight(250);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
