@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MSVC defaults to system locale (e.g. GBK/936) for source encoding.
+# Force UTF-8 so Chinese string literals survive compilation.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # ── Core library ──────────────────────────────────────────────
 # Platform-free business logic. Reusable across Win32 and Qt frontends.
 add_library(search_core STATIC
