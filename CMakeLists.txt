@@ -98,6 +98,8 @@ if(BUILD_QT_GUI)
     add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
     target_include_directories(qcustomplot PUBLIC "${QCP_DIR}")
     target_link_libraries(qcustomplot PUBLIC Qt5::Widgets Qt5::PrintSupport)
+    target_compile_definitions(qcustomplot PRIVATE
+        _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
