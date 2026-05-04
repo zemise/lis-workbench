@@ -10,7 +10,7 @@ int main(int argc, char* argv[]) {
     app.setWindowIcon(QIcon(":/app.ico"));
 
     MainWindow window;
-    window.show();
+    window.showMaximized();
 
     return app.exec();
 }
