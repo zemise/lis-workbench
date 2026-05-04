@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
 
     settingsMenu->addSeparator();
     auto* exitAction = settingsMenu->addAction(QString::fromWCharArray(L"退出"));
-    QObject::connect(exitAction, &QAction::quit, &app, &QApplication::quit);
+    QObject::connect(exitAction, &QAction::triggered, &app, &QApplication::quit);
 
     window.show();
     return app.exec();
