@@ -211,18 +211,18 @@ void MainWindow::setupButtonBar(QWidget* panel) {
 
     auto makeBtn = [&](const QString& text) {
         auto* btn = new QPushButton(text);
-        btn->setMinimumWidth(104);
+        btn->setFixedSize(96, 34);
         return btn;
     };
 
     layout->addStretch();
     auto* settingsBtn = makeBtn(QString::fromWCharArray(L"设置"));
-    auto* queryBtn    = makeBtn(QString::fromWCharArray(L"查询(&Q)"));
-    auto* trendBtn    = makeBtn(QString::fromWCharArray(L"趋势图(&T)"));
-    auto* exportBtn   = makeBtn(QString::fromWCharArray(L"导出(&E)"));
-    auto* previewBtn  = makeBtn(QString::fromWCharArray(L"预览(&V)"));
-    auto* printBtn    = makeBtn(QString::fromWCharArray(L"打印(&P)"));
-    auto* exitBtn     = makeBtn(QString::fromWCharArray(L"退出(&X)"));
+    auto* queryBtn    = makeBtn(QString::fromWCharArray(L"查询"));
+    auto* trendBtn    = makeBtn(QString::fromWCharArray(L"趋势图"));
+    auto* exportBtn   = makeBtn(QString::fromWCharArray(L"导出"));
+    auto* previewBtn  = makeBtn(QString::fromWCharArray(L"预览"));
+    auto* printBtn    = makeBtn(QString::fromWCharArray(L"打印"));
+    auto* exitBtn     = makeBtn(QString::fromWCharArray(L"退出"));
 
     layout->addWidget(settingsBtn);
     layout->addWidget(queryBtn);
