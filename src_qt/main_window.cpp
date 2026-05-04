@@ -315,7 +315,7 @@ void MainWindow::onQuery() {
     const auto input = buildInput();
     std::string error;
     state_.report_rows.clear();
-    if (!search::run_report_query(db, input, state_.report_rows, error)) {
+    if (!search::run_report_query(db, input, state_.report_rows, state_.connection_string, error)) {
         QMessageBox::critical(this, QString::fromWCharArray(L"查询失败"), fromUtf8(error));
         return;
     }
@@ -326,8 +326,8 @@ void MainWindow::onQuery() {
         QList<QStandardItem*> items;
         items << cell(fromUtf8(row.oper_no))
               << cell(fromUtf8(row.name))
-              << cell(fromUtf8(row.barcode))
-              << cell(fromUtf8(row.report_time))
+              << cell(fromUtf8(row.txm_no))
+              << cell(fromUtf8(row.chk_date))
               << cell(fromUtf8(row.sex))
               << cell(fromUtf8(row.age))
               << cell(fromUtf8(row.bed_code))
@@ -335,7 +335,7 @@ void MainWindow::onQuery() {
               << cell(fromUtf8(row.requester))
               << cell(fromUtf8(row.reviewer))
               << cell(fromUtf8(row.group_name))
-              << cell(fromUtf8(search::display_conf(row.confirm_status)))
+              << cell(fromUtf8(search::display_conf(row.conf)))
               << cell(fromUtf8(row.chk_flag))
               << cell(fromUtf8(search::display_binary_print_flag(row.zymz_print)))
               << cell(fromUtf8(search::display_binary_print_flag(row.zzj_print)));
@@ -388,12 +388,11 @@ void MainWindow::onReportSelected(const QModelIndex& current) {
         return;
     }
 
-    const auto& db = state_.settings.db;
     const auto& repNo = state_.report_rows[static_cast<size_t>(row)].rep_no;
 
     std::string error;
     state_.result_rows.clear();
-    if (!search::load_result_rows(db, repNo, state_.result_rows, error)) {
+    if (!search::load_result_rows(state_.connection_string, repNo, state_.result_rows, error)) {
         return;
     }
 
@@ -411,7 +410,7 @@ void MainWindow::onReportSelected(const QModelIndex& current) {
               << coloredCell(fromUtf8(r.result),      bg, fg)
               << coloredCell(fromUtf8(r.downbound),   bg, fg)
               << coloredCell(fromUtf8(r.upbound),     bg, fg)
-              << coloredCell(fromUtf8(r.item_unit),   bg, fg)
+              << coloredCell(fromUtf8(r.unit),        bg, fg)
               << coloredCell(fromUtf8(r.item_eng),    bg, fg);
         resultModel_->appendRow(items);
     }
