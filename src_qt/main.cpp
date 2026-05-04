@@ -1,7 +1,9 @@
 #include "main_window.h"
 
 #include <QApplication>
+#include <QGuiApplication>
 #include <QIcon>
+#include <QScreen>
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -10,8 +12,8 @@ int main(int argc, char* argv[]) {
     app.setWindowIcon(QIcon(":/app.ico"));
 
     MainWindow window;
-    window.show();
-    window.setWindowState(Qt::WindowMaximized);
+    window.setGeometry(QGuiApplication::primaryScreen()->availableGeometry());
+    window.showMaximized();
 
     return app.exec();
 }
