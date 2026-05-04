@@ -5,8 +5,6 @@
 
 #include <QApplication>
 #include <QComboBox>
-#include <QGuiApplication>
-#include <QScreen>
 #include <QDateEdit>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -45,9 +43,7 @@ static QString fromUtf8(const std::string& s) {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent) {
     setWindowTitle(QString::fromWCharArray(L"检验结果查询 — Qt 5.15"));
-    auto screen = QGuiApplication::primaryScreen()->availableGeometry();
-    resize(static_cast<int>(screen.width() * 0.75), static_cast<int>(screen.height() * 0.80));
-    move((screen.width() - width()) / 2, (screen.height() - height()) / 2);
+    setWindowState(Qt::WindowMaximized);
     applySettings();
     setupUi();
     setupConnections();
