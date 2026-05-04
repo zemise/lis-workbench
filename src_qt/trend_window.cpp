@@ -60,7 +60,6 @@ void TrendWindow::setupUi() {
     itemTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     itemTable_->horizontalHeader()->setStretchLastSection(true);
     itemTable_->verticalHeader()->setVisible(false);
-    itemTable_->setMaximumWidth(320);
 
     // Chart (top-left)
     chart_ = new QCustomPlot;
@@ -121,6 +120,8 @@ void TrendWindow::setupUi() {
     rightLayout->addWidget(exportCsvBtn_);
 
     // Main splitter: left (chart+detail) | right (items+buttons)
+    rightPanel->setMinimumWidth(200);
+    rightPanel->setMaximumWidth(350);
     mainSplitter_ = new QSplitter(Qt::Horizontal);
     mainSplitter_->addWidget(leftSplitter);
     mainSplitter_->addWidget(rightPanel);
