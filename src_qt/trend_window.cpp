@@ -250,14 +250,18 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         yMax = std::max(yMax, refHigh + padding);
     }
 
-    // ── Styling constants ──────────────────────────────────
-    const QColor lineColor(0x21, 0x6E, 0xC5);    // professional blue
-    const QColor normalColor(0x55, 0x55, 0x55);   // dark gray
-    const QColor highColor(0xDC, 0x32, 0x32);     // red
-    const QColor lowColor(0x32, 0x64, 0xDC);      // blue
-    const QColor refFill(0xE8, 0xE8, 0xE8);       // light gray reference band
-    const QColor gridColor(0xE0, 0xE0, 0xE0);     // subtle grid
-    const QColor axisColor(0x60, 0x60, 0x60);     // axis lines
+    // ── Styling ────────────────────────────────────────────
+    const auto& unit = itemPoints[0]->unit;
+    const QString YUnitLabel = unit.empty()
+        ? QString::fromWCharArray(L"结果值")
+        : QString::fromWCharArray(L"结果值 (") + fmt(unit) + ")";
+    const QColor lineColor(0x21, 0x6E, 0xC5);
+    const QColor normalColor(0x55, 0x55, 0x55);
+    const QColor highColor(0xDC, 0x32, 0x32);
+    const QColor lowColor(0x32, 0x64, 0xDC);
+    const QColor refFill(0xF0, 0xF0, 0xF0);
+    const QColor gridColor(0xEC, 0xEC, 0xEC);
+    const QColor axisColor(0x55, 0x55, 0x55);
 
     // ── Reference range band ───────────────────────────────
     if (hasRef) {
@@ -298,28 +302,40 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     addScatter(xHigh,   yHigh,   highColor,   QString::fromWCharArray(L"偏高"));
     addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
 
-    // ── Axes styling ──────────────────────────────────────
+    // ── Axes styling (ggplot2 theme_bw equivalent) ──────
     chart_->xAxis->setRange(-0.5, static_cast<double>(itemPoints.size()) - 0.5);
     chart_->yAxis->setRange(yMin, yMax);
 
-    // Y-axis: auto ticks with clean format
-    chart_->yAxis->setBasePen(QPen(axisColor, 1));
-    chart_->yAxis->setTickPen(QPen(axisColor, 1));
-    chart_->yAxis->setSubTickPen(QPen(axisColor, 1));
-    chart_->yAxis->setTickLabelColor(axisColor);
-    chart_->yAxis->grid()->setPen(QPen(gridColor, 1, Qt::DotLine));
-    chart_->yAxis->grid()->setSubGridVisible(false);
-    chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
-    chart_->yAxis->setLabelColor(axisColor);
-
-    // X-axis: max 5 ticks, two-line format (date + time)
-    chart_->xAxis->setBasePen(QPen(axisColor, 1));
-    chart_->xAxis->setTickPen(QPen(axisColor, 1));
-    chart_->xAxis->setSubTickPen(QPen(axisColor, 1));
+    // Common axis pen: clean thin line, ticks outward
+    QPen axisPen(axisColor, 1.2);
+    chart_->xAxis->setBasePen(axisPen);
+    chart_->xAxis->setTickPen(axisPen);
+    chart_->xAxis->setSubTickPen(Qt::NoPen);
+    chart_->xAxis->setTickLengthOut(6);
+    chart_->xAxis->setSubTicks(false);
     chart_->xAxis->setTickLabelColor(axisColor);
     chart_->xAxis->grid()->setVisible(false);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序）"));
     chart_->xAxis->setLabelColor(axisColor);
+    chart_->xAxis->setLabelFont(QFont("Microsoft YaHei", 10));
+
+    chart_->yAxis->setBasePen(axisPen);
+    chart_->yAxis->setTickPen(axisPen);
+    chart_->yAxis->setSubTickPen(Qt::NoPen);
+    chart_->yAxis->setTickLengthOut(6);
+    chart_->yAxis->setSubTicks(false);
+    chart_->yAxis->setTickLabelColor(axisColor);
+    chart_->yAxis->grid()->setPen(QPen(gridColor, 0.8));
+    chart_->yAxis->grid()->setSubGridVisible(false);
+    chart_->yAxis->setLabel(YUnitLabel);
+    chart_->yAxis->setLabelColor(axisColor);
+    chart_->yAxis->setLabelFont(QFont("Microsoft YaHei", 10));
+    chart_->yAxis->setNumberFormat("g");
+    chart_->yAxis->setNumberPrecision(4);
+
+    // Remove top/right axis spines (ggplot2 style)
+    chart_->xAxis2->setVisible(false);
+    chart_->yAxis2->setVisible(false);
 
     QVector<double> tickPositions;
     QVector<QString> tickLabels;
@@ -348,9 +364,6 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (!itemPoints[0]->item_eng.empty()) {
         title += " (" + fmt(itemPoints[0]->item_eng) + ")";
     }
-    if (!itemPoints[0]->unit.empty()) {
-        title += " [" + fmt(itemPoints[0]->unit) + "]";
-    }
     if (chart_->plotLayout()->rowCount() == 0) {
         chart_->plotLayout()->insertRow(0);
     }
@@ -358,14 +371,26 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (existingTitle) {
         existingTitle->setText(title);
     } else {
-        auto* el = new QCPTextElement(chart_, title, QFont("Microsoft YaHei", 12, QFont::Bold));
+        auto* el = new QCPTextElement(chart_, title,
+                                       QFont("Microsoft YaHei", 12, QFont::Bold));
         el->setTextColor(QColor(0x33, 0x33, 0x33));
+        el->setMargins(QMargins(0, 0, 0, 4));
         chart_->plotLayout()->addElement(0, 0, el);
     }
+
+    // ── Legend — inside plot, top-right ───────────────────
+    chart_->legend->setVisible(true);
+    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xF0)));
+    chart_->legend->setBorderPen(QPen(QColor(0xDD, 0xDD, 0xDD), 0.5));
+    chart_->legend->setFont(QFont("Microsoft YaHei", 9));
+    chart_->legend->setSelectableParts(QCPLegend::spNone);
+    chart_->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
+    auto* mg = new QCPMarginGroup(chart_);
+    chart_->axisRect()->setMarginGroup(QCP::msLeft | QCP::msRight, mg);
     chart_->replot();
 
     // Populate detail table
