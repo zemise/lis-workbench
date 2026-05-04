@@ -63,6 +63,7 @@ if(BUILD_QT_GUI)
 
     # QCustomPlot 2.1.1 — single h/cpp chart library (MIT)
     set(QCP_DIR "${CMAKE_BINARY_DIR}/qcustomplot")
+    file(MAKE_DIRECTORY "${QCP_DIR}")
     if(NOT EXISTS "${QCP_DIR}/qcustomplot.h")
         file(DOWNLOAD
             "https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz"
@@ -71,12 +72,19 @@ if(BUILD_QT_GUI)
         )
         file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
              DESTINATION "${QCP_DIR}")
-        # Archive may contain a subdirectory; move files up if needed
-        file(GLOB QCP_FILES "${QCP_DIR}/*/qcustomplot.*")
-        foreach(f ${QCP_FILES})
-            get_filename_component(name "${f}" NAME)
-            file(RENAME "${f}" "${QCP_DIR}/${name}")
-        endforeach()
+        # Archive may contain a subdirectory; find and move files up
+        file(GLOB_RECURSE QCP_CPP "${QCP_DIR}/qcustomplot.cpp")
+        file(GLOB_RECURSE QCP_H   "${QCP_DIR}/qcustomplot.h")
+        list(LENGTH QCP_CPP n_cpp)
+        list(LENGTH QCP_H   n_h)
+        if(n_cpp GREATER 0)
+            list(GET QCP_CPP 0 first)
+            file(RENAME "${first}" "${QCP_DIR}/qcustomplot.cpp")
+        endif()
+        if(n_h GREATER 0)
+            list(GET QCP_H 0 first)
+            file(RENAME "${first}" "${QCP_DIR}/qcustomplot.h")
+        endif()
     endif()
 
     add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
