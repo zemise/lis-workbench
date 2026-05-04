@@ -167,7 +167,7 @@ void TrendWindow::onTrendDataLoaded() {
     for (size_t i = 0; i < items_.size(); ++i) {
         auto* checkItem = item(fmt(items_[i].item_name));
         checkItem->setCheckable(true);
-        checkItem->setCheckState(Qt::Checked);
+        checkItem->setCheckState(Qt::Unchecked);
         itemModel_->appendRow(checkItem);
     }
 
