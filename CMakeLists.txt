@@ -58,7 +58,8 @@ if(BUILD_QT_GUI)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
+        src_qt/settings_dialog.cpp
     )
-    target_include_directories(result_search_qt PRIVATE src)
+    target_include_directories(result_search_qt PRIVATE src src_qt)
     target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain)
 endif()
