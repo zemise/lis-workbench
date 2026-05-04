@@ -47,7 +47,6 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
     : QDialog(parent), db_(db), lastQuery_(lastQuery) {
     setWindowTitle(QString::fromWCharArray(L"检验结果趋势图"));
     resize(1100, 720);
-    setAttribute(Qt::WA_DeleteOnClose);
     setupUi();
     loadTrendData();
 }
