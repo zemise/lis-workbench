@@ -59,6 +59,7 @@ if(BUILD_QT_GUI)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
+        src_qt/main_window.cpp
         src_qt/settings_dialog.cpp
     )
     target_include_directories(result_search_qt PRIVATE src src_qt)
