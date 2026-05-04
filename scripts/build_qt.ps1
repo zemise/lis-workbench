@@ -46,5 +46,6 @@ Write-Host "==> Ready: $Exe"
 # Run
 if ($Run) {
     Write-Host "==> Running..."
-    & $Exe
+    $full = Join-Path (Get-Location) $Exe
+    Start-Process -FilePath $full
 }
