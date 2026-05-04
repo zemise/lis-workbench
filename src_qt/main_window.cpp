@@ -47,6 +47,7 @@ MainWindow::MainWindow(QWidget* parent)
     setWindowTitle(QString::fromWCharArray(L"检验结果查询 — Qt 5.15"));
     auto screen = QGuiApplication::primaryScreen()->availableGeometry();
     resize(static_cast<int>(screen.width() * 0.75), static_cast<int>(screen.height() * 0.80));
+    move((screen.width() - width()) / 2, (screen.height() - height()) / 2);
     applySettings();
     setupUi();
     setupConnections();
