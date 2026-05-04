@@ -33,11 +33,36 @@ static QStandardItem* item(const QString& text) {
 }
 
 static QString sanitize(const std::string& s) {
-    QString q = fmt(s);
-    q.replace('/', '_').replace('\\', '_').replace(':', '_')
-     .replace('*', '_').replace('?', '_').replace('"', '_')
-     .replace('<', '_').replace('>', '_').replace('|', '_');
+    QString q = fmt(s).trimmed();
+    for (auto& ch : q) {
+        switch (ch.unicode()) {
+            case '\\': case '/': case ':': case '*':
+            case '?':  case '"': case '<': case '>': case '|':
+                ch = '_'; break;
+        }
+    }
     return q;
+}
+
+static QString exportBaseName(const search::QueryInput& input) {
+    QStringList parts;
+    auto name = sanitize(input.patient_name);
+    auto no   = sanitize(input.patient_no);
+    auto startDate = sanitize(input.start_date);
+    auto endDate   = sanitize(input.end_date);
+    QString date;
+    if (!startDate.isEmpty() && !endDate.isEmpty() && startDate != endDate) {
+        date = startDate + "_" + endDate;
+    } else if (!startDate.isEmpty()) {
+        date = startDate;
+    } else {
+        date = endDate;
+    }
+    if (!name.isEmpty()) parts << name;
+    if (!no.isEmpty())   parts << no;
+    if (!date.isEmpty()) parts << date;
+    if (parts.isEmpty()) parts << "trend_export";
+    return parts.join("-");
 }
 
 // ── TrendWindow ──────────────────────────────────────────────
@@ -417,6 +442,8 @@ void TrendWindow::onExportCsv() {
         QString::fromWCharArray(L"选择导出文件夹"));
     if (dir.isEmpty()) return;
 
+    QString base = exportBaseName(lastQuery_);
+
     for (int i = 0; i < itemModel_->rowCount(); ++i) {
         auto* checkItem = itemModel_->item(i, 0);
         if (!checkItem || checkItem->checkState() != Qt::Checked) continue;
@@ -424,7 +451,13 @@ void TrendWindow::onExportCsv() {
 
         const auto& code = items_[i].item_code;
         const auto& name = items_[i].item_name;
-        QString fileName = dir + "/" + sanitize(name) + "_" + fmt(code) + ".csv";
+        QString fileName = dir + "/" + base + ".csv";
+        // Append item info if exporting multiple checked items
+        if (i > 0 || itemModel_->rowCount() > 1) {
+            fileName = dir + "/" + base + "-" + sanitize(code);
+            if (!name.empty()) fileName += "-" + sanitize(name);
+            fileName += ".csv";
+        }
         QFile file(fileName);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) continue;
 
@@ -449,24 +482,13 @@ void TrendWindow::onExportCsv() {
                              QString::fromWCharArray(L"已导出勾选项目的 CSV 文件。"));
 }
 
-QPixmap TrendWindow::chartPixmap(const std::string& itemCode) {
-    // Save current state
-    auto savedCode = currentItemCode_;
-    updateChart(itemCode);
-
-    QPixmap pix(1600, 1000);
-    pix.setDevicePixelRatio(1.0);
-    chart_->render(&pix);
-
-    // Restore
-    updateChart(savedCode);
-    return pix;
-}
 
 void TrendWindow::onExportImages() {
     QString dir = QFileDialog::getExistingDirectory(this,
         QString::fromWCharArray(L"选择导出文件夹"));
     if (dir.isEmpty()) return;
+
+    QString base = exportBaseName(lastQuery_);
 
     for (int i = 0; i < itemModel_->rowCount(); ++i) {
         auto* checkItem = itemModel_->item(i, 0);
@@ -475,13 +497,16 @@ void TrendWindow::onExportImages() {
 
         const auto& code = items_[i].item_code;
         const auto& name = items_[i].item_name;
-        QString fileName = dir + "/" + sanitize(name) + "_" + fmt(code) + ".png";
+        QString fileName = base + "-" + sanitize(code);
+        if (!name.empty()) fileName += "-" + sanitize(name);
+        fileName += ".png";
+        QString fullPath = dir + "/" + fileName;
 
         updateChart(code);
         QPixmap pix(1600, 1000);
         pix.setDevicePixelRatio(1.0);
         chart_->render(&pix);
-        pix.save(fileName, "PNG");
+        pix.save(fullPath, "PNG");
     }
     updateChart(currentItemCode_);
     chart_->replot();
@@ -490,10 +515,3 @@ void TrendWindow::onExportImages() {
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
 }
 
-QString TrendWindow::defaultFileName(const QString& ext) const {
-    QString name;
-    if (!lastQuery_.patient_name.empty()) name += fmt(lastQuery_.patient_name);
-    if (!lastQuery_.patient_no.empty()) name += "_" + fmt(lastQuery_.patient_no);
-    if (name.isEmpty()) name = "trend";
-    return name + "." + ext;
-}
