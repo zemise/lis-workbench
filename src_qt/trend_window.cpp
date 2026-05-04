@@ -189,6 +189,7 @@ void TrendWindow::onItemClicked(const QModelIndex& index) {
 void TrendWindow::updateChart(const std::string& itemCode) {
     chart_->clearGraphs();
     chart_->clearPlottables();
+    chart_->clearItems();
 
     // Collect points for this item
     std::vector<const search::TrendPoint*> itemPoints;
@@ -238,19 +239,15 @@ void TrendWindow::updateChart(const std::string& itemCode) {
 
     // Reference range band
     if (hasRef) {
-        auto* band = new QCPGraph(chart_->xAxis, chart_->yAxis);
         QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size()) - 1.0};
         QVector<double> bandHigh(bandX.size(), refHigh);
         QVector<double> bandLow(bandX.size(), refLow);
-        // Draw reference band as a filled area between two graphs
         auto* upper = chart_->addGraph();
         upper->setData(bandX, bandHigh);
         upper->setPen(Qt::NoPen);
         auto* lower = chart_->addGraph();
         lower->setData(bandX, bandLow);
         lower->setPen(QPen(Qt::gray, 1, Qt::DashLine));
-        auto* refBrush = new QCPGraph(chart_->xAxis, chart_->yAxis);
-        // Use fill between: lower channel fills to upper
         lower->setChannelFillGraph(upper);
         lower->setBrush(QColor(200, 200, 200, 80));
         lower->setName(QString::fromWCharArray(L"参考区间"));
@@ -262,7 +259,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     graph->setPen(QPen(QColor(0x33, 0x6A, 0xE8), 2));
     graph->setLineStyle(QCPGraph::lsLine);
     graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, 6));
-    graph->setName(fmt(items_[0].item_name));
+    graph->setName(fmt(itemPoints[0]->item_name));
 
     // Color points by normal status
     for (int i = 0; i < y.size(); ++i) {
@@ -300,8 +297,15 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (!itemPoints[0]->unit.empty()) {
         title += " [" + fmt(itemPoints[0]->unit) + "]";
     }
-    chart_->plotLayout()->insertRow(0);
-    chart_->plotLayout()->addElement(0, 0, new QCPTextElement(chart_, title, QFont("Microsoft YaHei", 11, QFont::Bold)));
+    if (chart_->plotLayout()->rowCount() == 0) {
+        chart_->plotLayout()->insertRow(0);
+    }
+    auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
+    if (existingTitle) {
+        existingTitle->setText(title);
+    } else {
+        chart_->plotLayout()->addElement(0, 0, new QCPTextElement(chart_, title, QFont("Microsoft YaHei", 11, QFont::Bold)));
+    }
 
     chart_->replot();
 
