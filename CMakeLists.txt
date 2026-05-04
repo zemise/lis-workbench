@@ -71,6 +71,12 @@ if(BUILD_QT_GUI)
         )
         file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
              DESTINATION "${QCP_DIR}")
+        # Archive may contain a subdirectory; move files up if needed
+        file(GLOB QCP_FILES "${QCP_DIR}/*/qcustomplot.*")
+        foreach(f ${QCP_FILES})
+            get_filename_component(name "${f}" NAME)
+            file(RENAME "${f}" "${QCP_DIR}/${name}")
+        endforeach()
     endif()
 
     add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
