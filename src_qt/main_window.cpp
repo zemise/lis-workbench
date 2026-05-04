@@ -14,7 +14,6 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -59,14 +58,9 @@ void MainWindow::setupUi() {
 
     // Left query panel
     auto* queryPanel = new QWidget;
-    queryPanel->setFixedWidth(340);
+    queryPanel->setMinimumWidth(240);
+    queryPanel->setMaximumWidth(400);
     setupQueryPanel(queryPanel);
-    auto* scrollArea = new QScrollArea;
-    scrollArea->setWidget(queryPanel);
-    scrollArea->setWidgetResizable(false);
-    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scrollArea->setMinimumWidth(200);
-    scrollArea->setMaximumWidth(360);
 
     // Center report table
     setupReportTable();
@@ -76,7 +70,7 @@ void MainWindow::setupUi() {
 
     // Splitter
     splitter_ = new QSplitter(Qt::Horizontal);
-    splitter_->addWidget(scrollArea);
+    splitter_->addWidget(queryPanel);
     splitter_->addWidget(reportTable_);
     splitter_->addWidget(resultTable_);
     splitter_->setStretchFactor(0, 0);
@@ -114,8 +108,9 @@ void MainWindow::setupQueryPanel(QWidget* panel) {
     auto makeLine = [&](const QString& label, QWidget* widget) {
         auto* row = new QHBoxLayout;
         auto* lbl = new QLabel(label);
-        lbl->setFixedWidth(84);
         lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        lbl->setMinimumWidth(90);
+        lbl->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Preferred);
         row->addWidget(lbl);
         widget->setMinimumWidth(140);
         row->addWidget(widget, 1);
