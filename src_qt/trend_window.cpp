@@ -15,7 +15,8 @@
 #include <QTableView>
 #include <QTextStream>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrent>
+#include <QtConcurrent>
+#include <cmath>
 
 #include "qcustomplot.h"
 
@@ -283,20 +284,37 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     chart_->xAxis->setRange(-0.5, static_cast<double>(itemPoints.size()) - 0.5);
     chart_->yAxis->setRange(yMin, yMax);
 
-    // X-axis ticks
+    // X-axis: max 5 ticks, two-line format (date + time) matching Win32
     QVector<double> tickPositions;
     QVector<QString> tickLabels;
-    int step = std::max(1, static_cast<int>(itemPoints.size()) / 10);
-    for (int i = 0; i < labels.size(); i += step) {
-        tickPositions.push_back(i);
-        tickLabels.push_back(labels[i]);
+    const int maxTicks = 5;
+    const int total = static_cast<int>(itemPoints.size());
+    for (int tick = 0; tick < maxTicks && tick < total; ++tick) {
+        int index = (maxTicks <= 1) ? 0
+                    : static_cast<int>(std::llround(static_cast<double>(tick) * (total - 1) /
+                                                    static_cast<double>(maxTicks - 1)));
+        if (index >= total) continue;
+        // Parse "YYYY-MM-DD HH:MM:SS" or similar → two-line label
+        QString rt = fmt(itemPoints[static_cast<size_t>(index)]->report_time);
+        // Extract MM-DD and HH:MM parts
+        QString datePart, timePart;
+        if (rt.length() >= 16) {
+            datePart = rt.mid(5, 5);   // "MM-DD"
+            timePart = rt.mid(11, 5);  // "HH:MM"
+        } else {
+            datePart = rt.left(10);
+            timePart = rt.length() > 11 ? rt.mid(11, 5) : "";
+        }
+        tickPositions.push_back(static_cast<double>(index));
+        tickLabels.push_back(datePart + "\n" + timePart);
     }
     auto ticker = QSharedPointer<QCPAxisTickerText>::create();
     for (int i = 0; i < tickPositions.size(); ++i) {
         ticker->addTick(tickPositions[i], tickLabels[i]);
     }
+    ticker->setTickStepStrategy(QCPAxisTicker::tssReadability);
     chart_->xAxis->setTicker(ticker);
-    chart_->xAxis->setTickLabelRotation(45);
+    chart_->xAxis->setTickLabelRotation(0);
 
     auto title = fmt(itemPoints[0]->item_name);
     if (!itemPoints[0]->item_eng.empty()) {
