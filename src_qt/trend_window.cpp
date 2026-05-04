@@ -68,7 +68,9 @@ void TrendWindow::setupUi() {
 
     // Chart (top-left)
     chart_ = new QCustomPlot;
-    chart_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
+    chart_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables | QCP::iSelectAxes);
+    chart_->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
+    chart_->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
     chart_->setMinimumHeight(250);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
     chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
