@@ -283,8 +283,11 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         tickPositions.push_back(i);
         tickLabels.push_back(labels[i]);
     }
-    chart_->xAxis->setTickVector(tickPositions);
-    chart_->xAxis->setTickVectorLabels(tickLabels);
+    auto ticker = QSharedPointer<QCPAxisTickerText>::create();
+    for (int i = 0; i < tickPositions.size(); ++i) {
+        ticker->addTick(tickPositions[i], tickLabels[i]);
+    }
+    chart_->xAxis->setTicker(ticker);
     chart_->xAxis->setTickLabelRotation(45);
 
     auto title = fmt(itemPoints[0]->item_name);
