@@ -1,0 +1,105 @@
+name: Build
+
+on:
+  push:
+    branches: [main, feat/*]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Win32 cross-compile (Linux → Windows via MinGW) ──────────
+  build-win32:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-mingw-w64-x86-64 \
+            ninja-build \
+            cmake
+
+      - name: Read version
+        id: version
+        run: |
+          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
+          echo "value=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build/windows-x64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/windows-x64 -j
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: result_search-win32-${{ steps.version.outputs.value }}
+          path: build/windows-x64/result_search.exe
+
+  # ── Qt 5.15 build + NSIS packager (Windows native) ───────────
+  build-qt:
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
+          echo "value=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Qt 5.15
+        shell: bash
+        run: |
+          pip install aqtinstall
+          aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 \
+            --outputdir "${{ runner.temp }}/Qt"
+
+      - name: Configure Qt build
+        shell: bash
+        run: |
+          cmake -S . -B build/windows-qt \
+            -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/5.15.2/msvc2019_64" \
+            -DBUILD_QT_GUI=ON
+
+      - name: Build Qt
+        shell: bash
+        run: cmake --build build/windows-qt --target result_search_qt --config Release -j
+
+      - name: Package NSIS installer (Qt)
+        shell: cmd
+        run: |
+          if not exist out\windows\installer mkdir out\windows\installer
+          makensis ^
+            /DAPP_NAME="Result Search Qt" ^
+            /DAPP_VERSION=${{ steps.version.outputs.value }} ^
+            /DAPP_EXE=result_search_qt.exe ^
+            /DBUILD_DIR=..\build\windows-qt\Release ^
+            /DOUTPUT_DIR=..\out\windows\installer ^
+            /DOUTPUT_NAME=ResultSearch-Qt-Setup.exe ^
+            packaging\ResultSearch.nsi
+
+      - name: Upload Qt EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: result_search-qt-${{ steps.version.outputs.value }}
+          path: build/windows-qt/Release/result_search_qt.exe
+
+      - name: Upload Qt installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ResultSearch-Qt-Setup-${{ steps.version.outputs.value }}
+          path: out/windows/installer/ResultSearch-Qt-Setup.exe

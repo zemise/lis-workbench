@@ -1,4 +1,5 @@
 #include "app_settings.h"
+#include "app_settings_io.h"
 #include "search_app.h"
 #include "search_controller.h"
 #include "search_input_view_model.h"
@@ -10,6 +11,8 @@
 #include "search_ui_layout.h"
 #include "search_ui_presenter.h"
 #include "search_view_state.h"
+#include "trend_window.h"
+#include "resource.h"
 #include "version.h"
 
 #ifndef _WIN32
@@ -52,12 +55,13 @@ constexpr int IDC_EXPORT = 3003;
 constexpr int IDC_PREVIEW = 3004;
 constexpr int IDC_PRINT = 3005;
 constexpr int IDC_SETTINGS = 3006;
+constexpr int IDC_TREND = 3007;
 constexpr int IDC_STATUS = 4001;
 search::MainUiIds g_main_ui_ids{
     IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER, IDC_START, IDC_END,
     IDC_ROOM, IDC_MACH, IDC_GROUP, IDC_ITEM, IDC_PATIENT_TYPE, IDC_REPORT_STATUS,
     IDC_REPORTS, IDC_RESULTS, IDC_SPLITTER,
-    IDC_SETTINGS, IDC_QUERY, IDC_EXPORT, IDC_PREVIEW, IDC_PRINT, IDC_EXIT, IDC_STATUS
+    IDC_SETTINGS, IDC_QUERY, IDC_TREND, IDC_EXPORT, IDC_PREVIEW, IDC_PRINT, IDC_EXIT, IDC_STATUS
 };
 search::UiContext g_ui_context;
 search::MainUiHandles& g_ui = g_ui_context.handles;
@@ -68,6 +72,8 @@ int& g_font_size = g_state.settings.ui.font_size;
 int& g_splitter_x = g_state.settings.ui.splitter_x;
 std::vector<search::ReportRow>& g_report_rows = g_state.report_rows;
 std::vector<search::ResultRow>& g_result_rows = g_state.result_rows;
+search::QueryInput g_last_query_input;
+bool g_has_last_query_input = false;
 std::vector<search::RoomOption>& g_room_options = g_state.room_options;
 std::vector<search::PatientTypeOption>& g_patient_type_options = g_state.patient_type_options;
 std::vector<search::MachineOption>& g_machine_options = g_state.machine_options;
@@ -87,7 +93,7 @@ void save_settings_to_ini();
 LRESULT CALLBACK splitter_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
             return TRUE;
         case WM_LBUTTONDOWN:
             g_dragging_splitter = true;
@@ -141,12 +147,13 @@ void apply_font_to_window(HWND root) {
 }
 
 void load_settings() {
-    g_state = search::load_view_state();
+    g_state.ini_path = search::default_ini_path();
+    g_state.settings = search::load_settings(g_state.ini_path);
     g_font_size = clamp_font_size(g_font_size);
 }
 
 void save_settings_to_ini() {
-    search::save_view_state_settings(g_state);
+    search::save_settings(g_state.ini_path, g_state.settings);
 }
 
 COLORREF report_row_background(const search::ReportRow& row) {
@@ -285,8 +292,31 @@ void run_query() {
         return;
     }
 
+    g_last_query_input = input;
+    g_has_last_query_input = true;
     search::present_report_rows(g_ui, g_report_rows);
     set_status(search::utf8_to_wide(search::make_query_count_status(g_report_rows.size())));
+}
+
+void show_trend(HWND owner) {
+    if (search::build_connection_string_w(g_db_settings).empty()) {
+        MessageBoxW(owner, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
+        return;
+    }
+    if (!g_has_last_query_input || g_report_rows.empty()) {
+        MessageBoxW(owner, L"请先查询出同一病人的结果后再打开趋势图。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+
+    search::QueryInput input = g_last_query_input;
+    if (search::trim(input.patient_name).empty() && search::trim(input.patient_no).empty()) {
+        MessageBoxW(owner, L"上次查询未使用病人姓名或病人号，请先按病人姓名或病人号查询后再打开趋势图。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+    search::show_trend_window(owner,
+                              g_ui_context.ui_font ? g_ui_context.ui_font : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+                              g_db_settings,
+                              input);
 }
 
 void create_ui(HWND hwnd) {
@@ -309,10 +339,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_SIZE:
             search::layout_main_window(hwnd, g_ui, g_splitter_x);
             return 0;
+        case WM_DPICHANGED: {
+            auto* rect = reinterpret_cast<RECT*>(lparam);
+            SetWindowPos(hwnd, nullptr, rect->left, rect->top,
+                         rect->right - rect->left, rect->bottom - rect->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
         case WM_COMMAND: {
             search::CommandEventHandlers handlers;
             handlers.on_room_changed = [] { reload_machine_options(); };
             handlers.on_query = [] { run_query(); };
+            handlers.on_show_trend = [](HWND owner) { show_trend(owner); };
             handlers.on_show_settings = [](HWND owner) { show_settings(owner); };
             handlers.on_unimplemented_action = [](HWND owner) {
                 MessageBoxW(owner, L"该功能暂未实现。", L"提示", MB_ICONINFORMATION);
@@ -346,6 +384,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     load_settings();
     g_ui_context.ui_font = create_ui_font(g_font_size);
     INITCOMMONCONTROLSEX icc{};
@@ -353,24 +392,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_DATE_CLASSES;
     InitCommonControlsEx(&icc);
 
-    WNDCLASSW wc{};
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = instance;
+    wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
+                                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"ResultSearchWindow";
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
 
-    WNDCLASSW splitter_wc{};
+    WNDCLASSEXW splitter_wc{};
+    splitter_wc.cbSize = sizeof(splitter_wc);
     splitter_wc.lpfnWndProc = splitter_proc;
     splitter_wc.hInstance = instance;
     splitter_wc.hCursor = LoadCursor(nullptr, IDC_SIZEWE);
     splitter_wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DSHADOW + 1);
     splitter_wc.lpszClassName = L"ResultSearchSplitter";
-    RegisterClassW(&splitter_wc);
+    RegisterClassExW(&splitter_wc);
 
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, search::kAppTitle,
-                                WS_OVERLAPPEDWINDOW,
+                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1480, 760,
                                 nullptr, nullptr, instance, nullptr);
     g_ui_context.main_window = hwnd;

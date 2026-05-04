@@ -16,12 +16,16 @@ std::string trim(std::string text) {
     return text;
 }
 
+// Qt migration: replace with QString::fromStdWString(...).toUtf8().toStdString()
 std::string wide_to_utf8(const std::wstring& text) {
     if (text.empty()) {
-        return "";
+        return {};
     }
 #ifdef _WIN32
     const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return {};
+    }
     std::string out(static_cast<size_t>(size), '\0');
     WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
     if (!out.empty() && out.back() == '\0') {
@@ -33,12 +37,16 @@ std::string wide_to_utf8(const std::wstring& text) {
 #endif
 }
 
+// Qt migration: replace with QString::fromUtf8(text).toStdWString()
 std::wstring utf8_to_wide(const std::string& text) {
     if (text.empty()) {
-        return L"";
+        return {};
     }
 #ifdef _WIN32
     const int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (size <= 0) {
+        return {};
+    }
     std::wstring out(static_cast<size_t>(size), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
     if (!out.empty() && out.back() == L'\0') {

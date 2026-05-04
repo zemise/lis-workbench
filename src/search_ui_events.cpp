@@ -23,6 +23,12 @@ bool handle_command(HWND hwnd, WPARAM wparam, const MainUiIds& ids, const Comman
         }
         return true;
     }
+    if (id == ids.trend) {
+        if (handlers.on_show_trend) {
+            handlers.on_show_trend(hwnd);
+        }
+        return true;
+    }
     if (id == ids.settings) {
         if (handlers.on_show_settings) {
             handlers.on_show_settings(hwnd);

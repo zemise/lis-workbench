@@ -2,24 +2,33 @@
 
 `cpp_search` 是按截图复刻的 LIS 检验结果查询工具起步项目。
 
-当前版本：`v2026.04.30.2`
+当前版本：`v2026.05.03`
 
-项目已经整理为可长期演进的结构：
+项目已经整理为可长期演进的结构。
+详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
 
-- `main.cpp` 负责 Win32 界面与交互
-- `search_core.cpp` 负责数据库查询
-- `search_app.cpp` 负责界面无关的应用层规则，便于后续引入 Qt
-- `search_controller.cpp` 负责界面输入到查询执行的桥接，便于后续复用到 Qt
-- `search_input_view_model.cpp` 负责控件值读取、下拉回填和查询输入组装
-- `search_text.cpp` 负责公共字符串工具和 UTF-8 / 宽字符转换
-- `search_ui_context.h` 负责 UI 句柄和字体上下文
-- `search_ui_columns.h` 负责报告列表和项目明细列表列号集中定义
-- `search_ui_events.cpp` 负责 Win32 事件分发，控件 ID 通过 `MainUiIds` 注入，不在事件层硬编码
-- `search_ui_layout.cpp` 负责 Win32 主界面控件创建与布局
-- `search_ui_presenter.cpp` 负责列表填充和状态显示
-- `search_settings_dialog.cpp` 负责 Win32 设置窗口
-- `search_view_state.cpp` 负责统一收口应用状态，便于后续 Qt 数据绑定
-- `app_settings.cpp` 负责本地配置读写和连接串生成
+### 架构概要
+
+```
+┌─────────────────────┐
+│  main.cpp (Win32)   │  ← 入口层，Qt 迁移后由 src_qt/main.cpp 替代
+│  search_ui_*        │
+├─────────────────────┤
+│  search_input_*     │  ← 边界层：控件读写、事件分发、列表呈现
+│  search_settings_*  │
+│  trend_window.*     │
+├─────────────────────┤
+│  search_controller  │  ← 控制层：桥接查询请求与数据层
+├─────────────────────┤
+│  search_core        │  ← 核心层：ODBC 查询、数据映射
+│  search_app         │      Qt 迁移后原样复用
+│  app_settings       │      (ODBC → Qt SQL, INI → QSettings)
+│  search_text        │
+│  search_view_state  │
+│  trend_core         │
+└─────────────────────┘
+```
+
 - `build/`、`out/`、`result_search.ini` 视为本地产物，不纳入版本管理
 
 当前目标：
@@ -52,6 +61,18 @@
 - 右侧项目明细列表。
 - 点击报告行后自动加载对应项目结果。
 - 右侧项目明细支持按 `NORMAL` 着色。
+- 底部 `趋势图` 按钮可按上一次成功查询条件打开趋势窗口：
+  - 上一次查询必须使用病人姓名或病人号，任意一个即可。
+  - 如果查询成功后又清空输入框，趋势图仍使用上一次成功查询条件。
+  - 按上一次患者/仪器/日期/项目条件查询历史项目点。
+  - 趋势数据采用后台加载，窗口会先打开并显示加载状态，避免长日期范围查询时卡住主界面。
+  - 右侧平铺显示项目列表，点击项目行切换图表。
+  - 项目列表每行带勾选框。
+  - 中间显示折线图，横轴按有效结果点顺序等距排列，日期和时间分两行显示。
+  - 下方显示趋势明细表，便于和主界面核对。
+  - 右侧底部 `导出勾选项目` 可将勾选项目的趋势明细导出为 CSV。
+  - 右侧底部 `导出勾选图片` 可选择一个文件夹，并将勾选项目分别导出为多张 PNG。
+  - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
 - 设置页面支持字号配置，保存后会持久化到 `result_search.ini` 并立即应用到主界面。
 - 数据库配置持久化保存到程序同目录 `result_search.ini`。
@@ -113,7 +134,7 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 - `LS_AS_ROOM`：检验科室字典。
 - `LS_AS_MACHINE`：检验仪器字典。
 
-更完整的字段对应和表关系见 [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)。
+更完整的字段对应和表关系见 [QUERY_DESIGN.md](QUERY_DESIGN.md)。
 
 ## NORMAL 码值说明
 
@@ -126,31 +147,28 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 
 说明：
 
-- 这是一条基于现场实测得到的显示规则，不是当前阶段从原程序或数据库设计文档直接推导出的语义定义。
-- 如果后续现场验证结论变化，只需要同步修改 [main.cpp](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/src/main.cpp) 中的 `result_row_color()`。
+- 这是一条基于现场实测得到的显示规则。
+- 如果后续现场验证结论变化，同步修改 `main.cpp` 中的 `result_row_color()`。
 
 ## Windows 交叉编译
 
 ```bash
-cmake -S cpp_search -B cpp_search/build/windows-x64 \
-  -DCMAKE_TOOLCHAIN_FILE=cpp_search/cmake/toolchains/mingw-w64-x86_64.cmake \
+cmake -S . -B build/windows-x64 \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build cpp_search/build/windows-x64 -j
+cmake --build build/windows-x64 -j
 ```
 
-输出：
-
-```text
-cpp_search/build/windows-x64/result_search.exe
-```
+输出：`build/windows-x64/result_search.exe`
 
 ## 项目文件
 
-- [PROJECT_STRUCTURE.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/PROJECT_STRUCTURE.md)
-- [CHANGELOG.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/CHANGELOG.md)
-- [QUERY_DESIGN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QUERY_DESIGN.md)
-- [QT_PREP_PLAN.md](/Users/zemise/Local/Code/014%20解码通讯的反编译/永和阳光糖化/cpp_search/QT_PREP_PLAN.md)
+- [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
+- [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
 ## 使用说明
 
@@ -162,6 +180,8 @@ cpp_search/build/windows-x64/result_search.exe
 6. 输入姓名、病人号、条码号、日期范围，或通过 `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 7. 点击 `查询`。
 8. 在中间报告列表选择一行，右侧显示该报告的项目结果。
+9. 如果本次查询使用了病人姓名或病人号，可点击 `趋势图` 查看该查询条件下的项目趋势。
+10. 在趋势图窗口右侧点击项目行切换图表，勾选项目后可导出对应趋势明细 CSV。
 
 程序内部会自动生成连接串，格式示例：
 
