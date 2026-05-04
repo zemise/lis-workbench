@@ -211,7 +211,7 @@ void MainWindow::setupButtonBar(QWidget* panel) {
 
     auto makeBtn = [&](const QString& text) {
         auto* btn = new QPushButton(text);
-        btn->setFixedSize(96, 34);
+        btn->setMinimumWidth(104);
         return btn;
     };
 
