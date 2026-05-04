@@ -106,6 +106,7 @@ if(BUILD_QT_GUI)
         src_qt/main_window.cpp
         src_qt/settings_dialog.cpp
         src_qt/trend_window.cpp
+        src_qt/resources.qrc
     )
     target_include_directories(result_search_qt PRIVATE src src_qt "${QCP_DIR}")
     target_link_libraries(result_search_qt PRIVATE search_core qcustomplot Qt5::Widgets Qt5::WinMain Qt5::PrintSupport Qt5::Concurrent)
