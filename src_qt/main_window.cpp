@@ -59,11 +59,13 @@ void MainWindow::setupUi() {
 
     // Left query panel
     auto* queryPanel = new QWidget;
+    queryPanel->setFixedWidth(340);
     setupQueryPanel(queryPanel);
     auto* scrollArea = new QScrollArea;
     scrollArea->setWidget(queryPanel);
-    scrollArea->setWidgetResizable(true);
-    scrollArea->setMinimumWidth(300);
+    scrollArea->setWidgetResizable(false);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setMinimumWidth(200);
     scrollArea->setMaximumWidth(360);
 
     // Center report table
@@ -112,12 +114,13 @@ void MainWindow::setupQueryPanel(QWidget* panel) {
     auto makeLine = [&](const QString& label, QWidget* widget) {
         auto* row = new QHBoxLayout;
         auto* lbl = new QLabel(label);
-        lbl->setFixedWidth(80);
+        lbl->setFixedWidth(84);
         lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         row->addWidget(lbl);
-        row->addWidget(widget);
+        widget->setMinimumWidth(140);
+        row->addWidget(widget, 1);
         layout->addLayout(row);
-        layout->addSpacing(4);
+        layout->addSpacing(2);
     };
 
     patientIdEdit_ = new QLineEdit;    makeLine(QString::fromWCharArray(L"诊疗卡号"), patientIdEdit_);
