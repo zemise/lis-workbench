@@ -56,7 +56,7 @@ void MainWindow::setupUi() {
     // Left query panel
     auto* queryPanel = new QWidget;
     queryPanel->setMinimumWidth(240);
-    queryPanel->setMaximumWidth(400);
+    queryPanel->setMaximumWidth(420);
     setupQueryPanel(queryPanel);
 
     // Center report table
@@ -74,7 +74,7 @@ void MainWindow::setupUi() {
     splitter_->setStretchFactor(1, 3);
     splitter_->setStretchFactor(2, 1);
     if (!splitter_->restoreState(settings_.value("UI/SplitterState").toByteArray())) {
-        splitter_->setSizes({260, 800, 350});
+        splitter_->setSizes({400, 700, 350});
     }
 
     // Bottom bar
