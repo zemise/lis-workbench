@@ -106,8 +106,7 @@ static void writeGnuplotScript(QTextStream& out,
         ? "结果值" : "结果值 (" + pts[0]->unit + ")";
 
     // gnuplot script — pngcairo, enhanced text, SCI quality
-    out << "set terminal svg enhanced size " << width << "," << height
-        << " fname 'Microsoft YaHei' fsize 10\n";
+    out << "set terminal svg enhanced size " << width << "," << height << "\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
     out << "set title '" << title.c_str() << "'\n";
     out << "set xlabel '检测日期（按结果顺序）'\n";
