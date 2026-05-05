@@ -116,21 +116,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar panel — menu font, close button on far right
-            int tbH = 28;
-            HWND tb = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_SUNKEN,
-                0, 0, 200, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+            // Toolbar — same style as status bar, menu font
+            HWND tb = CreateWindowExW(0, STATUSCLASSNAMEW, L"",
+                WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
+            int tbParts[] = { -1 };
+            SendMessageW(tb, SB_SETPARTS, 1, (LPARAM)tbParts);
+            SendMessageW(tb, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+            // Close button overlaid on right side of toolbar
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                100, 2, 60, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
+                100, 0, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
             SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-            // Separator line
-            CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-                0, 0, 0, 1, hwnd, nullptr, g_ctx.instance, nullptr);
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -142,18 +141,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE: {
-            // Toolbar panel — full width, close button pinned right
+            // Toolbar — full width at top, close button pinned right
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             if (tb) {
                 int cw = LOWORD(lp);
-                RECT trc; GetClientRect(tb, &trc);
-                int tbH = trc.bottom;
+                RECT rc; GetWindowRect(tb, &rc);
+                int tbH = rc.bottom - rc.top;
                 SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
                 HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                int btnW = cw * 6 / 100;  // 6% of window width
-                if (btnW < 50) btnW = 50;
-                if (btnW > 80) btnW = 80;
-                if (btn) SetWindowPos(btn, nullptr, cw - btnW - 8, (tbH - btnW * 3 / 8) / 2, btnW, btnW * 3 / 8, SWP_NOZORDER);
+                if (btn) SetWindowPos(btn, nullptr, cw - 68, (tbH - 24) / 2, 60, 24, SWP_NOZORDER);
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
