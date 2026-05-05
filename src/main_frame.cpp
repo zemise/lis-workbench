@@ -142,6 +142,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == ID_TIMER) updateTimePane(hwnd);
             return 0;
         }
+        case WM_CTLCOLORBTN:
+            if ((HWND)lp == GetDlgItem(hwnd, ID_BTNCLOSE)) {
+                return (LRESULT)GetSysColorBrush(COLOR_MENU);
+            }
+            break;
         case WM_CTLCOLORSTATIC:
             if ((HWND)lp == GetDlgItem(hwnd, ID_TOOLBAR)) {
                 HBRUSH br = GetSysColorBrush(COLOR_MENU);
