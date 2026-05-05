@@ -128,12 +128,13 @@ void TrendWindow::setupUi() {
     detailTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     detailTable_->horizontalHeader()->setStretchLastSection(true);
     detailTable_->verticalHeader()->setVisible(false);
+    detailTable_->setMaximumHeight(200);
 
     // Left panel: chart (top, ~55%) + detail table (bottom, ~45%)
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 3);  // chart
+    leftSplitter->setStretchFactor(0, 5);  // chart
     leftSplitter->setStretchFactor(1, 1);  // detail table
 
     // Right panel: item list (top) + buttons (bottom)
