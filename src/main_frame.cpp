@@ -18,7 +18,8 @@ constexpr int IDM_QUERY    = 1001;
 constexpr int IDM_BLOOD    = 1002;
 constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT     = 2002;
-constexpr int IDM_CLOSE    = 3001;
+constexpr int ID_TOOLBAR   = 3100;
+constexpr int ID_BTNCLOSE  = 3101;
 constexpr int IDM_TOOL1    = 3011;
 constexpr int IDM_TOOL2    = 3012;
 constexpr int IDM_TOOL3    = 3013;
@@ -115,25 +116,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
+            // Toolbar panel — full width, menu-colored, close button on right
+            HWND tb = CreateWindowExW(0, L"STATIC", L"",
+                WS_CHILD | WS_VISIBLE,
+                0, 0, 0, 28, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+                g_ctx.instance, nullptr);
+            CreateWindowExW(0, L"BUTTON", L"关闭",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                0, 2, 60, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
+                g_ctx.instance, nullptr);
             // Separator line
             CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
                 0, 0, 0, 1, hwnd, nullptr, g_ctx.instance, nullptr);
-
-            // Toolbar below menu bar (matching visual style)
-            HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"",
-                WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | TBSTYLE_LIST | CCS_NODIVIDER,
-                0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, nullptr);
-            SendMessageW(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-            SendMessageW(tb, TB_SETPADDING, 0, MAKELPARAM(6, 4));
-            TBBUTTON tbb[1] = {};
-            tbb[0].iBitmap = I_IMAGENONE;
-            tbb[0].fsState = TBSTATE_ENABLED;
-            tbb[0].fsStyle = BTNS_BUTTON | BTNS_SHOWTEXT;
-            tbb[0].idCommand = IDM_CLOSE;
-            tbb[0].iString = (INT_PTR)L"关闭";
-            SendMessageW(tb, TB_ADDBUTTONS, 1, (LPARAM)tbb);
-            SendMessageW(tb, TB_AUTOSIZE, 0, 0);
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -145,6 +140,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE: {
+            // Toolbar panel — full width, button on right
+            HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
+            if (tb) {
+                SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 28, SWP_NOZORDER);
+                HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
+                if (btn) SetWindowPos(btn, nullptr, LOWORD(lp) - 68, 2, 60, 24, SWP_NOZORDER);
+            }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
                 int cw = LOWORD(lp);
@@ -158,7 +160,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND: {
             switch (LOWORD(wp)) {
-                case IDM_CLOSE:
+                case ID_BTNCLOSE:
                     MessageBoxW(hwnd, L"关闭当前子窗口 — 待实现", L"关闭", MB_ICONINFORMATION);
                     break;
                 case IDM_QUERY:    onQuery(hwnd);    break;
