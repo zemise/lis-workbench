@@ -6,7 +6,6 @@
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
 #include <qwt_plot_zoneitem.h>
-#include <qwt_plot_renderer.h>
 #include <qwt_plot_layout.h>
 #include <qwt_legend.h>
 #include <qwt_symbol.h>
@@ -379,10 +378,11 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
 }
 
 QPixmap TrendWindow::renderQwtToPixmap(int w, int h) {
-    QPixmap pix(w, h);
-    pix.fill(Qt::white);
-    QwtPlotRenderer renderer;
-    renderer.renderTo(plot_, pix);
+    // Render the whole chart wrapper (plot + custom legend) at export resolution
+    QSize original = chartWidget_->size();
+    chartWidget_->resize(w, h);
+    QPixmap pix = chartWidget_->grab();
+    chartWidget_->resize(original);
     return pix;
 }
 #endif
