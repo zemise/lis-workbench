@@ -129,8 +129,9 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         maxYTickW = std::max(maxYTickW,
             tickFm.horizontalAdvance(QString::number(val, 'g', 4)));
     }
-    // yLabelW column on left, tick labels on right
-    int yAxisW = yLabelW + gap_ + maxYTickW;
+    // yLabelW column on left, tick labels on right, gap to axis
+    int tickPad = 6;  // match X-axis spacing
+    int yAxisW = yLabelW + gap_ + maxYTickW + tickPad;
 
     QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
     int xTickH = tickFm.height() * 2 + gap_;   // date + time
