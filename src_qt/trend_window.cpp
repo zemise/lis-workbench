@@ -191,18 +191,16 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
 
     // ── X-axis ──────────────────────────────────
     p.setFont(tickFont);
-    int maxTicks = std::min(5, static_cast<int>(pts_.size()));
-    for (int t = 0; t < maxTicks; ++t) {
-        size_t idx = (maxTicks <= 1) ? 0
-            : static_cast<size_t>(std::llround(t * (pts_.size() - 1.0) / (maxTicks - 1)));
+    int nPts = static_cast<int>(pts_.size());
+    int lw = std::min(60, plotArea.width() / nPts - 4);
+    for (int t = 0; t < nPts; ++t) {
         int xx = plotArea.left()
-               + static_cast<int>(idx * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
+               + static_cast<int>(t * plotArea.width() / std::max(1, nPts - 1));
         p.setPen(QColor(0x55,0x55,0x55));
         p.drawLine(xx, plotArea.bottom(), xx, plotArea.bottom() + 6);
-        QString rt = s8(pts_[idx]->report_time);
+        QString rt = s8(pts_[t]->report_time);
         QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
         QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
-        int lw = std::min(60, plotArea.width() / maxTicks - 4);
         p.setClipping(false);
         p.drawText(QRect(xx - lw/2, plotArea.bottom() + 6, lw, tickFm.height()),
                    Qt::AlignHCenter | Qt::TextDontClip, datePart);
