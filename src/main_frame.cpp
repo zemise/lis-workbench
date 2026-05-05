@@ -108,10 +108,12 @@ void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
                               0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
                               g_ctx.instance, nullptr);
-    int parts[] = {300, -1, 200, 260};
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int w = rc.right - rc.left;
+    int parts[] = {300, w - 460, w - 260, w};
     SendMessageW(sb, SB_SETPARTS, 4, (LPARAM)parts);
     SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
-    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(1, SBT_NOBORDERS), (LPARAM)L"");
     std::wstring ip = L"本机：" + getLocalIp();
     SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS), (LPARAM)ip.c_str());
 }
@@ -131,7 +133,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_SIZE: {
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
-            if (sb) SendMessageW(sb, WM_SIZE, 0, 0);
+            if (sb) {
+                int parts[] = {300, LOWORD(lp) - 460, LOWORD(lp) - 260, LOWORD(lp)};
+                SendMessageW(sb, SB_SETPARTS, 4, (LPARAM)parts);
+                SendMessageW(sb, WM_SIZE, 0, 0);
+            }
             return 0;
         }
         case WM_COMMAND: {
