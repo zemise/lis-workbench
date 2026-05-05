@@ -103,8 +103,7 @@ static void writeGnuplotScript(QTextStream& out,
         ? "结果值" : "结果值 (" + pts[0]->unit + ")";
 
     // gnuplot script — pngcairo, enhanced text, SCI quality
-    out << "set terminal pngcairo enhanced size " << width << "," << height
-        << " font 'Microsoft YaHei,10' rounded\n";
+    out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
     out << "set encoding utf8\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
     out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
