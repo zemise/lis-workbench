@@ -297,6 +297,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         auto* upper = chart_->addGraph();
         upper->setData(bandX, QVector<double>(2, refHigh));
         upper->setPen(Qt::NoPen);
+        upper->removeFromLegend();
         auto* lower = chart_->addGraph();
         lower->setData(bandX, QVector<double>(2, refLow));
         lower->setPen(QPen(axisColor, 0.8, Qt::DashLine));
