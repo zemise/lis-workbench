@@ -155,13 +155,16 @@ void TrendWindow::setupUi() {
 
     // Dummy curve — legend-only entry for reference zone
     refLegendCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"参考区间"));
+    refLegendCurve_->setStyle(QwtPlotCurve::Dots);
     QwtSymbol* refSym = new QwtSymbol(QwtSymbol::Rect,
                                        QBrush(QColor(0xF2,0xF2,0xF2)),
                                        QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine),
                                        QSize(14, 10));
     refLegendCurve_->setSymbol(refSym);
     refLegendCurve_->setItemAttribute(QwtPlotItem::Legend, true);
-    refLegendCurve_->setVisible(false);
+    // Single dummy point so legend shows symbol (invisible by being outside view)
+    QVector<double> dx{99999}, dy{0};
+    refLegendCurve_->setSamples(dx, dy);
     refLegendCurve_->attach(plot_);
 
     chartWidget_ = plot_;
@@ -306,22 +309,22 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     // Trend line
     lineCurve_->setSamples(x, y);
 
-    // Scatter points — white-bordered filled circles (Win32 style)
+    // Scatter — attach all (even empty) so legend shows correct symbols
     auto setScatter = [this](QwtPlotCurve* c, const QVector<double>& xs,
-                              const QVector<double>& ys, const QColor& fill) {
-        c->detach();
-        if (xs.isEmpty()) return;
+                              const QVector<double>& ys) {
+        if (!c->plot()) c->attach(plot_);
+        if (xs.isEmpty()) {
+            c->setVisible(false);
+            return;
+        }
+        c->setVisible(true);
         c->setSamples(xs, ys);
         c->setStyle(QwtPlotCurve::Dots);
-        QwtSymbol* ring = new QwtSymbol(QwtSymbol::Ellipse,
-                                        QBrush(fill), QPen(Qt::white, 2.5), QSize(11,11));
-        c->setSymbol(ring);
-        c->attach(plot_);
         c->setZ(lineCurve_->z() + 1);
     };
-    setScatter(normalScatter_, xn, yn, QColor(0x23,0x23,0x23));
-    setScatter(highScatter_,   xh, yh, QColor(0xD2,0x28,0x28));
-    setScatter(lowScatter_,    xlVals, ylVals, QColor(0x28,0x50,0xD2));
+    setScatter(normalScatter_, xn, yn);
+    setScatter(highScatter_,   xh, yh);
+    setScatter(lowScatter_,    xlVals, ylVals);
 
     // Reference zone
     refZone_->detach();
