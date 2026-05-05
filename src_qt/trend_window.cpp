@@ -421,20 +421,16 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         chart_->plotLayout()->addElement(0, 0, el);
     }
 
-    // ── Legend — SCI style: top-right inset, semi-transparent ──
+    // ── Legend — outside plot, below chart (never overlaps) ──
     chart_->legend->setVisible(true);
-    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xD0)));
-    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
-    chart_->legend->setFont(QFont("Microsoft YaHei", 7));
-    chart_->legend->setIconSize(10, 8);
+    chart_->legend->setBrush(Qt::NoBrush);
+    chart_->legend->setBorderPen(Qt::NoPen);
+    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
+    chart_->legend->setIconSize(12, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    chart_->legend->setRowSpacing(0);
-    chart_->legend->setMargins(QMargins(4, 2, 4, 2));
-    // Position inside plot, top-right corner
-    chart_->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
-    chart_->axisRect()->insetLayout()->setInsetPlacement(0, QCPLayoutInset::ipFree);
-    chart_->axisRect()->insetLayout()->setInsetRect(0,
-        QRectF(0.72, 0.02, 0.26, 0.22));
+    // Move legend to a dedicated row below the axis rect
+    chart_->plotLayout()->addElement(2, 0, chart_->legend);
+    chart_->plotLayout()->setRowStretchFactor(2, 0.001);
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
