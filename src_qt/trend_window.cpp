@@ -136,9 +136,9 @@ static void writeGnuplotScript(QTextStream& out,
     out << ") font ',9' rotate by 0 offset 0,-0.8\n";
 
     out << "plot '-' u 1:2 w lines lw 2.5 lc rgb '#1E5FB4' ti 'Result',"
-           " '' u 1:2 w points pt 7 ps 1.3 lc rgb '#232323' ti 'Normal',"
-           " '' u 1:2 w points pt 7 ps 1.3 lc rgb '#D22828' ti 'High',"
-           " '' u 1:2 w points pt 7 ps 1.3 lc rgb '#2850D2' ti 'Low'\n";
+           " '-' u 1:2 w points pt 7 ps 1.3 lc rgb '#232323' ti 'Normal',"
+           " '-' u 1:2 w points pt 7 ps 1.3 lc rgb '#D22828' ti 'High',"
+           " '-' u 1:2 w points pt 7 ps 1.3 lc rgb '#2850D2' ti 'Low'\n";
 
     // Write data: all points for line, then filtered by normal status
     auto writePoints = [&](const std::function<bool(const search::TrendPoint*)>& filter) {
@@ -380,8 +380,8 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     QString pngPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".png";
     QFile::remove(pngPath);
 
-    int w = std::min(chartLabel_->width() > 100 ? chartLabel_->width() : 800, 1200);
-    int h = std::min(chartLabel_->height() > 100 ? chartLabel_->height() : 500, 800);
+    int w = 1000;
+    int h = 600;
     {
         QString script;
         QTextStream buf(&script);
