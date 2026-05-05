@@ -120,9 +120,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupMenus(hwnd);
 
             // Toolbar — matching menu bar: height = menu font + padding
+            LOGFONTW lf{};
+            GetObjectW(g_ctx.menuFont, sizeof(lf), &lf);
+            int tbH = abs(lf.lfHeight) * 2;
             HWND tb = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE,
-                0, 0, 0, 26, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+                0, 0, 0, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
             // Close button on right side
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
