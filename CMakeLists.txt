@@ -63,11 +63,29 @@ if(BUILD_QT_GUI)
 
     # Qwt 6.3.0 — scientific chart library (LGPL)
     find_package(Qwt QUIET)
-    if(Qwt_FOUND)
-        message(STATUS "Qwt found: ${Qwt_DIR}")
-    else()
-        message(WARNING "Qwt not found — trend chart will be placeholder."
-                        " Install: vcpkg install qwt")
+    if(NOT Qwt_FOUND)
+        # Fallback: manual search for qmake-built Qwt
+        find_path(QWT_INCLUDE_DIR qwt_plot.h
+            PATHS "C:/Qwt-6.3.0/src" "C:/qwt-src/src"
+                  "C:/qwt-6.3.0/src" "${CMAKE_PREFIX_PATH}/include/qwt"
+            PATH_SUFFIXES qwt
+        )
+        find_library(QWT_LIBRARY qwt
+            PATHS "C:/Qwt-6.3.0/lib" "C:/qwt-src/lib"
+                  "C:/qwt-6.3.0/lib"
+        )
+        if(QWT_INCLUDE_DIR AND QWT_LIBRARY)
+            message(STATUS "Qwt found (manual): ${QWT_INCLUDE_DIR}")
+            set(Qwt_FOUND TRUE)
+            add_library(qwt::qwt UNKNOWN IMPORTED)
+            set_target_properties(qwt::qwt PROPERTIES
+                IMPORTED_LOCATION "${QWT_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${QWT_INCLUDE_DIR}"
+            )
+        else()
+            message(WARNING "Qwt not found — trend chart will be placeholder."
+                            " Build Qwt with: qmake && nmake && nmake install")
+        endif()
     endif()
 
     add_executable(result_search_qt WIN32
