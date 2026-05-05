@@ -302,7 +302,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
 
     // ── Reference range band ───────────────────────────────
     if (hasRef) {
-        QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size() - 1)};
+        QVector<double> bandX = {-0.5, static_cast<double>(itemPoints.size()) - 0.5};
         auto* upper = chart_->addGraph();
         upper->setData(bandX, QVector<double>(2, refHigh));
         upper->setPen(Qt::NoPen);
@@ -340,7 +340,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
 
     // ── Axes styling (ggplot2 theme_bw equivalent) ──────
-    chart_->xAxis->setRange(0.0, static_cast<double>(itemPoints.size()) - 1.0);
+    chart_->xAxis->setRange(-0.5, static_cast<double>(itemPoints.size()) - 0.5);
     chart_->yAxis->setRange(yMin, yMax);
 
     // Common axis pen: clean thin line, ticks outward
