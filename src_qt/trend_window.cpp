@@ -171,9 +171,9 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         // Grid line
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
-        // Tick mark (outward from axis)
-        p.setPen(QColor(0x55,0x55,0x55));
-        p.drawLine(plotArea.left() - 4, yy, plotArea.left(), yy);
+        // Tick mark (outward, 6px left of axis)
+        p.setPen(QPen(QColor(0x55,0x55,0x55), 1.2));
+        p.drawLine(plotArea.left() - 6, yy, plotArea.left(), yy);
         int tickLeft = yLabelW + gap_;
         p.drawText(QRect(tickLeft, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
                    Qt::AlignRight | Qt::AlignVCenter,
@@ -197,7 +197,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         int xx = plotArea.left()
                + static_cast<int>(idx * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
         p.setPen(QColor(0x55,0x55,0x55));
-        p.drawLine(xx, plotArea.bottom(), xx, plotArea.bottom() + 4);
+        p.drawLine(xx, plotArea.bottom(), xx, plotArea.bottom() + 6);
         QString rt = s8(pts_[idx]->report_time);
         QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
         QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
