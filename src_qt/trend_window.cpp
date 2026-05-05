@@ -4,11 +4,14 @@
 
 #include <QApplication>
 #include <QFileDialog>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -104,23 +107,33 @@ void TrendWindow::setupUi() {
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
 
-    // Legend — default inset, top-right corner
-    chart_->legend->setVisible(true);
-    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xE0)));
-    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
-    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(14, 10);
-    chart_->legend->setSelectableParts(QCPLegend::spNone);
+    // Hide built-in legend — use external legend widget instead
+    chart_->legend->setVisible(false);
+
+    // External legend frame
+    legendFrame_ = new QFrame;
+    legendFrame_->setFrameStyle(QFrame::StyledPanel);
+    legendFrame_->setMaximumWidth(140);
+    legendLayout_ = new QVBoxLayout(legendFrame_);
+    legendLayout_->setContentsMargins(6, 4, 6, 4);
+    legendLayout_->setSpacing(3);
+    updateLegend();
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
-    auto* chartArea = new QVBoxLayout;
+    auto* chartArea = new QHBoxLayout;
     chartArea->setContentsMargins(0, 0, 0, 0);
-    chartArea->addWidget(chart_);
-    chartArea->addWidget(loadingLabel_);
+    chartArea->addWidget(chart_, 1);
+    chartArea->addWidget(legendFrame_);
+
+    auto* containerLayout = new QVBoxLayout;
+    containerLayout->setContentsMargins(0, 0, 0, 0);
+    containerLayout->addLayout(chartArea);
+    containerLayout->addWidget(loadingLabel_);
+
     auto* chartContainer = new QWidget;
     chartContainer->setMinimumHeight(300);
-    chartContainer->setLayout(chartArea);
+    chartContainer->setLayout(containerLayout);
 
     // Detail table (bottom-left)
     detailModel_ = new QStandardItemModel(0, 7, this);
@@ -430,9 +443,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto left/top/bottom, fixed 160px right margin — legend stays in margin
-    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
-    chart_->axisRect()->setMargins(QMargins(15, 15, 160, 15));
+    // Auto margins — no legend inside chart
+    chart_->axisRect()->setAutoMargins(QCP::msAll);
+    chart_->axisRect()->setMargins(QMargins(15, 15, 15, 15));
     chart_->replot();
 
     // Populate detail table
@@ -525,5 +538,56 @@ void TrendWindow::onExportImages() {
 
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
+}
+
+QWidget* TrendWindow::makeLegendItem(const QColor& color, const QString& text, bool isLine) {
+    auto* w = new QWidget;
+    auto* layout = new QHBoxLayout(w);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    auto* icon = new QLabel;
+    QPixmap pix(14, isLine ? 4 : 10);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    if (isLine) {
+        p.setPen(QPen(color, 2));
+        p.drawLine(0, 2, 14, 2);
+    } else {
+        p.setPen(QPen(Qt::white, 1));
+        p.setBrush(color);
+        p.drawEllipse(2, 1, 8, 8);
+    }
+    p.end();
+    icon->setPixmap(pix);
+    icon->setFixedSize(16, 14);
+
+    auto* label = new QLabel(text);
+    label->setFont(QFont("Microsoft YaHei", 8));
+
+    layout->addWidget(icon);
+    layout->addWidget(label, 1);
+    return w;
+}
+
+void TrendWindow::updateLegend() {
+    // Clear old items
+    while (auto* item = legendLayout_->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+
+    auto add = [this](const QColor& c, const QString& t, bool line = false) {
+        legendLayout_->addWidget(makeLegendItem(c, t, line));
+    };
+
+    add(QColor(0x1E, 0x5F, 0xB4), QString::fromWCharArray(L"结果线"), true);
+    add(QColor(0x23, 0x23, 0x23), QString::fromWCharArray(L"正常"));
+    add(QColor(0xD2, 0x28, 0x28), QString::fromWCharArray(L"偏高"));
+    add(QColor(0x28, 0x50, 0xD2), QString::fromWCharArray(L"低值"));
+    add(QColor(0xF2, 0xF2, 0xF2), QString::fromWCharArray(L"参考区间"));
+
+    // Spacer at bottom
+    legendLayout_->addStretch();
 }
 
