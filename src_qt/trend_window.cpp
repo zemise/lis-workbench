@@ -74,7 +74,8 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
     setWindowTitle(QString::fromWCharArray(L"检验结果趋势图"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     auto screen = QGuiApplication::primaryScreen()->availableGeometry();
-    resize(static_cast<int>(screen.width() * 0.8), static_cast<int>(screen.height() * 0.75));
+    resize(std::max(static_cast<int>(screen.width() * 0.8), 1280),
+           std::max(static_cast<int>(screen.height() * 0.75), 720));
     setupUi();
     loadTrendData();
 }
