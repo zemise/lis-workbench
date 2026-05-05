@@ -397,10 +397,20 @@ void TrendWindow::renderChart(const std::string& itemCode) {
 
     QProcess proc;
     proc.start(gp, {scriptPath});
-    if (!proc.waitForStarted(3000)) return;
+    if (!proc.waitForStarted(3000)) {
+        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 启动失败"));
+        scriptFile.remove();
+        return;
+    }
     proc.waitForFinished(30000);
 
-    chartPixmap_.load(pngPath);
+    if (!QFile::exists(pngPath) || !chartPixmap_.load(pngPath)) {
+        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 生成图片失败：")
+                             + QString::fromUtf8(proc.readAllStandardError()));
+        scriptFile.remove();
+        QFile::remove(pngPath);
+        return;
+    }
     scriptFile.remove();
     QFile::remove(pngPath);
 
