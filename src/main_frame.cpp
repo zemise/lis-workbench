@@ -111,7 +111,7 @@ void setupStatusBar(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     int w = rc.right - rc.left;
-    int parts[] = {300, w - 460, w - 260, w};
+    int parts[] = {350, w - 500, w - 280, w};
     SendMessageW(sb, SB_SETPARTS, 4, (LPARAM)parts);
     SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
     std::wstring ip = L"本机：" + getLocalIp();
@@ -134,7 +134,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
-                int parts[] = {300, LOWORD(lp) - 460, LOWORD(lp) - 260, LOWORD(lp)};
+                int parts[] = {350, LOWORD(lp) - 500, LOWORD(lp) - 280, LOWORD(lp)};
                 SendMessageW(sb, SB_SETPARTS, 4, (LPARAM)parts);
                 SendMessageW(sb, WM_SIZE, 0, 0);
             }
