@@ -115,11 +115,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar below menu bar
+            // Separator line
+            CreateWindowExW(0, L"STATIC", L"",
+                WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
+                0, 0, 0, 1, hwnd, nullptr, g_ctx.instance, nullptr);
+
+            // Toolbar below menu bar (matching visual style)
             HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"",
-                WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS,
+                WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | TBSTYLE_LIST | CCS_NODIVIDER,
                 0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, nullptr);
             SendMessageW(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+            SendMessageW(tb, TB_SETPADDING, 0, MAKELPARAM(6, 4));
             TBBUTTON tbb[1] = {};
             tbb[0].iBitmap = I_IMAGENONE;
             tbb[0].fsState = TBSTATE_ENABLED;
