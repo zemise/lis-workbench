@@ -59,7 +59,7 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent Svg)
+    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
@@ -69,5 +69,5 @@ if(BUILD_QT_GUI)
         src_qt/resources.qrc
     )
     target_include_directories(result_search_qt PRIVATE src src_qt)
-    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent Qt5::Svg)
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
 endif()

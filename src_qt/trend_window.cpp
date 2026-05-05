@@ -11,8 +11,6 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPixmap>
 #include <QProcess>
 #include <QPushButton>
 #include <QSplitter>
@@ -20,7 +18,6 @@
 #include <QTableView>
 #include <QTextStream>
 #include <QTemporaryFile>
-#include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
@@ -105,19 +102,16 @@ static void writeGnuplotScript(QTextStream& out,
     std::string yLabel = pts[0]->unit.empty()
         ? "结果值" : "结果值 (" + pts[0]->unit + ")";
 
-    // gnuplot — pure graphics, fixed margins for Qt text overlay
-    out << "set terminal svg enhanced size " << width << "," << height << "\n";
+    // gnuplot — png terminal + UTF-8 for Chinese
+    out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
+    out << "set encoding utf8\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
-    out << "set lmargin screen 0.12\n";
-    out << "set rmargin screen 0.05\n";
-    out << "set tmargin screen 0.15\n";
-    out << "set bmargin screen 0.15\n";
-    out << "set title ''\n";
-    out << "set xlabel ''\n";
-    out << "set ylabel ''\n";
+    out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
+    out << "set xlabel '检测日期（按结果顺序）' font 'Microsoft YaHei,10'\n";
+    out << "set ylabel '" << yLabel.c_str() << "' font 'Microsoft YaHei,10'\n";
     out << "set yrange [" << yMin << ":" << yMax << "]\n";
     out << "set grid ytics lc rgb '#E0E0E0'\n";
-    out << "set key off\n";
+    out << "set key inside right top font 'Microsoft YaHei,8' width 1\n";
     out << "set style fill transparent solid 0.3\n";
     out << "set format y '%.4g'\n";
 
@@ -128,13 +122,25 @@ static void writeGnuplotScript(QTextStream& out,
             << " fc rgb '#F0F0F0' fs solid 0.5 behind\n";
     }
 
-    // X-axis — numeric indices, no text labels
-    out << "set xtics 1\n";
+    // X-axis labels
+    out << "set xtics (";
+    int maxTicks = std::min(5, static_cast<int>(pts.size()));
+    for (int t = 0; t < maxTicks; ++t) {
+        int idx = (maxTicks <= 1) ? 0
+            : static_cast<int>(std::llround(static_cast<double>(t) * (pts.size() - 1)
+                                            / (maxTicks - 1)));
+        if (t > 0) out << ", ";
+        QString rt = s8(pts[idx]->report_time);
+        QString label = (rt.length() >= 16) ? rt.mid(5, 5) + "\\n" + rt.mid(11, 5)
+                       : (rt.length() >= 10) ? rt.mid(5, 5) : rt;
+        out << "\"" << label.toStdString().c_str() << "\" " << idx;
+    }
+    out << ") font 'Microsoft YaHei,9' rotate by 0 offset 0,-0.8\n";
 
-    out << "plot '-' using 1:2 with lines lw 2.5 lc rgb '#1E5FB4' notitle, \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#232323' notitle, \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#D22828' notitle, \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' notitle\n";
+    out << "plot '-' using 1:2 with lines lw 2.5 lc rgb '#1E5FB4' title '结果线', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#232323' title '正常', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#D22828' title '偏高', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' title '低值'\n";
 
     // Write data: all points for line, then filtered by normal status
     auto writePoints = [&](const std::function<bool(const search::TrendPoint*)>& filter) {
@@ -373,17 +379,18 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     if (!scriptFile.open()) return;
     QString scriptPath = scriptFile.fileName();
 
-    QString svgPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".svg";
-    QFile::remove(svgPath);
+    QString pngPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".png";
+    QFile::remove(pngPath);
 
     int w = chartLabel_->width() > 100 ? chartLabel_->width() : 800;
     int h = chartLabel_->height() > 100 ? chartLabel_->height() : 500;
     {
         QString script;
         QTextStream buf(&script);
-        writeGnuplotScript(buf, itemPoints, w, h, svgPath);
+        writeGnuplotScript(buf, itemPoints, w, h, pngPath);
         QTextStream out(&scriptFile);
         out.setCodec("UTF-8");
+        out.setGenerateByteOrderMark(true);
         out << script;
     }
     scriptFile.close();
@@ -393,115 +400,9 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     if (!proc.waitForStarted(3000)) return;
     proc.waitForFinished(30000);
 
-    // Compute text labels for Qt overlay
-    std::string title = itemPoints[0]->item_name;
-    if (!itemPoints[0]->item_eng.empty()) title += " (" + itemPoints[0]->item_eng + ")";
-    if (!itemPoints[0]->unit.empty()) title += " - " + itemPoints[0]->unit;
-    title += " 趋势图";
-    std::string yLabel = itemPoints[0]->unit.empty()
-        ? "结果值" : "结果值 (" + itemPoints[0]->unit + ")";
-
-    // Render SVG to pixmap via Qt (native font support)
-    QSvgRenderer renderer(svgPath);
-    if (!renderer.isValid()) {
-        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 图表生成失败"));
-        scriptFile.remove();
-        QFile::remove(svgPath);
-        return;
-    }
-    chartPixmap_ = QPixmap(w * 2, h * 2);
-    chartPixmap_.fill(Qt::white);
-    QPainter painter(&chartPixmap_);
-    painter.setRenderHint(QPainter::Antialiasing);
-    renderer.render(&painter);
-
-    // Overlay Chinese text on the rendered chart
-    int pw = chartPixmap_.width();
-    int ph = chartPixmap_.height();
-    QFont titleFont("Microsoft YaHei", 14, QFont::Bold);
-    QFont labelFont("Microsoft YaHei", 11);
-    QFont legendFont("Microsoft YaHei", 9);
-
-    // Title — top center
-    QString qTitle = s8(title);
-    painter.setFont(titleFont);
-    painter.setPen(Qt::black);
-    QRectF titleRect(0, 4, pw, ph * 0.13);
-    painter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignBottom, qTitle);
-
-    // Y-axis label — left side, vertical
-    painter.setFont(labelFont);
-    painter.save();
-    painter.translate(pw * 0.04, ph * 0.55);
-    painter.rotate(-90);
-    painter.drawText(QRect(-ph * 0.3, -20, ph * 0.4, 30),
-                     Qt::AlignCenter, s8(yLabel));
-    painter.restore();
-
-    // X-axis label — bottom center
-    painter.drawText(QRect(0, ph * 0.88, pw, ph * 0.10),
-                     Qt::AlignHCenter | Qt::AlignTop,
-                     QString::fromWCharArray(L"检测日期（按结果顺序）"));
-
-    // Legend — top-right margin
-    painter.setFont(legendFont);
-    int lx = pw * 0.72;
-    int ly = ph * 0.06;
-    int lineH = 22;
-    auto drawLegendItem = [&](int& y, const QColor& c, const QString& text, bool isLine) {
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(c);
-        if (isLine) {
-            painter.setPen(QPen(c, 3));
-            painter.drawLine(lx, y + 7, lx + 20, y + 7);
-            painter.setPen(Qt::NoPen);
-        } else {
-            painter.drawEllipse(lx + 4, y + 2, 10, 10);
-        }
-        painter.setPen(Qt::black);
-        painter.drawText(lx + 26, y, 80, 14, Qt::AlignVCenter, text);
-        y += lineH;
-    };
-    drawLegendItem(ly, QColor(0x1E, 0x5F, 0xB4), QString::fromWCharArray(L"结果线"), true);
-    drawLegendItem(ly, QColor(0x23, 0x23, 0x23), QString::fromWCharArray(L"正常"));
-    drawLegendItem(ly, QColor(0xD2, 0x28, 0x28), QString::fromWCharArray(L"偏高"));
-    drawLegendItem(ly, QColor(0x28, 0x50, 0xD2), QString::fromWCharArray(L"低值"));
-    // Reference band
-    painter.fillRect(lx + 4, ly + 2, 12, 10, QColor(0xF2, 0xF2, 0xF2));
-    painter.setPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
-    painter.drawRect(lx + 4, ly + 2, 12, 10);
-    painter.setPen(Qt::black);
-    painter.drawText(lx + 26, ly, 80, 14, Qt::AlignVCenter,
-                     QString::fromWCharArray(L"参考区间"));
-    ly += lineH;
-
-    // X-axis tick labels (date + time under each tick)
-    painter.setFont(QFont("Microsoft YaHei", 8));
-    int plotLeft = pw * 0.12;
-    int plotRight = pw * 0.95;
-    int plotBottom = ph * 0.85;
-    int maxTicks = std::min(5, static_cast<int>(itemPoints.size()));
-    for (int t = 0; t < maxTicks; ++t) {
-        int idx = (maxTicks <= 1) ? 0
-            : static_cast<int>(std::llround(static_cast<double>(t) * (itemPoints.size() - 1)
-                                            / (maxTicks - 1)));
-        int tickX = plotLeft + static_cast<int>(
-            (plotRight - plotLeft) * idx / std::max(1, static_cast<int>(itemPoints.size()) - 1));
-        QString rt = s8(itemPoints[idx]->report_time);
-        QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt.left(5);
-        QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
-        painter.setPen(Qt::black);
-        painter.drawText(QRect(tickX - 30, plotBottom + 6, 60, 14),
-                         Qt::AlignHCenter, datePart);
-        if (!timePart.isEmpty())
-            painter.drawText(QRect(tickX - 30, plotBottom + 20, 60, 14),
-                             Qt::AlignHCenter, timePart);
-    }
-
-    painter.end();
-
+    chartPixmap_.load(pngPath);
     scriptFile.remove();
-    QFile::remove(svgPath);
+    QFile::remove(pngPath);
 
     chartLabel_->setPixmap(chartPixmap_.scaled(chartLabel_->size(),
                                                 Qt::KeepAspectRatio,
@@ -520,10 +421,6 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     QString gp = gnuplotPath();
     if (gp.isEmpty()) return;
 
-    // Render to temp SVG first, then convert to PNG via Qt
-    QString svgPath = QDir::tempPath() + "/trend_export_" + QString::number(QCoreApplication::applicationPid()) + ".svg";
-    QFile::remove(svgPath);
-
     QTemporaryFile scriptFile(QDir::tempPath() + "/trend_XXXXXX.gp");
     scriptFile.setAutoRemove(false);
     if (!scriptFile.open()) return;
@@ -531,7 +428,8 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     {
         QTextStream out(&scriptFile);
         out.setCodec("UTF-8");
-        writeGnuplotScript(out, itemPoints, w, h, svgPath);
+        out.setGenerateByteOrderMark(true);
+        writeGnuplotScript(out, itemPoints, w, h, pngPath);
     }
     scriptFile.close();
 
@@ -540,18 +438,6 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     if (!proc.waitForStarted(3000)) return;
     proc.waitForFinished(30000);
     scriptFile.remove();
-
-    // Convert SVG to PNG via Qt
-    QSvgRenderer renderer(svgPath);
-    if (renderer.isValid()) {
-        QPixmap pix(w, h);
-        pix.fill(Qt::white);
-        QPainter painter(&pix);
-        renderer.render(&painter);
-        painter.end();
-        pix.save(pngPath, "PNG");
-    }
-    QFile::remove(svgPath);
 }
 
 void TrendWindow::onExportCsv() {
