@@ -236,7 +236,7 @@ void TrendWindow::onItemClicked(const QModelIndex& idx) {
 void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& pts) {
     // Build data vectors
     QVector<double> x(pts.size()), y(pts.size());
-    QVector<double> xn, yn, xh, yh, xl, yl;
+    QVector<double> xn, yn, xh, yh, xlVals, ylVals;
     double yMin=pts[0]->result_value, yMax=pts[0]->result_value;
     bool hasRef=false; double refLo=0, refHi=0;
 
@@ -247,7 +247,7 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
         yMin = std::min(yMin, val); yMax = std::max(yMax, val);
 
         if (pts[i]->normal == "1")      { xh.push_back(i); yh.push_back(val); }
-        else if (pts[i]->normal == "5") { xl.push_back(i); yl.push_back(val); }
+        else if (pts[i]->normal == "5") { xlVals.push_back(i); ylVals.push_back(val); }
         else                            { xn.push_back(i); yn.push_back(val); }
 
         if (!pts[i]->lower_bound.empty() || !pts[i]->upper_bound.empty()) {
@@ -275,8 +275,8 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     // Axis labels
     plot_->setAxisTitle(QwtPlot::xBottom,
         QString::fromWCharArray(L"检测日期（按结果顺序）"));
-    std::string yl = pts[0]->unit.empty() ? "结果值" : "结果值 (" + pts[0]->unit + ")";
-    plot_->setAxisTitle(QwtPlot::yLeft, s8(yl));
+    std::string yLabel = pts[0]->unit.empty() ? "结果值" : "结果值 (" + pts[0]->unit + ")";
+    plot_->setAxisTitle(QwtPlot::yLeft, s8(yLabel));
 
     // Trend line
     lineCurve_->setSamples(x, y);
@@ -294,7 +294,7 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     };
     setScatter(normalScatter_, xn, yn, QColor(0x23,0x23,0x23));
     setScatter(highScatter_,   xh, yh, QColor(0xD2,0x28,0x28));
-    setScatter(lowScatter_,    xl, yl, QColor(0x28,0x50,0xD2));
+    setScatter(lowScatter_,    xlVals, ylVals, QColor(0x28,0x50,0xD2));
 
     // Reference zone
     refZone_->detach();
