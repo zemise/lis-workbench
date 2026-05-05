@@ -262,7 +262,7 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     if (hasRef) { yMin = std::min(yMin,refLo) - pad; yMax = std::max(yMax,refHi) + pad; }
     else        { yMin -= pad; yMax += pad; }
 
-    plot_->setAxisScale(QwtPlot::xBottom, -0.3, pts.size() - 0.7);
+    plot_->setAxisScale(QwtPlot::xBottom, 0.0, pts.size() - 1.0);
     plot_->setAxisScale(QwtPlot::yLeft, yMin, yMax);
 
     // Title
