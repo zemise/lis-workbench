@@ -334,7 +334,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(Qt::white, 1.0), QBrush(fill), 7);
         g->setScatterStyle(ss);
         g->setName(name);
-        g->setClipToAxisRect(false);
+        g->setClipAxisRect(nullptr);
     };
     addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
     addScatter(xHigh,   yHigh,   highColor,   QString::fromWCharArray(L"偏高"));
