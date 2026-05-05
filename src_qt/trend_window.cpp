@@ -421,7 +421,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         chart_->plotLayout()->addElement(0, 0, el);
     }
 
-    // ── Legend — inside plot, top-right, compact ──────────
+    // ── Legend — outside plot, bottom ─────────────────────
     chart_->legend->setVisible(true);
     chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xEE)));
     chart_->legend->setBorderPen(QPen(QColor(0xDD, 0xDD, 0xDD), 0.5));
@@ -429,8 +429,13 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     chart_->legend->setIconSize(14, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
     chart_->legend->setRowSpacing(1);
-    // Position legend inside plot area, top-right
-    chart_->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
+    // Position legend row BELOW the axis rect in the plot layout
+    chart_->plotLayout()->setRowSpacing(4);
+    chart_->axisRect()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    chart_->legend->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    // Move legend from default inset to a separate row in plotLayout
+    chart_->plotLayout()->addElement(1, 0, chart_->legend);
+    chart_->plotLayout()->setRowStretchFactor(1, 0.001);
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
