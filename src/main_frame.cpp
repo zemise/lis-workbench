@@ -28,17 +28,6 @@ constexpr int ID_TIMER     = 5001;
 
 app::Context g_ctx;
 
-HFONT createFont(int pointSize) {
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    LOGFONTW lf = nm.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
-}
-
 void onQuery(HWND owner) {
     MessageBoxW(owner, L"检验结果查询 — 待接入", L"检验结果查询", MB_ICONINFORMATION);
 }
@@ -173,8 +162,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_ctx.instance = instance;
-    g_ctx.fontSize = 9;
-    g_ctx.uiFont = createFont(g_ctx.fontSize);
+    // Base font: system message font (status bar)
+    NONCLIENTMETRICSW nm{};
+    nm.cbSize = sizeof(nm);
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
+    g_ctx.uiFont = CreateFontIndirectW(&nm.lfMessageFont);
 
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
