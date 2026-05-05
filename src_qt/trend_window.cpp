@@ -96,6 +96,8 @@ void TrendWindow::setupUi() {
     chart_ = new QCustomPlot;
     chart_->setInteractions(0);
     chart_->setAntialiasedElements(QCP::aeAll);
+    chart_->setMinimumSize(800, 450);
+    chart_->setMaximumSize(800, 450);
     chart_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
     chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
@@ -109,7 +111,7 @@ void TrendWindow::setupUi() {
     chartArea->addWidget(chart_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
-    chartContainer->setFixedSize(800, 450);
+    chartContainer->setMinimumHeight(450);
     chartContainer->setLayout(chartArea);
 
     // Detail table (bottom-left)
