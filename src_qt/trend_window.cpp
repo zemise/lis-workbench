@@ -504,6 +504,7 @@ void TrendWindow::onExportImages() {
     if (dir.isEmpty()) return;
 
     QString base = exportBaseName(lastQuery_);
+    QSize savedSize = chart_->size();
 
     for (int i = 0; i < itemModel_->rowCount(); ++i) {
         auto* checkItem = itemModel_->item(i, 0);
@@ -518,8 +519,12 @@ void TrendWindow::onExportImages() {
         QString fullPath = dir + "/" + fileName;
 
         updateChart(code);
+        chart_->resize(1600, 1000);
+        chart_->replot();
         chart_->savePng(fullPath, 1600, 1000, 1.0);
     }
+
+    chart_->resize(savedSize);
     updateChart(currentItemCode_);
 
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
