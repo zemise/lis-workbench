@@ -295,16 +295,16 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     lineCurve_->setSamples(x, y);
 
     // Scatter points — white-bordered filled circles (Win32 style)
-    auto setScatter = [](QwtPlotCurve* c, const QVector<double>& xs,
-                         const QVector<double>& ys, const QColor& fill) {
+    auto setScatter = [this](QwtPlotCurve* c, const QVector<double>& xs,
+                              const QVector<double>& ys, const QColor& fill) {
         if (xs.isEmpty()) { c->detach(); return; }
         c->setSamples(xs, ys);
         c->setStyle(QwtPlotCurve::Dots);
-        // Two-layer symbol: dark outline + white ring + colored fill
         QwtSymbol* ring = new QwtSymbol(QwtSymbol::Ellipse,
                                         QBrush(fill), QPen(Qt::white, 2.5), QSize(11,11));
         c->setSymbol(ring);
-        c->attach(c->plot());
+        if (!c->plot()) c->attach(plot_);
+        c->setZ(lineCurve_->z() + 1);  // scatter above trend line
     };
     setScatter(normalScatter_, xn, yn, QColor(0x23,0x23,0x23));
     setScatter(highScatter_,   xh, yh, QColor(0xD2,0x28,0x28));
