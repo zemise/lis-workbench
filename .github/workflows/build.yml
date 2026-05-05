@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── Win32 cross-compile (Linux → Windows via MinGW) ──────────
   build-win32:
@@ -79,6 +82,14 @@ jobs:
         shell: bash
         run: cmake --build build/windows-qt --target result_search_qt --config Release -j
 
+      - name: Deploy Qt DLLs
+        shell: bash
+        run: |
+          mkdir -p deploy
+          cp build/windows-qt/Release/result_search_qt.exe deploy/
+          "${{ runner.temp }}/Qt/5.15.2/msvc2019_64/bin/windeployqt" \
+            --no-translations --no-compiler-runtime deploy/result_search_qt.exe
+
       - name: Package NSIS installer (Qt)
         shell: cmd
         run: |
@@ -87,16 +98,16 @@ jobs:
             /DAPP_NAME="Result Search Qt" ^
             /DAPP_VERSION=${{ steps.version.outputs.value }} ^
             /DAPP_EXE=result_search_qt.exe ^
-            /DBUILD_DIR=..\build\windows-qt\Release ^
+            /DBUILD_DIR=..\deploy ^
             /DOUTPUT_DIR=..\out\windows\installer ^
             /DOUTPUT_NAME=ResultSearch-Qt-Setup.exe ^
             packaging\ResultSearch.nsi
 
-      - name: Upload Qt EXE
+      - name: Upload Qt (portable)
         uses: actions/upload-artifact@v4
         with:
           name: result_search-qt-${{ steps.version.outputs.value }}
-          path: build/windows-qt/Release/result_search_qt.exe
+          path: deploy/
 
       - name: Upload Qt installer
         uses: actions/upload-artifact@v4

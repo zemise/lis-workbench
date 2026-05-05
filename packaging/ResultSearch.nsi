@@ -4,7 +4,7 @@ Unicode false
 !define APP_NAME "Result Search"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.05.03"
+!define APP_VERSION "v2026.05.06"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
@@ -40,6 +40,9 @@ UninstPage instfiles
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${BUILD_DIR}\${APP_EXE}"
+  File /nonfatal "${BUILD_DIR}\*.dll"
+  File /nonfatal "${BUILD_DIR}\*.pdb"
+  SetOutPath "$INSTDIR"
   SetOverwrite off
   IfFileExists "$INSTDIR\result_search.ini" +2 0
     FileOpen $0 "$INSTDIR\result_search.ini" w

@@ -1,10 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
 project(cpp_search LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_AUTOMOC ON)
 
 # MSVC defaults to system locale (e.g. GBK/936) for source encoding.
 # Force UTF-8 so Chinese string literals survive compilation.
@@ -54,11 +59,15 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets)
+    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
+        src_qt/main_window.cpp
+        src_qt/settings_dialog.cpp
+        src_qt/trend_window.cpp
+        src_qt/resources.qrc
     )
-    target_include_directories(result_search_qt PRIVATE src)
-    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain)
+    target_include_directories(result_search_qt PRIVATE src src_qt)
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
 endif()
