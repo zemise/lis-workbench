@@ -420,6 +420,14 @@ void MainWindow::openSettings() {
         QSettings(iniPath(), QSettings::IniFormat).setValue("Database/Password", QString::fromStdWString(state_.settings.db.password));
         QSettings(iniPath(), QSettings::IniFormat).setValue("UI/FontSize", state_.settings.ui.font_size);
 
+        // Apply font size to the entire UI
+        QFont f = font();
+        f.setPointSize(state_.settings.ui.font_size);
+        setFont(f);
+        // Refresh child widgets
+        for (auto* child : findChildren<QWidget*>())
+            child->setFont(f);
+
         roomCombo_->clear();
         machCombo_->clear();
         patientTypeCombo_->clear();
