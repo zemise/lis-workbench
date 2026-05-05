@@ -99,23 +99,18 @@ void TrendWindow::setupUi() {
     chart_->setMinimumHeight(300);
     chart_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Layout: row 0 = title, row 1 = chart(left) + legend(right)
+    // Title row above chart
     chart_->plotLayout()->insertRow(0);
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
-    chart_->plotLayout()->setColumnStretchFactor(0, 1);  // chart column
-    chart_->plotLayout()->setColumnStretchFactor(1, 0);  // legend column
 
-    // Legend to the right of chart
+    // Legend — default inset, top-right corner
     chart_->legend->setVisible(true);
-    chart_->legend->setBrush(Qt::NoBrush);
-    chart_->legend->setBorderPen(Qt::NoPen);
+    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xE0)));
+    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(12, 10);
+    chart_->legend->setIconSize(14, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    // Remove from inset (default) and place in plotLayout right column
-    chart_->axisRect()->insetLayout()->remove(chart_->legend);
-    chart_->plotLayout()->addElement(1, 1, chart_->legend);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
@@ -435,9 +430,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Let QCustomPlot calculate margins automatically
+    // Auto margins with extra right padding for legend
     chart_->axisRect()->setAutoMargins(QCP::msAll);
-    chart_->axisRect()->setMargins(QMargins(15, 15, 15, 15));
+    chart_->axisRect()->setMargins(QMargins(15, 15, 120, 15));
     chart_->replot();
 
     // Populate detail table
