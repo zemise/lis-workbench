@@ -161,6 +161,7 @@ void TrendWindow::setupUi() {
     mainSplitter_->addWidget(rightPanel);
     mainSplitter_->setStretchFactor(0, 1);
     mainSplitter_->setStretchFactor(1, 0);
+    mainSplitter_->setSizes({800, 350});
 
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->addWidget(mainSplitter_);
