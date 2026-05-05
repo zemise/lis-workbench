@@ -120,6 +120,7 @@ void TrendWindow::setupUi() {
     chart_->legend->setSelectableParts(QCPLegend::spNone);
     chart_->legend->setMargins(QMargins(2, 2, 2, 2));
     chart_->legend->setRowSpacing(0);
+    chart_->legend->setMaximumWidth(80);
     // Remove from inset, place in right column
     chart_->axisRect()->insetLayout()->take(chart_->legend);
     chart_->plotLayout()->addElement(1, 1, chart_->legend);
