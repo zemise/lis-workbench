@@ -113,6 +113,8 @@ void TrendWindow::setupUi() {
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
     chart_->legend->setIconSize(12, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
+    // Remove from inset (default) and place in plotLayout right column
+    chart_->axisRect()->insetLayout()->remove(chart_->legend);
     chart_->plotLayout()->addElement(1, 1, chart_->legend);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
