@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QGuiApplication>
@@ -346,7 +347,7 @@ void TrendWindow::renderChart(const std::string& itemCode) {
         }
     }
 
-    // Populate detail table unconditionally
+    // Populate detail table
     detailModel_->removeRows(0, detailModel_->rowCount());
     for (const auto* p : itemPoints) {
         QList<QStandardItem*> row;
@@ -369,41 +370,40 @@ void TrendWindow::renderChart(const std::string& itemCode) {
         return;
     }
 
-    // Check gnuplot availability
     QString gp = gnuplotPath();
     if (gp.isEmpty()) {
         chartLabel_->setText(QString::fromWCharArray(L"未找到 gnuplot，请安装: winget install gnuplot.gnuplot"));
         return;
     }
 
-    // Build script
-    QString script;
-    QTextStream out(&script);
+    // Write script + data to temp files, let gnuplot render to temp PNG
+    QTemporaryFile scriptFile(QDir::tempPath() + "/trend_XXXXXX.gp");
+    scriptFile.setAutoRemove(false);
+    if (!scriptFile.open()) return;
+    QString scriptPath = scriptFile.fileName();
+
+    QString pngPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".png";
+    QFile::remove(pngPath);  // clean previous run
+
     int w = chartLabel_->width() > 100 ? chartLabel_->width() : 800;
     int h = chartLabel_->height() > 100 ? chartLabel_->height() : 500;
-    writeGnuplotScript(out, itemPoints, w, h);
+    {
+        QTextStream out(&scriptFile);
+        writeGnuplotScript(out, itemPoints, w, h, pngPath);
+    }
+    scriptFile.close();
 
-    // Run gnuplot, pipe script via stdin
     QProcess proc;
-    proc.start(gp, {"-"});
-    if (!proc.waitForStarted(3000)) {
-        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 启动失败"));
-        return;
-    }
-    proc.write(script.toUtf8());
-    proc.closeWriteChannel();
-    proc.waitForFinished(10000);
+    proc.start(gp, {scriptPath});
+    if (!proc.waitForStarted(3000)) return;
+    proc.waitForFinished(30000);
 
-    QByteArray pngData = proc.readAllStandardOutput();
-    if (pngData.isEmpty()) {
-        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 生成图片失败：")
-                             + QString::fromUtf8(proc.readAllStandardError()));
-        return;
-    }
+    chartPixmap_.load(pngPath);
+    scriptFile.remove();
+    QFile::remove(pngPath);
 
-    chartPixmap_.loadFromData(pngData);
     if (chartPixmap_.isNull()) {
-        chartLabel_->setText(QString::fromWCharArray(L"无法加载趋势图"));
+        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 图表生成失败"));
         return;
     }
     chartLabel_->setPixmap(chartPixmap_.scaled(chartLabel_->size(),
@@ -423,16 +423,21 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     QString gp = gnuplotPath();
     if (gp.isEmpty()) return;
 
-    QString script;
-    QTextStream out(&script);
-    writeGnuplotScript(out, itemPoints, w, h, path);
+    QTemporaryFile scriptFile(QDir::tempPath() + "/trend_XXXXXX.gp");
+    scriptFile.setAutoRemove(false);
+    if (!scriptFile.open()) return;
+    QString scriptPath = scriptFile.fileName();
+    {
+        QTextStream out(&scriptFile);
+        writeGnuplotScript(out, itemPoints, w, h, path);
+    }
+    scriptFile.close();
 
     QProcess proc;
-    proc.start(gp, {"-"});
+    proc.start(gp, {scriptPath});
     if (!proc.waitForStarted(3000)) return;
-    proc.write(script.toUtf8());
-    proc.closeWriteChannel();
     proc.waitForFinished(30000);
+    scriptFile.remove();
 }
 
 void TrendWindow::onExportCsv() {
