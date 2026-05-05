@@ -421,17 +421,17 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         chart_->plotLayout()->addElement(0, 0, el);
     }
 
-    // ── Legend — outside plot, bottom ─────────────────────
+    // ── Legend — title area, right side (Win32: above plot, not overlapping) ──
     chart_->legend->setVisible(true);
     chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xEE)));
     chart_->legend->setBorderPen(QPen(QColor(0xDD, 0xDD, 0xDD), 0.5));
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
     chart_->legend->setIconSize(14, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    chart_->legend->setRowSpacing(1);
-    // Move legend from default inset to a separate row below the chart
-    chart_->plotLayout()->addElement(1, 0, chart_->legend);
-    chart_->plotLayout()->setRowStretchFactor(1, 0.001);
+    // Position legend in the title row, right-aligned, sharing space with title
+    chart_->plotLayout()->addElement(0, 1, chart_->legend);
+    chart_->plotLayout()->setColumnStretchFactor(0, 1);  // title column stretches
+    chart_->plotLayout()->setColumnStretchFactor(1, 0);  // legend column fixed
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
