@@ -32,8 +32,8 @@
 | `search_ui_layout.*` | 硬编码像素布局 + splitter | Qt Layout 系统 + QSplitter |
 | `search_settings_dialog.*` | Win32 模式对话框 | QDialog |
 | `app_settings_io.*` | Win32 INI 读写 | QSettings |
-| `trend_window.*` | Win32 趋势窗口 + GDI+ 图表 | QMainWindow + QCustomPlot |
-| `trend_chart_renderer.*` | GDI+ 离屏位图 | QCustomPlot 内置离屏导出 |
+| `trend_window.*` | Win32 趋势窗口 + GDI+ 图表 | QDialog + QwtPlot |
+| `trend_chart_renderer.*` | GDI+ 离屏位图 | QwtPlotRenderer → PNG/PDF |
 
 ### 需新建
 
@@ -42,7 +42,7 @@
 | `src_qt/main_window.cpp` | Qt 主窗口 — 继承 QMainWindow，组装菜单/工具栏/状态栏 |
 | `src_qt/main.cpp` | Qt 入口 — QApplication + 主窗口创建，与 Win32 入口共存 |
 | `src_qt/settings_dialog.cpp` | Qt 设置对话框 — 继承 QDialog，表单布局 |
-| `src_qt/trend_window.cpp` | Qt 趋势窗口 — QMainWindow 嵌入 QCustomPlot |
+| `src_qt/trend_window.cpp` | Qt 趋势窗口 — QDialog 嵌入 QwtPlot |
 | `src_qt/input_view_model.cpp` | Qt 输入读取 — QLineEdit/QComboBox/QDateEdit → QueryInput |
 
 ## 关键边界：QueryInput
@@ -87,7 +87,7 @@ QueryInput build_query_input_qt(QLineEdit* patient_id, QComboBox* room, ...);
 3. **实现设置对话框** — 最小验证：连接测试 + 保存配置（用 `QSettings` 替代 `app_settings_io`）
 4. **实现主窗口布局** — QSplitter + 查询条件 + 报告列表 + 明细列表
 5. **实现查询流程** — QTableView 填充 + 报告选择联动明细
-6. **实现趋势窗口** — QCustomPlot 集成
+6. **实现趋势窗口** — QwtPlot 集成
 7. **回归测试 + 并行维护** — 两套界面共用核心，直到 Qt 版稳定
 
 ## Win32 版保留策略
@@ -102,6 +102,6 @@ option(BUILD_QT_GUI "Build Qt GUI instead of Win32" OFF)
 
 ## 不引入的依赖
 
-- Qt Charts（需要商业许可或 GPL）→ 用 QCustomPlot（MIT）
+- Qt Charts（需要商业许可或 GPL）→ 用 Qwt（LGPL）
 - Qt Quick / QML（学习曲线 + 不适合表单密集型应用）
 - 任何 C++ 以外的语言或运行时

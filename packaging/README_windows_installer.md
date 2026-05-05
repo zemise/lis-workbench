@@ -64,19 +64,19 @@ makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64\Release ^
 
 - 目标 Windows 需安装 SQL Server ODBC 驱动（ODBC Driver 17/18 for SQL Server 或系统自带）
 - Qt 版需附带 Qt5Widgets.dll、Qt5Core.dll、Qt5Gui.dll 等（或用 `windeployqt` 自动收集）
-- **gnuplot**（趋势图渲染）：`gnuplot.exe` 放在程序目录 `gnuplot\` 子目录下，或系统 PATH 中
+- **Qwt**（趋势图渲染）：`qwt.dll` + `Qt5OpenGL.dll` 由 CMake post-build 自动复制到 exe 目录。
 - Win32 版用 MinGW 静态链接，无需额外 GCC 运行时
 
-## 捆绑 gnuplot
+## 构建 Qwt
 
 ```powershell
-# 下载 gnuplot（开发机一次性）
-winget install gnuplot.gnuplot
+# 1. 克隆源码
+git clone https://git.code.sf.net/p/qwt/git C:\qwt-src
+cd C:\qwt-src && git checkout qwt-6.3.0
 
-# 复制到构建输出目录（每次打包前）
-mkdir build\windows-qt\Release\gnuplot
-copy "C:\Program Files\gnuplot\bin\gnuplot.exe" build\windows-qt\Release\gnuplot\
+# 2. 在 x64 Native Tools 终端编译
+qmake qwt.pro
+nmake
 
-# NSIS 打包（/nonfatal 标志 — 无 gnuplot 时跳过不报错）
-makensis ... packaging\ResultSearch.nsi
+# 3. CMake 自动检测 C:\qwt-src 下的库和头文件
 ```

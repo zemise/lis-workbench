@@ -46,7 +46,7 @@
 | `search_ui_presenter.*` | ListView 列定义与行填充 | QTableView + QStandardItemModel |
 | `search_ui_layout.*` | 硬编码像素布局 + splitter | QLayout + QSplitter |
 | `search_settings_dialog.*` | Win32 模式对话框 | QDialog |
-| `trend_window.*` | GDI+ 图表 + ListView | QCustomPlot + QTableView |
+| `trend_window.*` | GDI+ 图表 + ListView | QwtPlot + QTableView |
 | `trend_chart_renderer.*` | GDI+ 离屏位图 | QPainter + QCustomPlot |
 
 ### 入口层（Win32 独有，Qt 新建等价物）
@@ -69,7 +69,7 @@
 - Win32 版：主界面、设置窗口、趋势窗口均已完成功能。DPI 感知、图标、防闪烁到位。
 - 核心库：`search_core` 静态库已提取，Win32 和 Qt 共享。
 - Qt 编译链路已通：CI 双绿 + Windows 实机构建脚本（`scripts/build_qt.ps1`）。
-- Qt 入口占位窗口已就绪（`src_qt/main.cpp`），待填充真正界面组件。
+- Qt 四大组件已实现：设置对话框、主窗口（查询+双列表）、趋势窗口（QwtPlot 折线图）。
 - 详见 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
 
 ## 演进方向

@@ -1,14 +1,15 @@
 # Changelog
 
-## v2026.05.04
+## v2026.05.05
 
-- CI 双绿通过：`build-win32`（ubuntu MinGW 交叉）+ `build-qt`（windows + Qt 5.15 + MSVC）。
-- Qt 编译链路在 Windows 实机验证通过（VS 2026 + Qt 5.15.2 + MSVC）。
-- 添加 `/utf-8` MSVC 编译选项，修复中文源文件在 GBK 系统编码下的编译错误。
-- 添加 `scripts/build_qt.ps1` 一键构建脚本（配置/编译/部署/运行）。
-- 更新 Qt 迁移指南和项目文档，标注已完成步骤。
-- 修复 CMake `result_search_qt` 目标缺少 `Qt5::WinMain` 链接问题。
-- CI NSIS 路径修正（相对 NSI 脚本位置）。
+- **趋势图**：采用 Qwt 6.3.0 替代 QCustomPlot 和 gnuplot，原生 Qt Widget 嵌入布局。
+- 图表支持中文（QFont 原生渲染）、高清导出（QwtPlotRenderer → 3200×1800 PNG）。
+- Qwt 图例自动避让，不重叠；参考区间使用 QwtPlotZoneItem。
+- CMake 自动检测 Qwt（vcpkg 或手动 qmake 构建），缺失时 fallback 到占位符。
+- 移除 QCustomPlot 下载/编译脚本，移除 gnuplot 管道+临时文件逻辑。
+- `windeployqt` + CMake post-build 自动复制 `qwt.dll` + `Qt5OpenGL.dll`。
+
+## v2026.05.04
 
 ## v2026.05.03
 
