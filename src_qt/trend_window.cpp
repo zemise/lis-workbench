@@ -319,11 +319,13 @@ void TrendWindow::setupUi() {
 }
 
 void TrendWindow::setMockData(const std::vector<search::TrendPoint>& data) {
+    mockMode_ = true;
     points_ = data;
     onTrendDataLoaded();
 }
 
 void TrendWindow::loadTrendData() {
+    if (mockMode_) return;
     auto& pts = points_; auto db = db_; auto in = lastQuery_;
     QtConcurrent::run([this,db,in,&pts]() {
         std::string err; std::vector<search::TrendPoint> r;

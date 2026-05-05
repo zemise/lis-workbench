@@ -77,4 +77,5 @@ private:
     std::vector<search::TrendPoint> points_;
     std::vector<search::TrendItemOption> items_;
     std::string currentItemCode_;
+    bool mockMode_ = false;
 };
