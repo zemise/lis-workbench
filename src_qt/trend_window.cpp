@@ -2,6 +2,8 @@
 #include "trend_core.h"
 
 #include <QApplication>
+#include <QCoreApplication>
+#include <QFile>
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QScreen>
@@ -173,15 +175,15 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
 }
 
 QString TrendWindow::gnuplotPath() const {
-    // Try common install paths
-    QStringList candidates = {"gnuplot", "gnuplot.exe",
-        "C:/Program Files/gnuplot/bin/gnuplot.exe",
-        "C:/Program Files (x86)/gnuplot/bin/gnuplot.exe"};
-    for (const auto& p : candidates) {
-        QProcess test;
-        test.start(p, {"--version"});
-        if (test.waitForFinished(2000) && test.exitCode() == 0) return p;
-    }
+    // 1. Bundled with app (deployment)
+    QString local = QCoreApplication::applicationDirPath() + "/gnuplot/gnuplot.exe";
+    if (QFile::exists(local)) return local;
+
+    // 2. System PATH (development)
+    QProcess test;
+    test.start("gnuplot", {"--version"});
+    if (test.waitForFinished(2000) && test.exitCode() == 0) return "gnuplot";
+
     return {};
 }
 

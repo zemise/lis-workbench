@@ -40,6 +40,9 @@ UninstPage instfiles
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${BUILD_DIR}\${APP_EXE}"
+  SetOutPath "$INSTDIR\gnuplot"
+  File /nonfatal "${BUILD_DIR}\gnuplot\gnuplot.exe"
+  SetOutPath "$INSTDIR"
   SetOverwrite off
   IfFileExists "$INSTDIR\result_search.ini" +2 0
     FileOpen $0 "$INSTDIR\result_search.ini" w
@@ -65,6 +68,8 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\${APP_NAME}"
 
   Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\gnuplot\gnuplot.exe"
+  RMDir "$INSTDIR\gnuplot"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd
