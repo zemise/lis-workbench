@@ -119,12 +119,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Toolbar panel — menu font, close button on far right
             int tbH = 28;
             HWND tb = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE,
-                0, 0, 0, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+                WS_CHILD | WS_VISIBLE | SS_SUNKEN,
+                0, 0, 200, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                0, 0, 0, 0, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
+                100, 2, 60, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
             SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
             // Separator line
