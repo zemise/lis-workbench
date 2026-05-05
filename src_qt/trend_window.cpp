@@ -406,8 +406,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (!itemPoints[0]->unit.empty()) {
         title += " - " + fmt(itemPoints[0]->unit);
     }
-    title += " 趋势图";
-    if (chart_->plotLayout()->rowCount() == 0) {
+    title += QString::fromWCharArray(L" 趋势图");
+    // Ensure title row exists (axis rect is at row 0 by default)
+    if (chart_->plotLayout()->rowCount() < 2) {
         chart_->plotLayout()->insertRow(0);
     }
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
@@ -417,7 +418,6 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         auto* el = new QCPTextElement(chart_, title,
                                        QFont("Microsoft YaHei", 12, QFont::Bold));
         el->setTextColor(QColor(0x33, 0x33, 0x33));
-        el->setMargins(QMargins(0, 0, 0, 4));
         chart_->plotLayout()->addElement(0, 0, el);
     }
 
