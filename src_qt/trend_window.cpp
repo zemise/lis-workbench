@@ -411,8 +411,6 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     while (chart_->plotLayout()->rowCount() < 3) {
         chart_->plotLayout()->insertRow(0);
     }
-    // If legend was moved to plotLayout, return it to inset
-    chart_->axisRect()->insetLayout()->addElement(chart_->legend);
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
     if (existingTitle) {
         existingTitle->setText(title);
