@@ -107,34 +107,23 @@ void TrendWindow::setupUi() {
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
 
-    // Hide built-in legend — use external legend widget instead
-    chart_->legend->setVisible(false);
-
-    // External legend — plain widget, no border
-    legendFrame_ = new QFrame;
-    legendFrame_->setFrameStyle(QFrame::NoFrame);
-    legendFrame_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    legendFrame_->setContentsMargins(0, 0, 0, 0);
-    legendLayout_ = new QVBoxLayout(legendFrame_);
-    legendLayout_->setContentsMargins(4, 8, 4, 4);
-    legendLayout_->setSpacing(2);
-    updateLegend();
+    // Built-in legend — inset, unified with chart (SCI style)
+    chart_->legend->setVisible(true);
+    chart_->legend->setBrush(Qt::NoBrush);
+    chart_->legend->setBorderPen(Qt::NoPen);
+    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
+    chart_->legend->setIconSize(12, 10);
+    chart_->legend->setSelectableParts(QCPLegend::spNone);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
-    auto* chartArea = new QHBoxLayout;
+    auto* chartArea = new QVBoxLayout;
     chartArea->setContentsMargins(0, 0, 0, 0);
-    chartArea->addWidget(chart_, 1);
-    chartArea->addWidget(legendFrame_, 0, Qt::AlignTop);
-
-    auto* containerLayout = new QVBoxLayout;
-    containerLayout->setContentsMargins(0, 0, 0, 0);
-    containerLayout->addLayout(chartArea);
-    containerLayout->addWidget(loadingLabel_);
-
+    chartArea->addWidget(chart_);
+    chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
     chartContainer->setMinimumHeight(300);
-    chartContainer->setLayout(containerLayout);
+    chartContainer->setLayout(chartArea);
 
     // Detail table (bottom-left)
     detailModel_ = new QStandardItemModel(0, 7, this);
@@ -444,9 +433,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto margins — no legend inside chart
-    chart_->axisRect()->setAutoMargins(QCP::msAll);
-    chart_->axisRect()->setMargins(QMargins(15, 15, 15, 15));
+    // Auto left/top/bottom, fixed right margin for inset legend
+    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
+    chart_->axisRect()->setMargins(QMargins(15, 20, 130, 15));
     chart_->replot();
 
     // Populate detail table
