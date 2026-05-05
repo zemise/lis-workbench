@@ -80,7 +80,7 @@ void MainWindow::setupUi() {
 
     // Bottom bar
     auto* bottom = new QWidget;
-    bottom->setFixedHeight(44);
+    bottom->setFixedHeight(60);
     setupButtonBar(bottom);
 
     // Main layout
@@ -205,7 +205,7 @@ void MainWindow::setupButtonBar(QWidget* panel) {
 
     auto makeBtn = [&](const QString& text) {
         auto* btn = new QPushButton(text);
-        btn->setMinimumHeight(34);
+        btn->setMinimumHeight(40);
         btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
         return btn;
     };
