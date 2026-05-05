@@ -18,6 +18,7 @@
 #include <QTableView>
 #include <QTextStream>
 #include <QTemporaryFile>
+#include <QTextCodec>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
@@ -104,14 +105,13 @@ static void writeGnuplotScript(QTextStream& out,
 
     // gnuplot script — pngcairo, enhanced text, SCI quality
     out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
-    out << "set encoding utf8\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
-    out << "set title '" << title.c_str() << "' font ',13'\n";
-    out << "set xlabel '检测日期（按结果顺序）' font ',10'\n";
-    out << "set ylabel '" << yLabel.c_str() << "' font ',10'\n";
+    out << "set title '" << title.c_str() << "'\n";
+    out << "set xlabel '检测日期（按结果顺序）'\n";
+    out << "set ylabel '" << yLabel.c_str() << "'\n";
     out << "set yrange [" << yMin << ":" << yMax << "]\n";
     out << "set grid ytics lc rgb '#E0E0E0'\n";
-    out << "set key inside right top font ',8' width 1\n";
+    out << "set key inside right top width 1\n";
     out << "set style fill transparent solid 0.3\n";
     out << "set format y '%.4g'\n";
 
@@ -135,7 +135,7 @@ static void writeGnuplotScript(QTextStream& out,
                        : (rt.length() >= 10) ? rt.mid(5, 5) : rt;
         out << "\"" << label.toStdString().c_str() << "\" " << idx;
     }
-    out << ") font ',9' rotate by 0 offset 0,-0.8\n";
+    out << ") rotate by 0 offset 0,-0.8\n";
 
     // Plot command — line + color-coded points
     // Normal points
@@ -387,8 +387,13 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     int w = chartLabel_->width() > 100 ? chartLabel_->width() : 800;
     int h = chartLabel_->height() > 100 ? chartLabel_->height() : 500;
     {
+        QString script;
+        QTextStream buf(&script);
+        writeGnuplotScript(buf, itemPoints, w, h, pngPath);
+        // Write in system locale encoding (GBK on Chinese Windows) for gnuplot
         QTextStream out(&scriptFile);
-        writeGnuplotScript(out, itemPoints, w, h, pngPath);
+        out.setCodec(QTextCodec::codecForLocale());
+        out << script;
     }
     scriptFile.close();
 
