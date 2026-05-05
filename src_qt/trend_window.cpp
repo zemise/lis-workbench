@@ -102,68 +102,102 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
 
     int w = width(), h = height();
 
-    // Layout areas
-    QRect titleArea(padding_, padding_, w - 2*padding_, titleHeight_);
-    QRect yAxisArea(0, titleArea.bottom(), yAxisWidth_, h - titleArea.bottom() - xLabelHeight_);
-    QRect xAxisArea(yAxisWidth_, h - xLabelHeight_,
-                    w - yAxisWidth_ - legendWidth_ - padding_ * 2, xLabelHeight_);
-    QRect plotArea(yAxisWidth_, titleArea.bottom() + padding_,
-                   w - yAxisWidth_ - legendWidth_ - padding_ * 2,
-                   h - titleArea.bottom() - xLabelHeight_ - padding_);
-    QRect legendArea(w - legendWidth_ - padding_, titleArea.bottom(),
-                     legendWidth_, h - titleArea.bottom() - xLabelHeight_);
+    // ── Fonts ───────────────────────────────────
+    QFont titleFont("Microsoft YaHei", 13, QFont::Bold);
+    QFont labelFont("Microsoft YaHei", 10);
+    QFont tickFont("Microsoft YaHei", 9);
+    QFont legendFont("Microsoft YaHei", 8);
+    QFontMetrics titleFm(titleFont), labelFm(labelFont), tickFm(tickFont);
 
-    // ── Title ──────────────────────────────────
+    // ── Measure text sizes ──────────────────────
     std::string titleStr = pts_[0]->item_name;
     if (!pts_[0]->item_eng.empty()) titleStr += " (" + pts_[0]->item_eng + ")";
     if (!pts_[0]->unit.empty()) titleStr += " [" + pts_[0]->unit + "]";
     titleStr += " 趋势图";
-    p.setPen(Qt::black);
-    p.setFont(QFont("Microsoft YaHei", 13, QFont::Bold));
-    p.drawText(titleArea, Qt::AlignHCenter | Qt::AlignBottom, s8(titleStr));
+    QString qTitle = s8(titleStr);
+    int titleH = titleFm.height() + gap_;
 
-    // ── Y-axis ──────────────────────────────────
-    p.setFont(QFont("Microsoft YaHei", 10));
+    std::string yLabelStr = pts_[0]->unit.empty() ? "结果值" : "结果值 (" + pts_[0]->unit + ")";
+    QString qYLabel = s8(yLabelStr);
+    int yLabelW = labelFm.height() + 4;  // rotated text: width = font height + margin
+
+    // Widest Y-axis tick label
     double yRange = yMax_ - yMin_;
-    int yTicks = 5;
-    for (int i = 0; i <= yTicks; ++i) {
-        double val = yMin_ + yRange * i / yTicks;
-        int yy = plotArea.bottom() - static_cast<int>((val - yMin_) / yRange * plotArea.height());
+    int maxYTickW = 0;
+    for (int i = 0; i <= 5; ++i) {
+        double val = yMin_ + yRange * i / 5;
+        maxYTickW = std::max(maxYTickW,
+            tickFm.horizontalAdvance(QString::number(val, 'g', 4)));
+    }
+    int yAxisW = maxYTickW + yLabelW + gap_ * 3;
+
+    QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
+    int xTickH = tickFm.height() * 2 + gap_;   // date + time
+    int xLabelH = labelFm.height() + gap_;
+    int xAxisH = xTickH + xLabelH;
+
+    QFontMetrics legendFm(legendFont);
+    int legendW = legendFm.averageCharWidth() * 6 + 24;  // ~6 chars + icon
+
+    // ── Layout areas ───────────────────────────
+    QRect titleArea(0, 0, w, titleH);
+    QRect plotArea(yAxisW, titleH + gap_,
+                   w - yAxisW - legendW - gap_ * 3,
+                   h - titleH - xAxisH - gap_);
+    QRect legendArea(w - legendW - gap_, titleH + gap_,
+                     legendW, h - titleH - xAxisH - gap_);
+
+    // ── Title ──────────────────────────────────
+    p.setFont(titleFont);
+    p.setPen(Qt::black);
+    p.drawText(titleArea, Qt::AlignHCenter | Qt::AlignBottom, qTitle);
+
+    // ── Y-axis tick labels + grid ──────────────
+    p.setFont(tickFont);
+    for (int i = 0; i <= 5; ++i) {
+        double val = yMin_ + yRange * i / 5;
+        int yy = plotArea.bottom()
+               - static_cast<int>((val - yMin_) / yRange * plotArea.height());
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
         p.setPen(QColor(0x55,0x55,0x55));
-        p.drawText(QRect(0, yy - 10, yAxisWidth_ - 12, 20),
+        p.drawText(QRect(0, yy - 10, yAxisW - yLabelW - gap_, 20),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
-    // Y label (vertical, positioned left of tick labels)
+    // Y-axis label (vertical, left of ticks)
     p.save();
-    p.translate(14, plotArea.center().y());
+    p.setFont(labelFont);
+    p.translate(yLabelW, plotArea.center().y());
     p.rotate(-90);
-    std::string yl = pts_[0]->unit.empty() ? "结果值" : "结果值 (" + pts_[0]->unit + ")";
-    p.drawText(QRect(-plotArea.height()/2, -10, plotArea.height(), 20), Qt::AlignCenter, s8(yl));
+    p.drawText(QRect(-plotArea.height()/2, -gap_,
+                     plotArea.height(), yLabelW), Qt::AlignCenter, qYLabel);
     p.restore();
 
     // ── X-axis ──────────────────────────────────
-    p.setFont(QFont("Microsoft YaHei", 9));
+    p.setFont(tickFont);
     int maxTicks = std::min(5, static_cast<int>(pts_.size()));
     for (int t = 0; t < maxTicks; ++t) {
         size_t idx = (maxTicks <= 1) ? 0
             : static_cast<size_t>(std::llround(t * (pts_.size() - 1.0) / (maxTicks - 1)));
-        int xx = plotArea.left() + static_cast<int>(idx * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
+        int xx = plotArea.left()
+               + static_cast<int>(idx * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
         p.setPen(QColor(0x55,0x55,0x55));
         p.drawLine(xx, plotArea.bottom(), xx, plotArea.bottom() + 4);
         QString rt = s8(pts_[idx]->report_time);
         QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
         QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
         int lw = std::min(60, plotArea.width() / maxTicks - 4);
-        p.drawText(QRect(xx - lw/2, plotArea.bottom() + 6, lw, 18), Qt::AlignHCenter, datePart);
+        p.drawText(QRect(xx - lw/2, plotArea.bottom() + 6, lw, tickFm.height()),
+                   Qt::AlignHCenter, datePart);
         if (!timePart.isEmpty())
-            p.drawText(QRect(xx - lw/2, plotArea.bottom() + 22, lw, 18), Qt::AlignHCenter, timePart);
+            p.drawText(QRect(xx - lw/2, plotArea.bottom() + 8 + tickFm.height(),
+                             lw, tickFm.height()), Qt::AlignHCenter, timePart);
     }
-    p.setFont(QFont("Microsoft YaHei", 10));
-    p.drawText(QRect(plotArea.left(), plotArea.bottom() + 40, plotArea.width(), 20),
-               Qt::AlignHCenter, QString::fromWCharArray(L"检测日期（按结果顺序）"));
+    p.setFont(labelFont);
+    p.drawText(QRect(plotArea.left(), plotArea.bottom() + xTickH + gap_,
+                     plotArea.width(), labelFm.height()),
+               Qt::AlignHCenter, qXLabel);
 
     // ── Reference band ──────────────────────────
     if (hasRef_) {

@@ -32,11 +32,7 @@ private:
     double yMin_ = 0, yMax_ = 0;
     double refLo_ = 0, refHi_ = 0;
     bool hasRef_ = false;
-    int yAxisWidth_ = 90;
-    int titleHeight_ = 56;
-    int xLabelHeight_ = 62;
-    int legendWidth_ = 120;
-    int padding_ = 12;
+    int gap_ = 8;
 };
 
 // ── Trend window (layout shell) ────────────────────────────
