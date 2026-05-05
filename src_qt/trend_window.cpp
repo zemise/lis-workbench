@@ -505,6 +505,7 @@ void TrendWindow::onExportImages() {
 
     QString base = exportBaseName(lastQuery_);
     QSize savedSize = chart_->size();
+    chart_->setUpdatesEnabled(false);
 
     for (int i = 0; i < itemModel_->rowCount(); ++i) {
         auto* checkItem = itemModel_->item(i, 0);
@@ -525,6 +526,7 @@ void TrendWindow::onExportImages() {
     }
 
     chart_->resize(savedSize);
+    chart_->setUpdatesEnabled(true);
     updateChart(currentItemCode_);
 
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
