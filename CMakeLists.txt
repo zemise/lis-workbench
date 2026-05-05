@@ -55,6 +55,19 @@ if(MINGW)
     target_link_options(result_search PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
+# ── Main application (Win32 MDI shell) ────────────────────────
+add_executable(main_app WIN32
+    src/main_frame.cpp
+    resource/app.rc
+)
+target_include_directories(main_app PRIVATE src resource)
+target_compile_definitions(main_app PRIVATE UNICODE _UNICODE)
+target_link_libraries(main_app PRIVATE search_core comctl32)
+
+if(MINGW)
+    target_link_options(main_app PRIVATE -municode -static -static-libgcc -static-libstdc++)
+endif()
+
 # ── Qt 5.15 frontend (opt-in) ─────────────────────────────────
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
