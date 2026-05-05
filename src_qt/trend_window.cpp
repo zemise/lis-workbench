@@ -67,7 +67,8 @@ static QString exportBaseName(const search::QueryInput& input) {
 
 static void writeGnuplotScript(QTextStream& out,
                                const std::vector<const search::TrendPoint*>& pts,
-                               int width, int height) {
+                               int width, int height,
+                               const QString& output = "-") {
     // Determine ranges
     double yMin = pts[0]->result_value, yMax = pts[0]->result_value;
     bool hasRef = false;
@@ -104,7 +105,7 @@ static void writeGnuplotScript(QTextStream& out,
     out << "set terminal pngcairo enhanced size " << width << "," << height
         << " font 'Microsoft YaHei,10' rounded\n";
     out << "set encoding utf8\n";
-    out << "set output '-\n";  // stdout
+    out << "set output '" << output.toStdString().c_str() << "'\n";
     out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
     out << "set xlabel '检测日期（按结果顺序）' font 'Microsoft YaHei,10'\n";
     out << "set ylabel '" << yLabel.c_str() << "' font 'Microsoft YaHei,10'\n";
@@ -424,8 +425,7 @@ void TrendWindow::renderToFile(const std::string& itemCode,
 
     QString script;
     QTextStream out(&script);
-    out << "set output '" << path.toStdString().c_str() << "'\n";
-    writeGnuplotScript(out, itemPoints, w, h);
+    writeGnuplotScript(out, itemPoints, w, h, path);
 
     QProcess proc;
     proc.start(gp, {"-"});
