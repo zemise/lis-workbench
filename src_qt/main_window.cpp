@@ -78,9 +78,9 @@ void MainWindow::setupUi() {
         splitter_->setSizes({400, 700, 350});
     }
 
-    // Bottom bar (auto-sizes with font)
+    // Bottom bar
     auto* bottom = new QWidget;
-    bottom->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    bottom->setFixedHeight(44);
     setupButtonBar(bottom);
 
     // Main layout
