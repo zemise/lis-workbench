@@ -62,7 +62,6 @@ private:
     QwtPlotCurve* highScatter_ = nullptr;
     QwtPlotCurve* lowScatter_ = nullptr;
     QwtPlotZoneItem* refZone_ = nullptr;
-    QwtPlotCurve* refLegendCurve_ = nullptr;
     QwtPlotGrid* grid_ = nullptr;
 #endif
 

@@ -16,6 +16,8 @@
 
 #include <QCoreApplication>
 #include <QFileDialog>
+#include <QFrame>
+#include <QPainter>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QHeaderView>
@@ -29,6 +31,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
+#include <functional>
 
 // ── helpers ──────────────────────────────────────────────────
 
@@ -112,11 +115,8 @@ void TrendWindow::setupUi() {
     plot_->setMinimumHeight(300);
     plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Legend — compact, matching Win32 layout
-    auto* legend = new QwtLegend;
-    legend->setDefaultItemMode(QwtLegendData::ReadOnly);
-    legend->setMaxColumns(1);
-    plot_->insertLegend(legend, QwtPlot::RightLegend);
+    // Disable built-in legend — use custom QFrame legend instead
+    plot_->insertLegend(nullptr);
 
     // Grid
     grid_ = new QwtPlotGrid;
@@ -156,21 +156,51 @@ void TrendWindow::setupUi() {
     refZone_->setBrush(QColor(0xF2,0xF2,0xF2));
     refZone_->setPen(QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine));
 
-    // Dummy curve — legend-only entry for reference zone
-    refLegendCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"参考范围"));
-    refLegendCurve_->setStyle(QwtPlotCurve::Dots);
-    QwtSymbol* refSym = new QwtSymbol(QwtSymbol::Rect,
-                                       QBrush(QColor(0xF2,0xF2,0xF2)),
-                                       QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine),
-                                       QSize(14, 10));
-    refLegendCurve_->setSymbol(refSym);
-    refLegendCurve_->setItemAttribute(QwtPlotItem::Legend, true);
-    // Single dummy point so legend shows symbol (invisible by being outside view)
-    QVector<double> dx{99999}, dy{0};
-    refLegendCurve_->setSamples(dx, dy);
-    refLegendCurve_->attach(plot_);
 
-    chartWidget_ = plot_;
+    // Custom legend — QFrame with painted icons (Qwt legend unreliable on Win)
+    auto* legendFrame = new QFrame;
+    legendFrame->setFrameStyle(QFrame::NoFrame);
+    legendFrame->setFixedWidth(90);
+    legendFrame->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    auto* legendLayout_ = new QVBoxLayout(legendFrame);
+    legendLayout_->setContentsMargins(4,8,4,4);
+    legendLayout_->setSpacing(4);
+
+    auto addLegendItem = [&](const QString& text, const QPixmap& icon) {
+        auto* w = new QWidget;
+        auto* row = new QHBoxLayout(w);
+        row->setContentsMargins(0,0,0,0); row->setSpacing(4);
+        auto* iconLabel = new QLabel; iconLabel->setPixmap(icon); iconLabel->setFixedSize(18,14);
+        auto* textLabel = new QLabel(text);
+        textLabel->setFont(QFont("Microsoft YaHei", 8));
+        row->addWidget(iconLabel); row->addWidget(textLabel, 1);
+        legendLayout_->addWidget(w);
+    };
+
+    auto makePix = [](std::function<void(QPainter&)> draw) {
+        QPixmap pix(18, 14); pix.fill(Qt::transparent);
+        QPainter p(&pix); p.setRenderHint(QPainter::Antialiasing); draw(p); p.end();
+        return pix;
+    };
+
+    addLegendItem(QString::fromWCharArray(L"结果线"),
+        makePix([](QPainter& p){ p.setPen(QPen(QColor(0x1E,0x5F,0xB4), 2.5)); p.drawLine(0,7,18,7); }));
+    addLegendItem(QString::fromWCharArray(L"参考范围"),
+        makePix([](QPainter& p){ p.fillRect(1,2,16,10, QColor(0xF2,0xF2,0xF2)); p.setPen(QPen(QColor(0x99,0x99,0x99), 0.8, Qt::DashLine)); p.drawRect(1,2,16,10); }));
+    addLegendItem(QString::fromWCharArray(L"高值"),
+        makePix([](QPainter& p){ p.setPen(QPen(Qt::white, 2)); p.setBrush(QColor(0xD2,0x28,0x28)); p.drawEllipse(4,2,10,10); }));
+    addLegendItem(QString::fromWCharArray(L"低值"),
+        makePix([](QPainter& p){ p.setPen(QPen(Qt::white, 2)); p.setBrush(QColor(0x28,0x50,0xD2)); p.drawEllipse(4,2,10,10); }));
+    legendLayout_->addStretch();
+
+    auto* chartRow = new QHBoxLayout;
+    chartRow->setContentsMargins(0,0,0,0); chartRow->setSpacing(0);
+    chartRow->addWidget(plot_, 1);
+    chartRow->addWidget(legendFrame, 0, Qt::AlignTop);
+    auto* chartWrapper = new QWidget;
+    chartWrapper->setLayout(chartRow);
+
+    chartWidget_ = chartWrapper;
 #else
     auto* label = new QLabel(QString::fromWCharArray(L"趋势图（待实现）\n\n请先在左侧选择项目"));
     label->setAlignment(Qt::AlignCenter);
