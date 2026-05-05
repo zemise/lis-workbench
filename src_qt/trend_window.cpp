@@ -108,8 +108,8 @@ void TrendWindow::setupUi() {
     chartArea->addWidget(chart_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
-    chartContainer->setMinimumSize(600, 400);
-    chartContainer->setMaximumSize(850, 560);
+    chartContainer->setMinimumSize(600, 380);
+    chartContainer->setMaximumWidth(1000);
     chartContainer->setLayout(chartArea);
 
     // Detail table (bottom-left)
