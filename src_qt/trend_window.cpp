@@ -131,11 +131,12 @@ void TrendWindow::setupUi() {
     lineCurve_->setStyle(QwtPlotCurve::Lines);
     lineCurve_->attach(plot_);
 
-    normalScatter_ = new QwtPlotCurve(QString::fromWCharArray(L"正常"));
+    normalScatter_ = new QwtPlotCurve();  // no legend entry
+    normalScatter_->setItemAttribute(QwtPlotItem::Legend, false);
     normalScatter_->setStyle(QwtPlotCurve::NoCurve);
     normalScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
         QBrush(QColor(0x23,0x23,0x23)), QPen(Qt::white, 2.5), QSize(11,11)));
-    highScatter_   = new QwtPlotCurve(QString::fromWCharArray(L"偏高"));
+    highScatter_   = new QwtPlotCurve(QString::fromWCharArray(L"高值"));
     highScatter_->setStyle(QwtPlotCurve::NoCurve);
     highScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
         QBrush(QColor(0xD2,0x28,0x28)), QPen(Qt::white, 2.5), QSize(11,11)));
@@ -154,7 +155,7 @@ void TrendWindow::setupUi() {
     refZone_->setPen(QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine));
 
     // Dummy curve — legend-only entry for reference zone
-    refLegendCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"参考区间"));
+    refLegendCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"参考范围"));
     refLegendCurve_->setStyle(QwtPlotCurve::Dots);
     QwtSymbol* refSym = new QwtSymbol(QwtSymbol::Rect,
                                        QBrush(QColor(0xF2,0xF2,0xF2)),
