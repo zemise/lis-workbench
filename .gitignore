@@ -8,3 +8,7 @@
 
 *.user
 *.log
+
+.claude/
+.vs/
+resource/gnuplot/
