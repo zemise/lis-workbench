@@ -83,7 +83,7 @@ void updateTimePane(HWND hwnd) {
     wchar_t buf[64];
     swprintf(buf, 64, L"当前时间：%d年%d月%d日 %d:%02d:%02d",
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS), (LPARAM)buf);
+    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(3, SBT_NOBORDERS), (LPARAM)buf);
 }
 
 std::wstring getLocalIp() {
@@ -107,8 +107,8 @@ void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
                               0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
                               g_ctx.instance, nullptr);
-    int parts[] = {300, -1, 260};
-    SendMessageW(sb, SB_SETPARTS, 3, (LPARAM)parts);
+    int parts[] = {300, -1, 200, 260};
+    SendMessageW(sb, SB_SETPARTS, 4, (LPARAM)parts);
     SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
     SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(1, SBT_NOBORDERS), (LPARAM)L"");
     std::wstring ip = L"本机：" + getLocalIp();
