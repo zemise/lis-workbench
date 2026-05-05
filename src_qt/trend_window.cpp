@@ -105,11 +105,13 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     // Layout areas
     QRect titleArea(padding_, padding_, w - 2*padding_, titleHeight_);
     QRect yAxisArea(0, titleArea.bottom(), yAxisWidth_, h - titleArea.bottom() - xLabelHeight_);
-    QRect xAxisArea(yAxisWidth_, h - xLabelHeight_, w - yAxisWidth_ - legendWidth_ - padding_, xLabelHeight_);
+    QRect xAxisArea(yAxisWidth_, h - xLabelHeight_,
+                    w - yAxisWidth_ - legendWidth_ - padding_ * 2, xLabelHeight_);
     QRect plotArea(yAxisWidth_, titleArea.bottom() + padding_,
-                   w - yAxisWidth_ - legendWidth_ - padding_, h - titleArea.bottom() - xLabelHeight_ - padding_);
+                   w - yAxisWidth_ - legendWidth_ - padding_ * 2,
+                   h - titleArea.bottom() - xLabelHeight_ - padding_);
     QRect legendArea(w - legendWidth_ - padding_, titleArea.bottom(),
-                     legendWidth_, h - titleArea.bottom() - xLabelHeight_ - padding_);
+                     legendWidth_, h - titleArea.bottom() - xLabelHeight_);
 
     // ── Title ──────────────────────────────────
     std::string titleStr = pts_[0]->item_name;
@@ -130,16 +132,16 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
         p.setPen(QColor(0x55,0x55,0x55));
-        p.drawText(QRect(0, yy - 10, yAxisWidth_ - 8, 20),
+        p.drawText(QRect(0, yy - 10, yAxisWidth_ - 12, 20),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
-    // Y label
+    // Y label (vertical, left edge)
     p.save();
-    p.translate(16, plotArea.center().y());
+    p.translate(22, plotArea.center().y());
     p.rotate(-90);
     std::string yl = pts_[0]->unit.empty() ? "结果值" : "结果值 (" + pts_[0]->unit + ")";
-    p.drawText(QRect(-60, -10, 120, 20), Qt::AlignCenter, s8(yl));
+    p.drawText(QRect(-100, -12, 200, 24), Qt::AlignCenter, s8(yl));
     p.restore();
 
     // ── X-axis ──────────────────────────────────
@@ -154,9 +156,10 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         QString rt = s8(pts_[idx]->report_time);
         QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
         QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
-        p.drawText(QRect(xx - 35, plotArea.bottom() + 6, 70, 18), Qt::AlignHCenter, datePart);
+        int lw = std::min(60, plotArea.width() / maxTicks - 4);
+        p.drawText(QRect(xx - lw/2, plotArea.bottom() + 6, lw, 18), Qt::AlignHCenter, datePart);
         if (!timePart.isEmpty())
-            p.drawText(QRect(xx - 35, plotArea.bottom() + 22, 70, 18), Qt::AlignHCenter, timePart);
+            p.drawText(QRect(xx - lw/2, plotArea.bottom() + 22, lw, 18), Qt::AlignHCenter, timePart);
     }
     p.setFont(QFont("Microsoft YaHei", 10));
     p.drawText(QRect(plotArea.left(), xAxisArea.top() + 30, plotArea.width(), 20),
