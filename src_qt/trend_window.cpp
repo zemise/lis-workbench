@@ -139,6 +139,18 @@ void TrendWindow::setupUi() {
     refZone_ = new QwtPlotZoneItem;
     refZone_->setOrientation(Qt::Horizontal);
     refZone_->setBrush(QColor(0xF2,0xF2,0xF2));
+    refZone_->setPen(QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine));
+
+    // Dummy curve — legend-only entry for reference zone
+    refLegendCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"参考区间"));
+    QwtSymbol* refSym = new QwtSymbol(QwtSymbol::Rect,
+                                       QBrush(QColor(0xF2,0xF2,0xF2)),
+                                       QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine),
+                                       QSize(14, 10));
+    refLegendCurve_->setSymbol(refSym);
+    refLegendCurve_->setItemAttribute(QwtPlotItem::Legend, true);
+    refLegendCurve_->setVisible(false);
+    refLegendCurve_->attach(plot_);
 
     chartWidget_ = plot_;
 #else
