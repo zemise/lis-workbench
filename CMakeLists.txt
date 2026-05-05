@@ -100,16 +100,12 @@ if(BUILD_QT_GUI)
     if(Qwt_FOUND)
         target_link_libraries(result_search_qt PRIVATE qwt::qwt)
         target_compile_definitions(result_search_qt PRIVATE HAS_QWT)
-        # Copy qwt.dll to exe directory for runtime
-        if(QWT_LIBRARY)
-            get_filename_component(QWT_DIR "${QWT_LIBRARY}" DIRECTORY)
-            file(GLOB QWT_DLL "${QWT_DIR}/qwt.dll")
-            if(QWT_DLL)
-                add_custom_command(TARGET result_search_qt POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${QWT_DLL}" "$<TARGET_FILE_DIR:result_search_qt>"
-                    COMMENT "Copying qwt.dll...")
-            endif()
-        endif()
+        # Copy qwt.dll + Qt5OpenGL.dll to exe dir (windeployqt misses them)
+        add_custom_command(TARGET result_search_qt POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "C:/qwt-src/lib/qwt.dll" "$<TARGET_FILE_DIR:result_search_qt>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${Qt5_DIR}/../../../bin/Qt5OpenGL.dll" "$<TARGET_FILE_DIR:result_search_qt>"
+            COMMENT "Copying Qwt + Qt5OpenGL DLLs...")
     endif()
 endif()
