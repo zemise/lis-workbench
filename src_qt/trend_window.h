@@ -6,7 +6,6 @@
 
 #include <QDialog>
 #include <QLabel>
-#include <QPixmap>
 #include <QStandardItemModel>
 #include <vector>
 
@@ -30,8 +29,6 @@ private slots:
 private:
     void setupUi();
     void loadTrendData();
-    void renderChart(const std::string& itemCode);
-    QString gnuplotPath() const;
 
     const search::DbSettings db_;
     const search::QueryInput lastQuery_;
@@ -50,5 +47,4 @@ private:
     std::vector<search::TrendPoint> points_;
     std::vector<search::TrendItemOption> items_;
     std::string currentItemCode_;
-    QPixmap chartPixmap_;
 };
