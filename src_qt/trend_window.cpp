@@ -11,6 +11,8 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QProcess>
 #include <QPushButton>
 #include <QSplitter>
@@ -18,7 +20,7 @@
 #include <QTableView>
 #include <QTextStream>
 #include <QTemporaryFile>
-#include <QTextCodec>
+#include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
@@ -104,7 +106,8 @@ static void writeGnuplotScript(QTextStream& out,
         ? "结果值" : "结果值 (" + pts[0]->unit + ")";
 
     // gnuplot script — pngcairo, enhanced text, SCI quality
-    out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
+    out << "set terminal svg enhanced size " << width << "," << height
+        << " fname 'Microsoft YaHei' fsize 10\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
     out << "set title '" << title.c_str() << "'\n";
     out << "set xlabel '检测日期（按结果顺序）'\n";
@@ -381,18 +384,17 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     if (!scriptFile.open()) return;
     QString scriptPath = scriptFile.fileName();
 
-    QString pngPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".png";
-    QFile::remove(pngPath);  // clean previous run
+    QString svgPath = QDir::tempPath() + "/trend_" + QString::number(QCoreApplication::applicationPid()) + ".svg";
+    QFile::remove(svgPath);
 
     int w = chartLabel_->width() > 100 ? chartLabel_->width() : 800;
     int h = chartLabel_->height() > 100 ? chartLabel_->height() : 500;
     {
         QString script;
         QTextStream buf(&script);
-        writeGnuplotScript(buf, itemPoints, w, h, pngPath);
-        // Write in system locale encoding (GBK on Chinese Windows) for gnuplot
+        writeGnuplotScript(buf, itemPoints, w, h, svgPath);
         QTextStream out(&scriptFile);
-        out.setCodec(QTextCodec::codecForLocale());
+        out.setCodec("UTF-8");
         out << script;
     }
     scriptFile.close();
@@ -402,21 +404,30 @@ void TrendWindow::renderChart(const std::string& itemCode) {
     if (!proc.waitForStarted(3000)) return;
     proc.waitForFinished(30000);
 
-    chartPixmap_.load(pngPath);
-    scriptFile.remove();
-    QFile::remove(pngPath);
-
-    if (chartPixmap_.isNull()) {
+    // Render SVG to pixmap via Qt (native font support)
+    QSvgRenderer renderer(svgPath);
+    if (!renderer.isValid()) {
         chartLabel_->setText(QString::fromWCharArray(L"gnuplot 图表生成失败"));
+        scriptFile.remove();
+        QFile::remove(svgPath);
         return;
     }
+    chartPixmap_ = QPixmap(w * 2, h * 2);
+    chartPixmap_.fill(Qt::white);
+    QPainter painter(&chartPixmap_);
+    renderer.render(&painter);
+    painter.end();
+
+    scriptFile.remove();
+    QFile::remove(svgPath);
+
     chartLabel_->setPixmap(chartPixmap_.scaled(chartLabel_->size(),
                                                 Qt::KeepAspectRatio,
                                                 Qt::SmoothTransformation));
 }
 
 void TrendWindow::renderToFile(const std::string& itemCode,
-                               const QString& path, int w, int h) {
+                               const QString& pngPath, int w, int h) {
     std::vector<const search::TrendPoint*> itemPoints;
     for (const auto& p : points_) {
         if (p.item_code == itemCode && p.has_numeric_value)
@@ -427,13 +438,18 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     QString gp = gnuplotPath();
     if (gp.isEmpty()) return;
 
+    // Render to temp SVG first, then convert to PNG via Qt
+    QString svgPath = QDir::tempPath() + "/trend_export_" + QString::number(QCoreApplication::applicationPid()) + ".svg";
+    QFile::remove(svgPath);
+
     QTemporaryFile scriptFile(QDir::tempPath() + "/trend_XXXXXX.gp");
     scriptFile.setAutoRemove(false);
     if (!scriptFile.open()) return;
     QString scriptPath = scriptFile.fileName();
     {
         QTextStream out(&scriptFile);
-        writeGnuplotScript(out, itemPoints, w, h, path);
+        out.setCodec("UTF-8");
+        writeGnuplotScript(out, itemPoints, w, h, svgPath);
     }
     scriptFile.close();
 
@@ -442,6 +458,18 @@ void TrendWindow::renderToFile(const std::string& itemCode,
     if (!proc.waitForStarted(3000)) return;
     proc.waitForFinished(30000);
     scriptFile.remove();
+
+    // Convert SVG to PNG via Qt
+    QSvgRenderer renderer(svgPath);
+    if (renderer.isValid()) {
+        QPixmap pix(w, h);
+        pix.fill(Qt::white);
+        QPainter painter(&pix);
+        renderer.render(&painter);
+        painter.end();
+        pix.save(pngPath, "PNG");
+    }
+    QFile::remove(svgPath);
 }
 
 void TrendWindow::onExportCsv() {
