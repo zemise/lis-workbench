@@ -59,7 +59,7 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent PrintSupport)
+    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent PrintSupport OpenGL)
 
     # Qwt 6.3.0 — scientific chart library (LGPL)
     find_package(Qwt QUIET)
@@ -96,7 +96,7 @@ if(BUILD_QT_GUI)
         src_qt/resources.qrc
     )
     target_include_directories(result_search_qt PRIVATE src src_qt)
-    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent Qt5::PrintSupport)
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent Qt5::PrintSupport Qt5::OpenGL)
     if(Qwt_FOUND)
         target_link_libraries(result_search_qt PRIVATE qwt::qwt)
         target_compile_definitions(result_search_qt PRIVATE HAS_QWT)
