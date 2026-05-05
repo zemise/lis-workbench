@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -519,8 +520,13 @@ void TrendWindow::onExportImages() {
 
         updateChart(code);
         QPixmap pix(1600, 1000);
-        pix.setDevicePixelRatio(1.0);
-        chart_->render(&pix);
+        pix.fill(Qt::white);
+        QPainter painter(&pix);
+        double sx = 1600.0 / chart_->width();
+        double sy = 1000.0 / chart_->height();
+        painter.scale(sx, sy);
+        chart_->render(&painter);
+        painter.end();
         pix.save(fullPath, "PNG");
     }
     updateChart(currentItemCode_);
