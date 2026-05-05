@@ -107,13 +107,20 @@ void TrendWindow::setupUi() {
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
 
-    // Built-in legend — inset, unified with chart (SCI style)
+    // Two-column layout: col 0 = chart, col 1 = legend
+    chart_->plotLayout()->setColumnStretchFactor(0, 1);
+    chart_->plotLayout()->setColumnStretchFactor(1, 0);
+
+    // Legend — right column, outside plot area
     chart_->legend->setVisible(true);
     chart_->legend->setBrush(Qt::NoBrush);
     chart_->legend->setBorderPen(Qt::NoPen);
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
     chart_->legend->setIconSize(12, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
+    // Remove from inset, place in right column
+    chart_->axisRect()->insetLayout()->take(chart_->legend);
+    chart_->plotLayout()->addElement(1, 1, chart_->legend);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
@@ -433,9 +440,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto left/top/bottom, fixed right margin for inset legend
-    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
-    chart_->axisRect()->setMargins(QMargins(15, 20, 130, 15));
+    // Auto margins — legend is outside the plot in its own column
+    chart_->axisRect()->setAutoMargins(QCP::msAll);
+    chart_->axisRect()->setMargins(QMargins(15, 20, 15, 15));
     chart_->replot();
 
     // Populate detail table
