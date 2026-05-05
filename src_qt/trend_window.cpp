@@ -112,9 +112,10 @@ void TrendWindow::setupUi() {
     plot_->setMinimumHeight(300);
     plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Legend
+    // Legend — compact, matching Win32 layout
     auto* legend = new QwtLegend;
     legend->setDefaultItemMode(QwtLegendData::ReadOnly);
+    legend->setMaxColumns(1);
     plot_->insertLegend(legend, QwtPlot::RightLegend);
 
     // Grid
