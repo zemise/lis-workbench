@@ -168,9 +168,12 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         double val = yMin_ + yRange * i / 5;
         int yy = plotArea.bottom()
                - static_cast<int>((val - yMin_) / yRange * plotArea.height());
+        // Grid line
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
+        // Tick mark (outward from axis)
         p.setPen(QColor(0x55,0x55,0x55));
+        p.drawLine(plotArea.left() - 4, yy, plotArea.left(), yy);
         int tickLeft = yLabelW + gap_;
         p.drawText(QRect(tickLeft, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
                    Qt::AlignRight | Qt::AlignVCenter,
