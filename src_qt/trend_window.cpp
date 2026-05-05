@@ -18,6 +18,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
+#include <functional>
 
 // ── helpers ──────────────────────────────────────────────────
 
@@ -141,28 +142,18 @@ static void writeGnuplotScript(QTextStream& out,
     out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' title '低值'\n";
 
     // Write data: all points for line, then filtered by normal status
-    for (const auto* p : pts) {
-        out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
-    }
-    out << "e\n";
-    // All points again for normal
-    for (const auto* p : pts) {
-        if (p->normal != "1" && p->normal != "5")
-            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
-    }
-    out << "e\n";
-    // High points
-    for (const auto* p : pts) {
-        if (p->normal == "1")
-            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
-    }
-    out << "e\n";
-    // Low points
-    for (const auto* p : pts) {
-        if (p->normal == "5")
-            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
-    }
-    out << "e\n";
+    auto writePoints = [&](const std::function<bool(const search::TrendPoint*)>& filter) {
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (filter(pts[i])) {
+                out << i << " " << pts[i]->result_value << "\n";
+            }
+        }
+        out << "e\n";
+    };
+    writePoints([](const search::TrendPoint*) { return true; });  // all
+    writePoints([](const search::TrendPoint* p) { return p->normal != "1" && p->normal != "5"; });  // normal
+    writePoints([](const search::TrendPoint* p) { return p->normal == "1"; });  // high
+    writePoints([](const search::TrendPoint* p) { return p->normal == "5"; });  // low
     out.flush();
 }
 
