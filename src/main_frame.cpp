@@ -127,9 +127,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Close button overlaid on right side of toolbar
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                100, 0, 60, 24, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
-            SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+            // Font set in WM_SIZE after dimensions are known
+            (void)btnClose;
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -141,7 +142,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE: {
-            // Toolbar — full width at top, close button pinned right
+            // Toolbar — full width, close button sized to font
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             if (tb) {
                 int cw = LOWORD(lp);
@@ -149,7 +150,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int tbH = rc.bottom - rc.top;
                 SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
                 HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                if (btn) SetWindowPos(btn, nullptr, cw - 68, (tbH - 24) / 2, 60, 24, SWP_NOZORDER);
+                if (btn) {
+                    SendMessageW(btn, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+                    int btnH = tbH * 7 / 10;
+                    int btnW = cw * 5 / 100;
+                    if (btnW < 50) btnW = 50;
+                    if (btnW > 80) btnW = 80;
+                    SetWindowPos(btn, nullptr, cw - btnW - 10, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
+                }
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
