@@ -55,8 +55,6 @@ void setupMenus(HWND hwnd) {
     AppendMenuW(sysMenu, MF_STRING, IDM_SETTINGS, L"参数设置(&S)...");
     AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(sysMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)sysMenu, L"系统(&Y)");
-
     HMENU toolMenu = CreatePopupMenu();
     AppendMenuW(toolMenu, MF_STRING, IDM_TOOL1, L"工具1(&1)");
     AppendMenuW(toolMenu, MF_STRING, IDM_TOOL2, L"工具2(&2)");
@@ -64,6 +62,8 @@ void setupMenus(HWND hwnd) {
     AppendMenuW(toolMenu, MF_STRING, IDM_TOOL4, L"工具4(&4)");
     AppendMenuW(toolMenu, MF_STRING, IDM_TOOL5, L"工具5(&5)");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)toolMenu, L"工具(&T)");
+
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)sysMenu, L"系统(&Y)");
 
     SetMenu(hwnd, bar);
 }
