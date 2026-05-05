@@ -39,8 +39,6 @@ private:
     void applySettings();
 
     search::QueryInput buildInput() const;
-    void populateCombo(QComboBox* combo, const std::vector<std::string>& items);
-    int currentComboIndex(QComboBox* combo) const;
 
     // ── Widgets ──────────────────────────────────────
     // Query form

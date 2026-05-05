@@ -1,7 +1,6 @@
 #include "trend_window.h"
 #include "trend_core.h"
 
-#include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
