@@ -3,7 +3,6 @@
 
 #include <QCoreApplication>
 #include <QFileDialog>
-#include <QFrame>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QHeaderView>
@@ -188,7 +187,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     for (size_t i = 0; i < pts_.size(); ++i) {
         int x = plotArea.left() + static_cast<int>(i * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
         int y = plotArea.bottom() - static_cast<int>((pts_[i]->result_value - yMin_) / yRange * plotArea.height());
-        if (i == 0) { QPoint prev(x, y); continue; }
+        if (i == 0) continue;
         QPoint prev(plotArea.left() + static_cast<int>((i-1) * plotArea.width() / std::max<size_t>(1, pts_.size()-1)),
                      plotArea.bottom() - static_cast<int>((pts_[i-1]->result_value - yMin_) / yRange * plotArea.height()));
         p.drawLine(prev, QPoint(x, y));

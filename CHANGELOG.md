@@ -2,12 +2,14 @@
 
 ## v2026.05.05
 
-- **趋势图**：采用 Qwt 6.3.0 替代 QCustomPlot 和 gnuplot，原生 Qt Widget 嵌入布局。
-- 图表支持中文（QFont 原生渲染）、高清导出（QwtPlotRenderer → 3200×1800 PNG）。
-- Qwt 图例自动避让，不重叠；参考区间使用 QwtPlotZoneItem。
-- CMake 自动检测 Qwt（vcpkg 或手动 qmake 构建），缺失时 fallback 到占位符。
-- 移除 QCustomPlot 下载/编译脚本，移除 gnuplot 管道+临时文件逻辑。
-- `windeployqt` + CMake post-build 自动复制 `qwt.dll` + `Qt5OpenGL.dll`。
+- **趋势图**：纯 QPainter 手绘（参照 Win32 `trend_chart_renderer.cpp`），零图表依赖。
+- 折线图 + 散点（白边实心圆，按 normal 着色）+ 参考区间带（灰色填充 + 虚线边框）。
+- 图例使用自定义 QPainter 绘制，完全匹配 Win32：结果线 / 参考范围 / 高值 / 低值。
+- 中文标题、轴标签、日期刻度，Qt `QFont` 原生渲染。
+- 高清导出 `grab()` → 3200×1800 PNG（含完整图例）。
+- `--demo` 交互模式：mock 数据即时预览，无需数据库。`RESULTSEARCH_*` 环境变量自动注入数据库配置。
+- 移除 gnuplot、QCustomPlot、Qwt 三个图表库及所有相关构建脚本。
+- 清理死代码：未用变量、死逻辑、冗余 include。
 
 ## v2026.05.04
 

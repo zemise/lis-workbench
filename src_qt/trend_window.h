@@ -5,10 +5,11 @@
 #include "trend_core.h"
 
 #include <QDialog>
-#include <QLabel>
-#include <QStandardItemModel>
 #include <QWidget>
 #include <vector>
+
+class QLabel;
+class QStandardItemModel;
 
 class QTableView;
 class QPushButton;

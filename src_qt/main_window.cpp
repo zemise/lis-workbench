@@ -252,11 +252,6 @@ void MainWindow::applySettings() {
     state_.settings.db.user = QSettings(iniPath(), QSettings::IniFormat).value("Database/User").toString().toStdWString();
     state_.settings.db.password = QSettings(iniPath(), QSettings::IniFormat).value("Database/Password").toString().toStdWString();
     state_.settings.ui.font_size = QSettings(iniPath(), QSettings::IniFormat).value("UI/FontSize", 9).toInt();
-
-    int splitterX = QSettings(iniPath(), QSettings::IniFormat).value("UI/SplitterX", 0).toInt();
-    if (splitterX > 0 && splitter_) {
-        splitter_->restoreState(QSettings(iniPath(), QSettings::IniFormat).value("UI/SplitterState").toByteArray());
-    }
 }
 
 void MainWindow::loadInitialData() {
@@ -265,7 +260,6 @@ void MainWindow::loadInitialData() {
         return;
     }
 
-    QString error;
     std::string err;
 
     state_.room_options.clear();
