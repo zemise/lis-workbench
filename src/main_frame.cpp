@@ -97,7 +97,7 @@ std::wstring getLocalIp() {
     while (p) {
         if (p->IpAddressList.IpAddress.String[0] != '0' &&
             strcmp(p->IpAddressList.IpAddress.String, "127.0.0.1") != 0) {
-            return utf8_to_wide(p->IpAddressList.IpAddress.String);
+            return search::utf8_to_wide(p->IpAddressList.IpAddress.String);
         }
         p = p->Next;
     }
