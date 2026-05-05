@@ -129,9 +129,10 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         maxYTickW = std::max(maxYTickW,
             tickFm.horizontalAdvance(QString::number(val, 'g', 4)));
     }
-    // yLabelW column on left, tick labels on right, gap to axis
-    int tickPad = 6;  // match X-axis spacing
-    int yAxisW = yLabelW + gap_ + maxYTickW + tickPad;
+    // yLabelW column on left, tick labels on right, gaps
+    int tickPad = 6;
+    int labelPad = 8;  // extra space between Y label and tick labels
+    int yAxisW = yLabelW + labelPad + gap_ + maxYTickW + tickPad;
 
     QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
     int xTickH = tickFm.height() * 2 + gap_;   // date + time
@@ -175,7 +176,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         // Tick mark (outward, 6px left of axis)
         p.setPen(QPen(QColor(0x55,0x55,0x55), 1.2));
         p.drawLine(plotArea.left() - 6, yy, plotArea.left(), yy);
-        int tickLeft = yLabelW + gap_;
+        int tickLeft = yLabelW + labelPad + gap_;
         p.drawText(QRect(tickLeft, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
@@ -183,7 +184,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     // Y-axis label (vertical, in its own left column)
     p.save();
     p.setFont(labelFont);
-    p.translate(yLabelW / 2, plotArea.center().y());
+    p.translate((yLabelW + labelPad) / 2, plotArea.center().y());
     p.rotate(-90);
     p.drawText(QRect(-plotArea.height()/2, 0,
                      plotArea.height(), yLabelW), Qt::AlignCenter, qYLabel);
