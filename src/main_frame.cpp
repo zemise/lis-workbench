@@ -119,14 +119,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar — same style as status bar, menu font
-            HWND tb = CreateWindowExW(0, STATUSCLASSNAMEW, L"",
-                WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
-                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+            // Toolbar — matching menu bar: height = menu font + padding
+            HWND tb = CreateWindowExW(0, L"STATIC", L"",
+                WS_CHILD | WS_VISIBLE,
+                0, 0, 0, 26, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
-            int tbParts[] = { -1 };
-            SendMessageW(tb, SB_SETPARTS, 1, (LPARAM)tbParts);
-            SendMessageW(tb, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
             // Close button on right side
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
