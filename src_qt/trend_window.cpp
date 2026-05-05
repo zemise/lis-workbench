@@ -430,9 +430,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto margins with extra right padding for legend
-    chart_->axisRect()->setAutoMargins(QCP::msAll);
-    chart_->axisRect()->setMargins(QMargins(15, 15, 120, 15));
+    // Auto left/top/bottom, fixed 160px right margin — legend stays in margin
+    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
+    chart_->axisRect()->setMargins(QMargins(15, 15, 160, 15));
     chart_->replot();
 
     // Populate detail table
