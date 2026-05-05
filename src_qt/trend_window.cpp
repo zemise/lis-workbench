@@ -4,14 +4,11 @@
 
 #include <QApplication>
 #include <QFileDialog>
-#include <QFrame>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPixmap>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -107,22 +104,13 @@ void TrendWindow::setupUi() {
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
 
-    // Two-column layout: col 0 = chart, col 1 = legend
-    chart_->plotLayout()->setColumnStretchFactor(0, 1);
-    chart_->plotLayout()->setColumnStretchFactor(1, 0);
-
-    // Legend — SCI style: compact, transparent, right column
+    // Default legend — inset top-right, compact SCI style
     chart_->legend->setVisible(true);
-    chart_->legend->setBrush(Qt::NoBrush);
-    chart_->legend->setBorderPen(Qt::NoPen);
+    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xE0)));
+    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
     chart_->legend->setFont(QFont("Microsoft YaHei", 7));
-    chart_->legend->setIconSize(8, 8);
+    chart_->legend->setIconSize(10, 8);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    chart_->legend->setMargins(QMargins(2, 2, 2, 2));
-    chart_->legend->setRowSpacing(0);
-    // Remove from inset, place in right column
-    chart_->axisRect()->insetLayout()->take(chart_->legend);
-    chart_->plotLayout()->addElement(1, 1, chart_->legend);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
@@ -442,9 +430,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto margins — legend is outside the plot in its own column
-    chart_->axisRect()->setAutoMargins(QCP::msAll);
-    chart_->axisRect()->setMargins(QMargins(15, 20, 15, 15));
+    // Auto left/top/bottom, generous fixed right margin for inset legend
+    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
+    chart_->axisRect()->setMargins(QMargins(15, 20, 140, 15));
     chart_->replot();
 
     // Populate detail table
@@ -539,59 +527,5 @@ void TrendWindow::onExportImages() {
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
 }
 
-QWidget* TrendWindow::makeLegendItem(const QColor& color, const QString& text, bool isLine, bool isRect) {
-    auto* w = new QWidget;
-    auto* layout = new QHBoxLayout(w);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
 
-    auto* icon = new QLabel;
-    QPixmap pix(16, 12);
-    pix.fill(Qt::transparent);
-    QPainter p(&pix);
-    p.setRenderHint(QPainter::Antialiasing);
-    if (isLine) {
-        p.setPen(QPen(color, 2));
-        p.drawLine(0, 6, 16, 6);
-    } else if (isRect) {
-        p.fillRect(2, 2, 12, 8, color);
-        p.setPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
-        p.drawRect(2, 2, 12, 8);
-    } else {
-        p.setPen(QPen(Qt::white, 1));
-        p.setBrush(color);
-        p.drawEllipse(4, 2, 8, 8);
-    }
-    p.end();
-    icon->setPixmap(pix);
-    icon->setFixedSize(18, 14);
-
-    auto* label = new QLabel(text);
-    label->setFont(QFont("Microsoft YaHei", 8));
-
-    layout->addWidget(icon);
-    layout->addWidget(label, 1);
-    return w;
-}
-
-void TrendWindow::updateLegend() {
-    // Clear old items
-    while (auto* item = legendLayout_->takeAt(0)) {
-        delete item->widget();
-        delete item;
-    }
-
-    auto add = [this](const QColor& c, const QString& t, bool line = false, bool rect = false) {
-        legendLayout_->addWidget(makeLegendItem(c, t, line, rect));
-    };
-
-    add(QColor(0x1E, 0x5F, 0xB4), QString::fromWCharArray(L"结果线"), true);
-    add(QColor(0x23, 0x23, 0x23), QString::fromWCharArray(L"正常"));
-    add(QColor(0xD2, 0x28, 0x28), QString::fromWCharArray(L"偏高"));
-    add(QColor(0x28, 0x50, 0xD2), QString::fromWCharArray(L"低值"));
-    add(QColor(0xF2, 0xF2, 0xF2), QString::fromWCharArray(L"参考区间"), false, true);
-
-    // Spacer at bottom
-    legendLayout_->addStretch();
-}
 

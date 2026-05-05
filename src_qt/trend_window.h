@@ -10,11 +10,9 @@
 
 class QTableView;
 class QCustomPlot;
-class QFrame;
 class QPushButton;
 class QLabel;
 class QSplitter;
-class QVBoxLayout;
 
 class TrendWindow : public QDialog {
     Q_OBJECT
@@ -33,8 +31,6 @@ private:
     void setupUi();
     void loadTrendData();
     void updateChart(const std::string& itemCode);
-    void updateLegend();
-    QWidget* makeLegendItem(const QColor& color, const QString& text, bool isLine = false, bool isRect = false);
 
     const search::DbSettings db_;
     const search::QueryInput lastQuery_;
@@ -45,8 +41,6 @@ private:
     QTableView* detailTable_ = nullptr;
     QCustomPlot* chart_ = nullptr;
     QLabel* loadingLabel_ = nullptr;
-    QFrame* legendFrame_ = nullptr;
-    QVBoxLayout* legendLayout_ = nullptr;
     QPushButton* exportCsvBtn_ = nullptr;
     QPushButton* exportImageBtn_ = nullptr;
 
