@@ -434,6 +434,17 @@ void TrendWindow::onItemClicked(const QModelIndex& idx) {
 }
 
 void TrendWindow::onExportCsv() {
+    // Check if any item is checked
+    bool anyChecked = false;
+    for (int i = 0; i < itemModel_->rowCount(); ++i) {
+        auto* chk = itemModel_->item(i, 0);
+        if (chk && chk->checkState() == Qt::Checked) { anyChecked = true; break; }
+    }
+    if (!anyChecked) {
+        QMessageBox::information(this, QString::fromWCharArray(L"提示"),
+                                 QString::fromWCharArray(L"请先勾选要导出的项目。"));
+        return;
+    }
     QString d = QFileDialog::getExistingDirectory(this,
         QString::fromWCharArray(L"选择导出文件夹"));
     if (d.isEmpty()) return;
@@ -464,6 +475,16 @@ void TrendWindow::onExportCsv() {
 }
 
 void TrendWindow::onExportImages() {
+    bool anyChecked = false;
+    for (int i = 0; i < itemModel_->rowCount(); ++i) {
+        auto* chk = itemModel_->item(i, 0);
+        if (chk && chk->checkState() == Qt::Checked) { anyChecked = true; break; }
+    }
+    if (!anyChecked) {
+        QMessageBox::information(this, QString::fromWCharArray(L"提示"),
+                                 QString::fromWCharArray(L"请先勾选要导出的项目。"));
+        return;
+    }
     QString d = QFileDialog::getExistingDirectory(this,
         QString::fromWCharArray(L"选择导出文件夹"));
     if (d.isEmpty()) return;
