@@ -1,11 +1,11 @@
+#define _WINSOCKAPI_    // prevent windows.h from including winsock.h
+#include <winsock2.h>   // must come before windows.h
 #include "main_app.h"
 #include "resource.h"
 #include "search_text.h"
 
 #include <vector>
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winsock2.h>
 #include <iphlpapi.h>
 #include <commctrl.h>
 
