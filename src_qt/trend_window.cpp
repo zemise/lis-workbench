@@ -127,7 +127,7 @@ void TrendWindow::setupUi() {
 
     // Curves (created in renderChart)
     lineCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"结果线"));
-    lineCurve_->setPen(QPen(QColor(0x1E,0x5F,0xB4), 2.5));
+    lineCurve_->setPen(QPen(QColor(0x1E,0x5F,0xB4), 3.0));
     lineCurve_->setStyle(QwtPlotCurve::Lines);
     lineCurve_->attach(plot_);
 
@@ -300,9 +300,10 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
         if (xs.isEmpty()) { c->detach(); return; }
         c->setSamples(xs, ys);
         c->setStyle(QwtPlotCurve::Dots);
-        QwtSymbol* sym = new QwtSymbol(QwtSymbol::Ellipse,
-                                       QBrush(fill), QPen(Qt::white, 1.0), QSize(9,9));
-        c->setSymbol(sym);
+        // Two-layer symbol: dark outline + white ring + colored fill
+        QwtSymbol* ring = new QwtSymbol(QwtSymbol::Ellipse,
+                                        QBrush(fill), QPen(Qt::white, 2.5), QSize(11,11));
+        c->setSymbol(ring);
         c->attach(c->plot());
     };
     setScatter(normalScatter_, xn, yn, QColor(0x23,0x23,0x23));
