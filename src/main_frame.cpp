@@ -10,8 +10,13 @@ constexpr int IDM_QUERY    = 1001;
 constexpr int IDM_BLOOD    = 1002;
 constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT     = 2002;
-constexpr int ID_STATUS    = 3001;
-constexpr int ID_TIMER     = 4001;
+constexpr int IDM_TOOL1    = 3001;
+constexpr int IDM_TOOL2    = 3002;
+constexpr int IDM_TOOL3    = 3003;
+constexpr int IDM_TOOL4    = 3004;
+constexpr int IDM_TOOL5    = 3005;
+constexpr int ID_STATUS    = 4001;
+constexpr int ID_TIMER     = 5001;
 
 app::Context g_ctx;
 
@@ -51,6 +56,14 @@ void setupMenus(HWND hwnd) {
     AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(sysMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)sysMenu, L"系统(&Y)");
+
+    HMENU toolMenu = CreatePopupMenu();
+    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL1, L"工具1(&1)");
+    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL2, L"工具2(&2)");
+    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL3, L"工具3(&3)");
+    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL4, L"工具4(&4)");
+    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL5, L"工具5(&5)");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)toolMenu, L"工具(&T)");
 
     SetMenu(hwnd, bar);
 }
@@ -100,6 +113,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_BLOOD:    onBlood(hwnd);    break;
                 case IDM_SETTINGS: onSettings(hwnd); break;
                 case IDM_EXIT:     DestroyWindow(hwnd); break;
+                case IDM_TOOL1: case IDM_TOOL2: case IDM_TOOL3:
+                case IDM_TOOL4: case IDM_TOOL5:
+                    MessageBoxW(hwnd, L"工具功能 — 待开发", L"工具", MB_ICONINFORMATION);
+                    break;
             }
             return 0;
         }
