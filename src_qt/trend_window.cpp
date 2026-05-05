@@ -318,8 +318,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         g->setData(xs, ys);
         g->setPen(Qt::NoPen);
         g->setLineStyle(QCPGraph::lsNone);
-        QCPScatterStyle ss(QCPScatterStyle::ssDisc, Qt::white, 5.5);
-        ss.setPen(QPen(color, 1.8));
+        QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(color, 1.8), QBrush(Qt::white), 6);
         g->setScatterStyle(ss);
         g->setName(name);
     };
