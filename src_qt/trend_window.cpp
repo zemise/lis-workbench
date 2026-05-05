@@ -303,23 +303,24 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         lower->setName(QString::fromWCharArray(L"参考区间"));
     }
 
-    // ── Main trend line ───────────────────────────────────
+    // ── Main trend line (Win32: blue, width 2) ───────────
     auto* line = chart_->addGraph();
     line->setData(x, y);
     line->setPen(QPen(lineColor, 2.0));
     line->setLineStyle(QCPGraph::lsLine);
     line->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
-    line->setName(fmt(itemPoints[0]->item_name));
+    line->setName(QString::fromWCharArray(L"结果线"));
 
-    // ── Scatter points (filled circles matching Win32) ─────
+    // ── Scatter points (filled + white border, matching Win32 Ellipse) ──
     auto addScatter = [&](const QVector<double>& xs, const QVector<double>& ys,
-                          const QColor& color, const QString& name) {
+                          const QColor& fill, const QString& name) {
         if (xs.isEmpty()) return;
         auto* g = chart_->addGraph();
         g->setData(xs, ys);
         g->setPen(Qt::NoPen);
         g->setLineStyle(QCPGraph::lsNone);
-        g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, color, 6));
+        QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(Qt::white, 1.0), QBrush(fill), 7);
+        g->setScatterStyle(ss);
         g->setName(name);
     };
     addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
@@ -399,6 +400,10 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     if (!itemPoints[0]->item_eng.empty()) {
         title += " (" + fmt(itemPoints[0]->item_eng) + ")";
     }
+    if (!itemPoints[0]->unit.empty()) {
+        title += " - " + fmt(itemPoints[0]->unit);
+    }
+    title += " 趋势图";
     if (chart_->plotLayout()->rowCount() == 0) {
         chart_->plotLayout()->insertRow(0);
     }
@@ -427,8 +432,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    auto* mg = new QCPMarginGroup(chart_);
-    chart_->axisRect()->setMarginGroup(QCP::msLeft | QCP::msRight, mg);
+    // Match Win32 margins: left 82, top 72, right 28, bottom 58 (approx proportions)
+    chart_->axisRect()->setAutoMargins(QCP::msNone);
+    chart_->axisRect()->setMargins(QMargins(82, 72, 28, 58));
     chart_->replot();
 
     // Populate detail table
