@@ -111,13 +111,14 @@ void TrendWindow::setupUi() {
     chart_->plotLayout()->setColumnStretchFactor(0, 1);
     chart_->plotLayout()->setColumnStretchFactor(1, 0);
 
-    // Legend — right column, outside plot area
+    // Legend — compact right column, outside plot area
     chart_->legend->setVisible(true);
     chart_->legend->setBrush(Qt::NoBrush);
     chart_->legend->setBorderPen(Qt::NoPen);
-    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(12, 10);
+    chart_->legend->setFont(QFont("Microsoft YaHei", 7));
+    chart_->legend->setIconSize(10, 8);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
+    chart_->legend->setMinimumSize(QSize(0, 0));
     // Remove from inset, place in right column
     chart_->axisRect()->insetLayout()->take(chart_->legend);
     chart_->plotLayout()->addElement(1, 1, chart_->legend);
