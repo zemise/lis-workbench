@@ -56,7 +56,7 @@ void setupMenus(HWND hwnd) {
 
 void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
-                              0, 0, 0, 0, hwnd, (HMENU)ID_STATUS,
+                              0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
                               g_ctx.instance, nullptr);
     int parts[] = {300, -1};
     SendMessageW(sb, SB_SETPARTS, 2, (LPARAM)parts);
