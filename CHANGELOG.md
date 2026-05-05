@@ -1,5 +1,16 @@
 # Changelog
 
+## v2026.05.06
+
+- **主程序壳**：新建 `main_app.exe`（Win32），全屏 MDI 风格的平台窗口。
+- 菜单栏：检验管理（检验结果查询 + 输血结果查询）+ 工具（5 个预留项）+ 系统（参数设置 + 退出）。
+- 状态栏：系统字体 + 百分比宽度布局，左侧"就绪" + 中间伸展 + 本机 IP + 实时时钟。
+- 主程序与查询工具构建隔离，`result_search.exe` 不受影响。
+- `scripts/build_main.ps1` 一键构建/运行。
+- `MAIN_APP_PLAN.md`：主程序开发计划，含模块接口设计、构建隔离、Qt 迁移预留。
+- `CMakeLists.txt`：新增 `main_app` 目标，修复 MSVC manifest 冲突和 winsock 冲突。
+- 版本号更新为 v2026.05.06。
+
 ## v2026.05.05
 
 - **趋势图**：纯 QPainter 手绘（参照 Win32 `trend_chart_renderer.cpp`），零图表依赖。
