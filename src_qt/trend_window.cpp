@@ -246,30 +246,32 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
 
     // ── Legend (dynamic sizing) ─────────────────
     int lx = legendArea.left() + 4;
-    int itemH = legendFm.height() + 4;  // text height + spacing
-    int legendH = itemH * 4 + 8;  // 4 items + padding
+    int itemH = legendFm.height() + 6;  // text height + generous spacing
+    int legendH = itemH * 4 + 8;
 
-    // Background
     p.setPen(QPen(QColor(0xDD,0xDD,0xDD), 0.5));
     p.setBrush(QColor(0xFF,0xFF,0xFF,0xE0));
     p.drawRect(lx - 2, legendArea.top() + 2, legendW, legendH);
 
     int ly = legendArea.top() + 6;
+    int iconSz = itemH - 8;  // icon size scales with row height
     auto drawItem = [&](const QColor& c, const QString& text, bool isLine, bool isRect) {
+        int midY = ly + itemH / 2;
         p.setPen(Qt::NoPen);
         if (isLine) {
             p.setPen(QPen(c, 2.5));
-            p.drawLine(lx, ly + itemH/2, lx + 18, ly + itemH/2);
+            p.drawLine(lx, midY, lx + 18, midY);
             p.setPen(Qt::NoPen);
         } else if (isRect) {
-            p.fillRect(lx + 2, ly + 3, 14, itemH - 6, c);
+            p.fillRect(lx + 2, midY - iconSz/2, 14, iconSz, c);
             p.setPen(QPen(QColor(0x99,0x99,0x99), 0.8, Qt::DashLine));
-            p.drawRect(lx + 2, ly + 3, 14, itemH - 6);
+            p.drawRect(lx + 2, midY - iconSz/2, 14, iconSz);
             p.setPen(Qt::NoPen);
         } else {
             p.setPen(QPen(Qt::white, 2));
             p.setBrush(c);
-            p.drawEllipse(lx + 4, ly + 3, itemH - 6, itemH - 6);
+            int r = iconSz / 2;
+            p.drawEllipse(QPoint(lx + 6 + r, midY), r, r);
             p.setPen(Qt::NoPen);
         }
         p.setPen(Qt::black);
