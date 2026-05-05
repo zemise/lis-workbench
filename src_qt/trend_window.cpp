@@ -248,7 +248,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     // Legend background
     p.setPen(QPen(QColor(0xDD,0xDD,0xDD), 0.5));
     p.setBrush(QColor(0xFF,0xFF,0xFF,0xE0));
-    int legendW = 86, legendH = 90;
+    int legendH = 90;
     p.drawRect(lx - 2, ly - 2, legendW, legendH);
 
     auto drawItem = [&](int& y, const QColor& c, const QString& text, bool isLine, bool isRect) {
