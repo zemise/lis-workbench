@@ -18,9 +18,9 @@ constexpr int IDM_QUERY    = 1001;
 constexpr int IDM_BLOOD    = 1002;
 constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT     = 2002;
+constexpr int IDM_ABOUT    = 2003;
 constexpr int ID_TOOLBAR   = 3100;
 constexpr int ID_BTNCLOSE  = 3101;
-constexpr int ID_BTNABOUT  = 3102;
 constexpr int IDM_TOOL1    = 3011;
 constexpr int IDM_TOOL2    = 3012;
 constexpr int IDM_TOOL3    = 3013;
@@ -54,6 +54,8 @@ void setupMenus(HWND hwnd) {
     HMENU sysMenu = CreatePopupMenu();
     AppendMenuW(sysMenu, MF_STRING, IDM_SETTINGS, L"参数设置(&S)...");
     AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(sysMenu, MF_STRING, IDM_ABOUT, L"关于(&A)...");
     AppendMenuW(sysMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
     HMENU toolMenu = CreatePopupMenu();
     AppendMenuW(toolMenu, MF_STRING, IDM_TOOL1, L"工具1(&1)");
@@ -125,11 +127,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int tbParts[] = { -1 };
             SendMessageW(tb, SB_SETPARTS, 1, (LPARAM)tbParts);
             SendMessageW(tb, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-            // About button on left side
-            HWND btnAbout = CreateWindowExW(0, L"BUTTON", L"关于",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNABOUT)),
-                g_ctx.instance, nullptr);
             // Close button on right side
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -171,12 +168,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
                     SetWindowPos(btnClose, nullptr, cw - btnW - 10, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
                 }
-                // About button — far left
-                HWND btnAbout = GetDlgItem(hwnd, ID_BTNABOUT);
-                if (btnAbout) {
-                    SendMessageW(btnAbout, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-                    SetWindowPos(btnAbout, nullptr, 6, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
-                }
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
@@ -191,7 +182,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND: {
             switch (LOWORD(wp)) {
-                case ID_BTNABOUT:
+                case IDM_ABOUT:
                     MessageBoxW(hwnd,
                         L"检验结果查询平台\n版本 v2026.05.06\n\n作者：Zhao Wang",
                         L"关于", MB_ICONINFORMATION);
