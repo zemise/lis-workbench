@@ -131,7 +131,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     }
     // yLabelW column on left, tick labels on right, gaps
     int tickPad = 6;
-    int labelPad = 8;  // extra space between Y label and tick labels
+    int labelPad = 16;  // space between Y label and tick labels
     int yAxisW = yLabelW + labelPad + gap_ + maxYTickW + tickPad;
 
     QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
