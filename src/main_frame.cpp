@@ -116,15 +116,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar panel — full width, menu-colored, close button on right
+            // Toolbar panel — menu font, close button on far right
+            int tbH = abs(nm.lfMenuFont.lfHeight) * 1.6;
             HWND tb = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE,
-                0, 0, 0, 28, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+                0, 0, 0, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
-            CreateWindowExW(0, L"BUTTON", L"关闭",
+            HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                0, 2, 60, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
+                0, 0, 0, 0, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
+            SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
             // Separator line
             CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
@@ -140,12 +142,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE: {
-            // Toolbar panel — full width, button on right
+            // Toolbar panel — full width, close button pinned right
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             if (tb) {
-                SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 28, SWP_NOZORDER);
+                int cw = LOWORD(lp);
+                RECT trc; GetClientRect(tb, &trc);
+                int tbH = trc.bottom;
+                SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
                 HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                if (btn) SetWindowPos(btn, nullptr, LOWORD(lp) - 68, 2, 60, 24, SWP_NOZORDER);
+                int btnW = cw * 6 / 100;  // 6% of window width
+                if (btnW < 50) btnW = 50;
+                if (btnW > 80) btnW = 80;
+                if (btn) SetWindowPos(btn, nullptr, cw - btnW - 8, (tbH - btnW * 3 / 8) / 2, btnW, btnW * 3 / 8, SWP_NOZORDER);
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
@@ -194,6 +202,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     nm.cbSize = sizeof(nm);
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
     g_ctx.uiFont = CreateFontIndirectW(&nm.lfMessageFont);
+    g_ctx.menuFont = CreateFontIndirectW(&nm.lfMenuFont);
 
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
@@ -227,5 +236,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
 
     if (g_ctx.uiFont) DeleteObject(g_ctx.uiFont);
+    if (g_ctx.menuFont) DeleteObject(g_ctx.menuFont);
     return 0;
 }

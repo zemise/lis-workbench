@@ -12,6 +12,7 @@ struct Context {
     HINSTANCE instance = nullptr;
     HWND mainWindow = nullptr;
     HFONT uiFont = nullptr;
+    HFONT menuFont = nullptr;
     search::DbSettings dbSettings;
     int fontSize = 9;
 };
