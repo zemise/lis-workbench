@@ -132,8 +132,20 @@ void TrendWindow::setupUi() {
     lineCurve_->attach(plot_);
 
     normalScatter_ = new QwtPlotCurve(QString::fromWCharArray(L"正常"));
+    normalScatter_->setStyle(QwtPlotCurve::NoCurve);
+    normalScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
+        QBrush(QColor(0x23,0x23,0x23)), QPen(Qt::white, 2.5), QSize(11,11)));
     highScatter_   = new QwtPlotCurve(QString::fromWCharArray(L"偏高"));
+    highScatter_->setStyle(QwtPlotCurve::NoCurve);
+    highScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
+        QBrush(QColor(0xD2,0x28,0x28)), QPen(Qt::white, 2.5), QSize(11,11)));
     lowScatter_    = new QwtPlotCurve(QString::fromWCharArray(L"低值"));
+    lowScatter_->setStyle(QwtPlotCurve::NoCurve);
+    lowScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
+        QBrush(QColor(0x28,0x50,0xD2)), QPen(Qt::white, 2.5), QSize(11,11)));
+    normalScatter_->attach(plot_);
+    highScatter_->attach(plot_);
+    lowScatter_->attach(plot_);
 
     // Reference zone (attached in renderChart)
     refZone_ = new QwtPlotZoneItem;
@@ -297,14 +309,15 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
     // Scatter points — white-bordered filled circles (Win32 style)
     auto setScatter = [this](QwtPlotCurve* c, const QVector<double>& xs,
                               const QVector<double>& ys, const QColor& fill) {
-        if (xs.isEmpty()) { c->detach(); return; }
+        c->detach();
+        if (xs.isEmpty()) return;
         c->setSamples(xs, ys);
         c->setStyle(QwtPlotCurve::Dots);
         QwtSymbol* ring = new QwtSymbol(QwtSymbol::Ellipse,
                                         QBrush(fill), QPen(Qt::white, 2.5), QSize(11,11));
         c->setSymbol(ring);
-        if (!c->plot()) c->attach(plot_);
-        c->setZ(lineCurve_->z() + 1);  // scatter above trend line
+        c->attach(plot_);
+        c->setZ(lineCurve_->z() + 1);
     };
     setScatter(normalScatter_, xn, yn, QColor(0x23,0x23,0x23));
     setScatter(highScatter_,   xh, yh, QColor(0xD2,0x28,0x28));
