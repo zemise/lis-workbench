@@ -407,8 +407,8 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         title += " - " + fmt(itemPoints[0]->unit);
     }
     title += QString::fromWCharArray(L" 趋势图");
-    // Ensure title row exists (axis rect is at row 0 by default)
-    if (chart_->plotLayout()->rowCount() < 2) {
+    // Ensure title row exists
+    while (chart_->plotLayout()->rowCount() < 3) {
         chart_->plotLayout()->insertRow(0);
     }
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
