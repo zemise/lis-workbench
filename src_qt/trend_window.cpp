@@ -407,8 +407,8 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         title += " - " + fmt(itemPoints[0]->unit);
     }
     title += QString::fromWCharArray(L" 趋势图");
-    // Ensure title row exists
-    while (chart_->plotLayout()->rowCount() < 3) {
+    // Ensure title row exists (only once, above axis rect)
+    if (chart_->plotLayout()->rowCount() < 2) {
         chart_->plotLayout()->insertRow(0);
     }
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
@@ -439,9 +439,9 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
     chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Match Win32 margins: left 82, top 72, right 28, bottom 58 (approx proportions)
-    chart_->axisRect()->setAutoMargins(QCP::msNone);
-    chart_->axisRect()->setMargins(QMargins(82, 72, 28, 58));
+    // Let QCustomPlot calculate margins automatically
+    chart_->axisRect()->setAutoMargins(QCP::msAll);
+    chart_->axisRect()->setMargins(QMargins(15, 15, 15, 15));
     chart_->replot();
 
     // Populate detail table
