@@ -59,47 +59,7 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets PrintSupport Concurrent)
-
-    # QCustomPlot 2.1.1 — single h/cpp chart library (MIT)
-    set(QCP_DIR "${CMAKE_BINARY_DIR}/qcustomplot")
-    file(MAKE_DIRECTORY "${QCP_DIR}")
-    if(NOT EXISTS "${QCP_DIR}/qcustomplot.h" OR NOT EXISTS "${QCP_DIR}/qcustomplot.cpp")
-        file(DOWNLOAD
-            "https://www.qcustomplot.com/release/2.1.1/QCustomPlot-source.tar.gz"
-            "${QCP_DIR}/qcustomplot.tar.gz"
-            TLS_VERIFY ON
-            STATUS QCP_DL_STATUS
-        )
-        list(GET QCP_DL_STATUS 0 QCP_DL_CODE)
-        if(NOT QCP_DL_CODE EQUAL 0)
-            message(FATAL_ERROR "Failed to download QCustomPlot")
-        endif()
-        file(ARCHIVE_EXTRACT INPUT "${QCP_DIR}/qcustomplot.tar.gz"
-             DESTINATION "${QCP_DIR}")
-        # Archive may nest files in a subdirectory — search recursively
-        file(GLOB_RECURSE QCP_CPP_FILES "${QCP_DIR}/*.cpp")
-        file(GLOB_RECURSE QCP_H_FILES   "${QCP_DIR}/*.h")
-        list(LENGTH QCP_CPP_FILES n_cpp)
-        list(LENGTH QCP_H_FILES   n_h)
-        if(n_cpp EQUAL 0 OR n_h EQUAL 0)
-            message(FATAL_ERROR "QCustomPlot archive did not contain expected .cpp/.h files")
-        endif()
-        foreach(f ${QCP_CPP_FILES})
-            get_filename_component(name "${f}" NAME)
-            file(RENAME "${f}" "${QCP_DIR}/${name}")
-        endforeach()
-        foreach(f ${QCP_H_FILES})
-            get_filename_component(name "${f}" NAME)
-            file(RENAME "${f}" "${QCP_DIR}/${name}")
-        endforeach()
-    endif()
-
-    add_library(qcustomplot STATIC "${QCP_DIR}/qcustomplot.cpp")
-    target_include_directories(qcustomplot PUBLIC "${QCP_DIR}")
-    target_link_libraries(qcustomplot PUBLIC Qt5::Widgets Qt5::PrintSupport)
-    target_compile_definitions(qcustomplot PRIVATE
-        _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
+    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
@@ -108,6 +68,6 @@ if(BUILD_QT_GUI)
         src_qt/trend_window.cpp
         src_qt/resources.qrc
     )
-    target_include_directories(result_search_qt PRIVATE src src_qt "${QCP_DIR}")
-    target_link_libraries(result_search_qt PRIVATE search_core qcustomplot Qt5::Widgets Qt5::WinMain Qt5::PrintSupport Qt5::Concurrent)
+    target_include_directories(result_search_qt PRIVATE src src_qt)
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
 endif()

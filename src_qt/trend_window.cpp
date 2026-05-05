@@ -1,5 +1,4 @@
 #include "trend_window.h"
-#include "search_text.h"
 #include "trend_core.h"
 
 #include <QApplication>
@@ -9,31 +8,31 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTextStream>
+#include <QTemporaryFile>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 #include <cmath>
 
-#include "qcustomplot.h"
-
 // ── helpers ──────────────────────────────────────────────────
 
-static QString fmt(const std::string& s) {
+static QString s8(const std::string& s) {
     return QString::fromUtf8(s.c_str(), static_cast<int>(s.size()));
 }
 
-static QStandardItem* item(const QString& text) {
+static QStandardItem* cellItem(const QString& text) {
     auto* it = new QStandardItem(text);
     it->setEditable(false);
     return it;
 }
 
 static QString sanitize(const std::string& s) {
-    QString q = fmt(s).trimmed();
+    QString q = s8(s).trimmed();
     for (auto& ch : q) {
         switch (ch.unicode()) {
             case '\\': case '/': case ':': case '*':
@@ -48,21 +47,123 @@ static QString exportBaseName(const search::QueryInput& input) {
     QStringList parts;
     auto name = sanitize(input.patient_name);
     auto no   = sanitize(input.patient_no);
-    auto startDate = sanitize(input.start_date);
-    auto endDate   = sanitize(input.end_date);
+    auto sD   = sanitize(input.start_date);
+    auto eD   = sanitize(input.end_date);
     QString date;
-    if (!startDate.isEmpty() && !endDate.isEmpty() && startDate != endDate) {
-        date = startDate + "_" + endDate;
-    } else if (!startDate.isEmpty()) {
-        date = startDate;
-    } else {
-        date = endDate;
-    }
+    if (!sD.isEmpty() && !eD.isEmpty() && sD != eD) date = sD + "_" + eD;
+    else if (!sD.isEmpty()) date = sD;
+    else date = eD;
     if (!name.isEmpty()) parts << name;
     if (!no.isEmpty())   parts << no;
     if (!date.isEmpty()) parts << date;
     if (parts.isEmpty()) parts << "trend_export";
     return parts.join("-");
+}
+
+// ── gnuplot chart builder ────────────────────────────────────
+
+static void writeGnuplotScript(QTextStream& out,
+                               const std::vector<const search::TrendPoint*>& pts,
+                               int width, int height) {
+    // Determine ranges
+    double yMin = pts[0]->result_value, yMax = pts[0]->result_value;
+    bool hasRef = false;
+    double refLo = 0, refHi = 0;
+    for (const auto* p : pts) {
+        yMin = std::min(yMin, p->result_value);
+        yMax = std::max(yMax, p->result_value);
+        if (!p->lower_bound.empty() || !p->upper_bound.empty()) {
+            hasRef = true;
+            try { refLo = std::stod(p->lower_bound); } catch(...) {}
+            try { refHi = std::stod(p->upper_bound); } catch(...) {}
+        }
+    }
+    double pad = (yMax - yMin) * 0.2;
+    if (pad < 0.01) pad = 1.0;
+    if (hasRef) {
+        yMin = std::min(yMin, refLo) - pad;
+        yMax = std::max(yMax, refHi) + pad;
+    } else {
+        yMin -= pad;
+        yMax += pad;
+    }
+
+    // Title
+    std::string title = pts[0]->item_name;
+    if (!pts[0]->item_eng.empty()) title += " (" + pts[0]->item_eng + ")";
+    if (!pts[0]->unit.empty()) title += " - " + pts[0]->unit;
+    title += " 趋势图";
+
+    std::string yLabel = pts[0]->unit.empty()
+        ? "结果值" : "结果值 (" + pts[0]->unit + ")";
+
+    // gnuplot script — pngcairo, enhanced text, SCI quality
+    out << "set terminal pngcairo enhanced size " << width << "," << height
+        << " font 'Microsoft YaHei,10' rounded\n";
+    out << "set encoding utf8\n";
+    out << "set output '-\n";  // stdout
+    out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
+    out << "set xlabel '检测日期（按结果顺序）' font 'Microsoft YaHei,10'\n";
+    out << "set ylabel '" << yLabel.c_str() << "' font 'Microsoft YaHei,10'\n";
+    out << "set yrange [" << yMin << ":" << yMax << "]\n";
+    out << "set grid ytics lc rgb '#E0E0E0'\n";
+    out << "set key inside right top font 'Microsoft YaHei,8' width 1\n";
+    out << "set style fill transparent solid 0.3\n";
+    out << "set format y '%.4g'\n";
+
+    // Reference band
+    if (hasRef) {
+        out << "set object 1 rect from graph 0, first " << refLo
+            << " to graph 1, first " << refHi
+            << " fc rgb '#F0F0F0' fs solid 0.5 behind\n";
+    }
+
+    // X-axis labels
+    out << "set xtics (";
+    int maxTicks = std::min(5, static_cast<int>(pts.size()));
+    for (int t = 0; t < maxTicks; ++t) {
+        int idx = (maxTicks <= 1) ? 0
+            : static_cast<int>(std::llround(static_cast<double>(t) * (pts.size() - 1)
+                                            / (maxTicks - 1)));
+        if (t > 0) out << ", ";
+        QString rt = s8(pts[idx]->report_time);
+        QString label = (rt.length() >= 16) ? rt.mid(5, 5) + "\\n" + rt.mid(11, 5)
+                       : (rt.length() >= 10) ? rt.mid(5, 5) : rt;
+        out << "\"" << label.toStdString().c_str() << "\" " << idx;
+    }
+    out << ") font 'Microsoft YaHei,9' rotate by 0 offset 0,-0.8\n";
+
+    // Plot command — line + color-coded points
+    // Normal points
+    out << "plot '-' using 1:2 with lines lw 2.5 lc rgb '#1E5FB4' title '结果线', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#232323' title '正常', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#D22828' title '偏高', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' title '低值'\n";
+
+    // Write data: all points for line, then filtered by normal status
+    for (const auto* p : pts) {
+        out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
+    }
+    out << "e\n";
+    // All points again for normal
+    for (const auto* p : pts) {
+        if (p->normal != "1" && p->normal != "5")
+            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
+    }
+    out << "e\n";
+    // High points
+    for (const auto* p : pts) {
+        if (p->normal == "1")
+            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
+    }
+    out << "e\n";
+    // Low points
+    for (const auto* p : pts) {
+        if (p->normal == "5")
+            out << static_cast<size_t>(p - pts.data()) << " " << p->result_value << "\n";
+    }
+    out << "e\n";
+    out.flush();
 }
 
 // ── TrendWindow ──────────────────────────────────────────────
@@ -74,10 +175,23 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
     setWindowTitle(QString::fromWCharArray(L"检验结果趋势图"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     auto screen = QGuiApplication::primaryScreen()->availableGeometry();
-    resize(std::max(static_cast<int>(screen.width() * 0.8), 1280),
-           std::max(static_cast<int>(screen.height() * 0.75), 720));
+    resize(std::max(static_cast<int>(screen.width() * 0.8), 1200),
+           std::max(static_cast<int>(screen.height() * 0.75), 700));
     setupUi();
     loadTrendData();
+}
+
+QString TrendWindow::gnuplotPath() const {
+    // Try common install paths
+    QStringList candidates = {"gnuplot", "gnuplot.exe",
+        "C:/Program Files/gnuplot/bin/gnuplot.exe",
+        "C:/Program Files (x86)/gnuplot/bin/gnuplot.exe"};
+    for (const auto& p : candidates) {
+        QProcess test;
+        test.start(p, {"--version"});
+        if (test.waitForFinished(2000) && test.exitCode() == 0) return p;
+    }
+    return {};
 }
 
 void TrendWindow::setupUi() {
@@ -92,37 +206,25 @@ void TrendWindow::setupUi() {
     itemTable_->horizontalHeader()->setStretchLastSection(true);
     itemTable_->verticalHeader()->setVisible(false);
 
-    // Chart (top-left)
-    chart_ = new QCustomPlot;
-    chart_->setInteractions(0);
-    chart_->setAntialiasedElements(QCP::aeAll);
-    chart_->setMinimumHeight(300);
-    chart_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-
-    // Title row above chart
-    chart_->plotLayout()->insertRow(0);
-    chart_->plotLayout()->setRowStretchFactor(0, 0.001);
-    chart_->plotLayout()->setRowStretchFactor(1, 1);
-
-    // Default legend — inset top-right, compact SCI style
-    chart_->legend->setVisible(true);
-    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xE0)));
-    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
-    chart_->legend->setFont(QFont("Microsoft YaHei", 7));
-    chart_->legend->setIconSize(10, 8);
-    chart_->legend->setSelectableParts(QCPLegend::spNone);
+    // Chart display — QLabel shows gnuplot PNG
+    chartLabel_ = new QLabel(QString::fromWCharArray(L"请在左侧选择项目"));
+    chartLabel_->setAlignment(Qt::AlignCenter);
+    chartLabel_->setMinimumSize(600, 400);
+    chartLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    chartLabel_->setStyleSheet("QLabel { background: white; }");
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
+
     auto* chartArea = new QVBoxLayout;
     chartArea->setContentsMargins(0, 0, 0, 0);
-    chartArea->addWidget(chart_);
+    chartArea->addWidget(chartLabel_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
     chartContainer->setMinimumHeight(300);
     chartContainer->setLayout(chartArea);
 
-    // Detail table (bottom-left)
+    // Detail table
     detailModel_ = new QStandardItemModel(0, 7, this);
     detailModel_->setHorizontalHeaderLabels({
         QString::fromWCharArray(L"时间"),
@@ -144,10 +246,10 @@ void TrendWindow::setupUi() {
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 2);  // chart
-    leftSplitter->setStretchFactor(1, 1);  // detail table
+    leftSplitter->setStretchFactor(0, 2);
+    leftSplitter->setStretchFactor(1, 1);
 
-    // Right panel: item list (top) + buttons (bottom)
+    // Right panel: item list + buttons
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
     exportImageBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选图片"));
     exportCsvBtn_->setEnabled(false);
@@ -163,7 +265,6 @@ void TrendWindow::setupUi() {
     rightLayout->addWidget(exportImageBtn_);
     rightLayout->addWidget(exportCsvBtn_);
 
-    // Main splitter: left (chart+detail) | right (items+buttons)
     rightPanel->setMinimumWidth(200);
     rightPanel->setMaximumWidth(350);
     mainSplitter_ = new QSplitter(Qt::Horizontal);
@@ -183,7 +284,7 @@ void TrendWindow::setupUi() {
 }
 
 void TrendWindow::loadTrendData() {
-    auto& pts = points_;  // capture ref for lambda
+    auto& pts = points_;
     auto db = db_;
     auto input = lastQuery_;
 
@@ -201,15 +302,14 @@ void TrendWindow::onTrendDataLoaded() {
     loadingLabel_->hide();
 
     if (points_.empty()) {
-        QMessageBox::information(this, QString::fromWCharArray(L"趋势图"),
-                                 QString::fromWCharArray(L"未查询到趋势数据。"));
+        chartLabel_->setText(QString::fromWCharArray(L"未查询到趋势数据。"));
         return;
     }
 
     items_ = search::trend_item_options(points_);
     itemModel_->removeRows(0, itemModel_->rowCount());
     for (size_t i = 0; i < items_.size(); ++i) {
-        auto* checkItem = item(fmt(items_[i].item_name));
+        auto* checkItem = cellItem(s8(items_[i].item_name));
         checkItem->setCheckable(true);
         checkItem->setCheckState(Qt::Unchecked);
         itemModel_->appendRow(checkItem);
@@ -229,15 +329,11 @@ void TrendWindow::onItemClicked(const QModelIndex& index) {
     if (idx >= items_.size()) return;
 
     currentItemCode_ = items_[idx].item_code;
-    updateChart(currentItemCode_);
+    renderChart(currentItemCode_);
 }
 
-void TrendWindow::updateChart(const std::string& itemCode) {
-    chart_->clearGraphs();
-    chart_->clearPlottables();
-    chart_->clearItems();
-
-    // Collect points for this item
+void TrendWindow::renderChart(const std::string& itemCode) {
+    // Collect numeric points for this item
     std::vector<const search::TrendPoint*> itemPoints;
     for (const auto& p : points_) {
         if (p.item_code == itemCode && p.has_numeric_value) {
@@ -245,216 +341,94 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         }
     }
 
-    if (itemPoints.size() < 2) {
-        chart_->replot();
-        detailModel_->removeRows(0, detailModel_->rowCount());
-        return;
-    }
-
-    // Build data vectors
-    QVector<double> x, y;
-    QVector<double> xHigh, yHigh, xLow, yLow, xNormal, yNormal;
-    double minVal = itemPoints[0]->result_value;
-    double maxVal = itemPoints[0]->result_value;
-    bool hasRef = false;
-    double refLow = 0.0, refHigh = 0.0;
-
-    for (const auto* p : itemPoints) {
-        double xi = static_cast<double>(x.size());
-        x.push_back(xi);
-        y.push_back(p->result_value);
-        minVal = std::min(minVal, p->result_value);
-        maxVal = std::max(maxVal, p->result_value);
-
-        if (p->normal == "1")      { xHigh.push_back(xi);   yHigh.push_back(p->result_value); }
-        else if (p->normal == "5") { xLow.push_back(xi);    yLow.push_back(p->result_value); }
-        else                       { xNormal.push_back(xi); yNormal.push_back(p->result_value); }
-
-        if (!p->lower_bound.empty() || !p->upper_bound.empty()) {
-            hasRef = true;
-            try { refLow = std::stod(p->lower_bound); } catch (...) {}
-            try { refHigh = std::stod(p->upper_bound); } catch (...) {}
-        }
-    }
-
-    double padding = (maxVal - minVal) * 0.2;
-    if (padding < 1e-9) padding = 1.0;
-    double yMin = minVal - padding;
-    double yMax = maxVal + padding;
-    if (hasRef) {
-        yMin = std::min(yMin, refLow - padding);
-        yMax = std::max(yMax, refHigh + padding);
-    }
-
-    // ── Color palette (colorblind-safe, muted tones) ──────
-    const auto& unit = itemPoints[0]->unit;
-    const QString YUnitLabel = unit.empty()
-        ? QString::fromWCharArray(L"结果值")
-        : QString::fromWCharArray(L"结果值 (") + fmt(unit) + ")";
-    // Win32-matched colors
-    const QColor lineColor(0x1E, 0x5F, 0xB4);    // blue trend line (RGB 30,95,180)
-    const QColor normalColor(0x23, 0x23, 0x23);   // dark gray (RGB 35,35,35)
-    const QColor highColor(0xD2, 0x28, 0x28);     // red (RGB 210,40,40)
-    const QColor lowColor(0x28, 0x50, 0xD2);      // blue (RGB 40,80,210)
-    const QColor refFill(0xF2, 0xF2, 0xF2);
-    const QColor gridColor(0xEA, 0xEA, 0xEA);
-    const QColor axisColor(0x4D, 0x4D, 0x4D);
-
-    // Edge padding so scatter points at axis boundaries are fully visible
-    double xPad = std::max(0.3, (itemPoints.size() - 1.0) * 0.04);
-
-    // ── Reference range band ───────────────────────────────
-    if (hasRef) {
-        QVector<double> bandX = {-xPad, static_cast<double>(itemPoints.size()) - 1.0 + xPad};
-        auto* upper = chart_->addGraph();
-        upper->setData(bandX, QVector<double>(2, refHigh));
-        upper->setPen(Qt::NoPen);
-        upper->removeFromLegend();
-        auto* lower = chart_->addGraph();
-        lower->setData(bandX, QVector<double>(2, refLow));
-        lower->setPen(QPen(axisColor, 0.8, Qt::DashLine));
-        lower->setChannelFillGraph(upper);
-        lower->setBrush(refFill);
-        lower->setName(QString::fromWCharArray(L"参考区间"));
-    }
-
-    // ── Main trend line (Win32: blue, width 2) ───────────
-    auto* line = chart_->addGraph();
-    line->setData(x, y);
-    line->setPen(QPen(lineColor, 2.0));
-    line->setLineStyle(QCPGraph::lsLine);
-    line->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
-    line->setName(QString::fromWCharArray(L"结果线"));
-
-    // ── Scatter points (filled + white border, matching Win32 Ellipse) ──
-    auto addScatter = [&](const QVector<double>& xs, const QVector<double>& ys,
-                          const QColor& fill, const QString& name) {
-        if (xs.isEmpty()) return;
-        auto* g = chart_->addGraph();
-        g->setData(xs, ys);
-        g->setPen(Qt::NoPen);
-        g->setLineStyle(QCPGraph::lsNone);
-        QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(Qt::white, 1.0), QBrush(fill), 7);
-        g->setScatterStyle(ss);
-        g->setName(name);
-    };
-    addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
-    addScatter(xHigh,   yHigh,   highColor,   QString::fromWCharArray(L"偏高"));
-    addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
-
-    // ── Axes styling (ggplot2 theme_bw equivalent) ──────
-    chart_->xAxis->setRange(-xPad, static_cast<double>(itemPoints.size()) - 1.0 + xPad);
-    chart_->yAxis->setRange(yMin, yMax);
-
-    // Common axis pen: clean thin line, ticks outward
-    QPen axisPen(axisColor, 1.2);
-    chart_->xAxis->setBasePen(axisPen);
-    chart_->xAxis->setTickPen(axisPen);
-    chart_->xAxis->setSubTickPen(Qt::NoPen);
-    chart_->xAxis->setTickLengthOut(6);
-    chart_->xAxis->setSubTicks(false);
-    chart_->xAxis->setTickLabelColor(axisColor);
-    chart_->xAxis->grid()->setVisible(false);
-    chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序）"));
-    chart_->xAxis->setLabelColor(axisColor);
-    chart_->xAxis->setLabelFont(QFont("Microsoft YaHei", 10));
-
-    chart_->yAxis->setBasePen(axisPen);
-    chart_->yAxis->setTickPen(axisPen);
-    chart_->yAxis->setSubTickPen(Qt::NoPen);
-    chart_->yAxis->setTickLengthOut(6);
-    chart_->yAxis->setSubTicks(false);
-    chart_->yAxis->setTickLabelColor(axisColor);
-    chart_->yAxis->grid()->setPen(QPen(gridColor, 0.8));
-    chart_->yAxis->grid()->setSubGridVisible(false);
-    chart_->yAxis->setLabel(YUnitLabel);
-    chart_->yAxis->setLabelColor(axisColor);
-    chart_->yAxis->setLabelFont(QFont("Microsoft YaHei", 10));
-    // Y-axis ticker: nice rounded values, ~5 ticks
-    auto yTicker = QSharedPointer<QCPAxisTickerFixed>::create();
-    yTicker->setTickStep(0);  // auto
-    yTicker->setScaleStrategy(QCPAxisTickerFixed::ssMultiples);
-    chart_->yAxis->setTicker(yTicker);
-    chart_->yAxis->setNumberFormat("g");
-    chart_->yAxis->setNumberPrecision(3);
-
-    // Remove top/right axis (ggplot2 style)
-    chart_->xAxis2->setVisible(true);
-    chart_->xAxis2->setTicks(false);
-    chart_->xAxis2->setTickLabels(false);
-    chart_->xAxis2->setBasePen(QPen(axisColor, 0.5));
-    chart_->yAxis2->setVisible(true);
-    chart_->yAxis2->setTicks(false);
-    chart_->yAxis2->setTickLabels(false);
-    chart_->yAxis2->setBasePen(QPen(axisColor, 0.5));
-
-    QVector<double> tickPositions;
-    QVector<QString> tickLabels;
-    const int maxTicks = 5;
-    const int total = static_cast<int>(itemPoints.size());
-    for (int tick = 0; tick < maxTicks && tick < total; ++tick) {
-        int index = (maxTicks <= 1) ? 0
-                    : static_cast<int>(std::llround(static_cast<double>(tick) * (total - 1) /
-                                                    static_cast<double>(maxTicks - 1)));
-        if (index >= total) continue;
-        QString rt = fmt(itemPoints[static_cast<size_t>(index)]->report_time);
-        QString datePart = (rt.length() >= 10) ? rt.mid(5, 5) : rt.left(10);   // "MM-DD"
-        QString timePart = (rt.length() >= 16) ? rt.mid(11, 5) : "";             // "HH:MM"
-        tickPositions.push_back(static_cast<double>(index));
-        tickLabels.push_back(datePart + "\n" + timePart);
-    }
-    auto ticker = QSharedPointer<QCPAxisTickerText>::create();
-    for (int i = 0; i < tickPositions.size(); ++i) {
-        ticker->addTick(tickPositions[i], tickLabels[i]);
-    }
-    chart_->xAxis->setTicker(ticker);
-    chart_->xAxis->setTickLabelRotation(0);
-
-    // ── Title ─────────────────────────────────────────────
-    auto title = fmt(itemPoints[0]->item_name);
-    if (!itemPoints[0]->item_eng.empty()) {
-        title += " (" + fmt(itemPoints[0]->item_eng) + ")";
-    }
-    if (!itemPoints[0]->unit.empty()) {
-        title += " - " + fmt(itemPoints[0]->unit);
-    }
-    title += QString::fromWCharArray(L" 趋势图");
-    // Update or create title element at row 0
-    auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
-    if (existingTitle) {
-        existingTitle->setText(title);
-    } else {
-        auto* el = new QCPTextElement(chart_, title,
-                                       QFont("Microsoft YaHei", 12, QFont::Bold));
-        el->setTextColor(QColor(0x33, 0x33, 0x33));
-        chart_->plotLayout()->addElement(0, 0, el);
-    }
-
-    // ── Final ─────────────────────────────────────────────
-    chart_->setBackground(QBrush(Qt::white));
-    chart_->axisRect()->setBackground(QBrush(Qt::white));
-    // Auto left/top/bottom, generous fixed right margin for inset legend
-    chart_->axisRect()->setAutoMargins(QCP::msLeft | QCP::msTop | QCP::msBottom);
-    chart_->axisRect()->setMargins(QMargins(15, 20, 140, 15));
-    chart_->replot();
-
-    // Populate detail table
+    // Populate detail table unconditionally
     detailModel_->removeRows(0, detailModel_->rowCount());
     for (const auto* p : itemPoints) {
         QList<QStandardItem*> row;
-        row << item(fmt(p->report_time))
-            << item(fmt(p->item_name))
-            << item(fmt(p->result_text))
-            << item(fmt(p->unit))
-            << item(fmt(p->lower_bound))
-            << item(fmt(p->upper_bound))
-            << item(fmt(p->rep_no));
+        row << cellItem(s8(p->report_time))
+            << cellItem(s8(p->item_name))
+            << cellItem(s8(p->result_text))
+            << cellItem(s8(p->unit))
+            << cellItem(s8(p->lower_bound))
+            << cellItem(s8(p->upper_bound))
+            << cellItem(s8(p->rep_no));
         QColor fg = Qt::black;
-        if (p->normal == "1") fg = highColor;
-        else if (p->normal == "5") fg = lowColor;
-        for (auto* it : row) { it->setForeground(fg); }
+        if (p->normal == "1") fg = QColor(0xD2, 0x28, 0x28);
+        else if (p->normal == "5") fg = QColor(0x28, 0x50, 0xD2);
+        for (auto* it : row) it->setForeground(fg);
         detailModel_->appendRow(row);
     }
+
+    if (itemPoints.size() < 2) {
+        chartLabel_->setText(QString::fromWCharArray(L"该项目不足两个有效数值点，暂无法绘制趋势线"));
+        return;
+    }
+
+    // Check gnuplot availability
+    QString gp = gnuplotPath();
+    if (gp.isEmpty()) {
+        chartLabel_->setText(QString::fromWCharArray(L"未找到 gnuplot，请安装: winget install gnuplot.gnuplot"));
+        return;
+    }
+
+    // Build script
+    QString script;
+    QTextStream out(&script);
+    int w = chartLabel_->width() > 100 ? chartLabel_->width() : 800;
+    int h = chartLabel_->height() > 100 ? chartLabel_->height() : 500;
+    writeGnuplotScript(out, itemPoints, w, h);
+
+    // Run gnuplot, pipe script via stdin
+    QProcess proc;
+    proc.start(gp, {"-"});
+    if (!proc.waitForStarted(3000)) {
+        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 启动失败"));
+        return;
+    }
+    proc.write(script.toUtf8());
+    proc.closeWriteChannel();
+    proc.waitForFinished(10000);
+
+    QByteArray pngData = proc.readAllStandardOutput();
+    if (pngData.isEmpty()) {
+        chartLabel_->setText(QString::fromWCharArray(L"gnuplot 生成图片失败：")
+                             + QString::fromUtf8(proc.readAllStandardError()));
+        return;
+    }
+
+    chartPixmap_.loadFromData(pngData);
+    if (chartPixmap_.isNull()) {
+        chartLabel_->setText(QString::fromWCharArray(L"无法加载趋势图"));
+        return;
+    }
+    chartLabel_->setPixmap(chartPixmap_.scaled(chartLabel_->size(),
+                                                Qt::KeepAspectRatio,
+                                                Qt::SmoothTransformation));
+}
+
+void TrendWindow::renderToFile(const std::string& itemCode,
+                               const QString& path, int w, int h) {
+    std::vector<const search::TrendPoint*> itemPoints;
+    for (const auto& p : points_) {
+        if (p.item_code == itemCode && p.has_numeric_value)
+            itemPoints.push_back(&p);
+    }
+    if (itemPoints.size() < 2) return;
+
+    QString gp = gnuplotPath();
+    if (gp.isEmpty()) return;
+
+    QString script;
+    QTextStream out(&script);
+    out << "set output '" << path.toStdString().c_str() << "'\n";
+    writeGnuplotScript(out, itemPoints, w, h);
+
+    QProcess proc;
+    proc.start(gp, {"-"});
+    if (!proc.waitForStarted(3000)) return;
+    proc.write(script.toUtf8());
+    proc.closeWriteChannel();
+    proc.waitForFinished(30000);
 }
 
 void TrendWindow::onExportCsv() {
@@ -463,7 +437,6 @@ void TrendWindow::onExportCsv() {
     if (dir.isEmpty()) return;
 
     QString base = exportBaseName(lastQuery_);
-
     for (int i = 0; i < itemModel_->rowCount(); ++i) {
         auto* checkItem = itemModel_->item(i, 0);
         if (!checkItem || checkItem->checkState() != Qt::Checked) continue;
@@ -471,37 +444,27 @@ void TrendWindow::onExportCsv() {
 
         const auto& code = items_[i].item_code;
         const auto& name = items_[i].item_name;
-        QString fileName = dir + "/" + base + ".csv";
-        // Append item info if exporting multiple checked items
-        if (i > 0 || itemModel_->rowCount() > 1) {
-            fileName = dir + "/" + base + "-" + sanitize(code);
-            if (!name.empty()) fileName += "-" + sanitize(name);
-            fileName += ".csv";
-        }
-        QFile file(fileName);
+        QString fname = base + "-" + sanitize(code);
+        if (!name.empty()) fname += "-" + sanitize(name);
+        fname += ".csv";
+        QFile file(dir + "/" + fname);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) continue;
 
         QTextStream out(&file);
         out.setCodec("UTF-8");
         out << "\xEF\xBB\xBF";  // BOM
         out << QString::fromWCharArray(L"时间,项目,结果,单位,下限,上限,报告号\n");
-
         for (const auto& p : points_) {
             if (p.item_code != code) continue;
-            out << fmt(p.report_time) << ","
-                << fmt(p.item_name) << ","
-                << fmt(p.result_text) << ","
-                << fmt(p.unit) << ","
-                << fmt(p.lower_bound) << ","
-                << fmt(p.upper_bound) << ","
-                << fmt(p.rep_no) << "\n";
+            out << s8(p.report_time) << "," << s8(p.item_name) << ","
+                << s8(p.result_text) << "," << s8(p.unit) << ","
+                << s8(p.lower_bound) << "," << s8(p.upper_bound) << ","
+                << s8(p.rep_no) << "\n";
         }
-        file.close();
     }
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
                              QString::fromWCharArray(L"已导出勾选项目的 CSV 文件。"));
 }
-
 
 void TrendWindow::onExportImages() {
     QString dir = QFileDialog::getExistingDirectory(this,
@@ -516,19 +479,11 @@ void TrendWindow::onExportImages() {
 
         const auto& code = items_[i].item_code;
         const auto& name = items_[i].item_name;
-        QString fileName = base + "-" + sanitize(code);
-        if (!name.empty()) fileName += "-" + sanitize(name);
-        fileName += ".png";
-        QString fullPath = dir + "/" + fileName;
-
-        updateChart(code);
-        chart_->savePng(fullPath, 0, 0, 2.0);
+        QString fname = base + "-" + sanitize(code);
+        if (!name.empty()) fname += "-" + sanitize(name);
+        fname += ".png";
+        renderToFile(code, dir + "/" + fname, 1600, 900);
     }
-    updateChart(currentItemCode_);
-
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
 }
-
-
-
