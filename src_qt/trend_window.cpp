@@ -429,11 +429,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     chart_->legend->setIconSize(14, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
     chart_->legend->setRowSpacing(1);
-    // Position legend row BELOW the axis rect in the plot layout
-    chart_->plotLayout()->setRowSpacing(4);
-    chart_->axisRect()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    chart_->legend->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    // Move legend from default inset to a separate row in plotLayout
+    // Move legend from default inset to a separate row below the chart
     chart_->plotLayout()->addElement(1, 0, chart_->legend);
     chart_->plotLayout()->setRowStretchFactor(1, 0.001);
 
