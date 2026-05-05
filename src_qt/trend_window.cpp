@@ -129,7 +129,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         maxYTickW = std::max(maxYTickW,
             tickFm.horizontalAdvance(QString::number(val, 'g', 4)));
     }
-    int yAxisW = maxYTickW + yLabelW + gap_ * 3;
+    int yAxisW = maxYTickW + yLabelW + gap_;
 
     QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
     int xTickH = tickFm.height() * 2 + gap_;   // date + time
@@ -170,7 +170,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
         p.setPen(QColor(0x55,0x55,0x55));
-        p.drawText(QRect(0, yy - 10, yAxisW - yLabelW - gap_, 20),
+        p.drawText(QRect(0, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
