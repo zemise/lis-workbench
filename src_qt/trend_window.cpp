@@ -198,11 +198,13 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
         QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
         int lw = std::min(60, plotArea.width() / maxTicks - 4);
+        p.setClipping(false);
         p.drawText(QRect(xx - lw/2, plotArea.bottom() + 6, lw, tickFm.height()),
-                   Qt::AlignHCenter, datePart);
+                   Qt::AlignHCenter | Qt::TextDontClip, datePart);
         if (!timePart.isEmpty())
             p.drawText(QRect(xx - lw/2, plotArea.bottom() + 8 + tickFm.height(),
-                             lw, tickFm.height()), Qt::AlignHCenter, timePart);
+                             lw, tickFm.height()), Qt::AlignHCenter | Qt::TextDontClip, timePart);
+        p.setClipping(true);
     }
     p.setFont(labelFont);
     p.drawText(QRect(plotArea.left(), plotArea.bottom() + xTickH + gap_,
