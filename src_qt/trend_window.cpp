@@ -378,11 +378,14 @@ void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& p
 }
 
 QPixmap TrendWindow::renderQwtToPixmap(int w, int h) {
-    // Render the whole chart wrapper (plot + custom legend) at export resolution
+    // Render chart + legend at export resolution
     QSize original = chartWidget_->size();
     chartWidget_->resize(w, h);
+    plot_->replot();
+    QApplication::processEvents();
     QPixmap pix = chartWidget_->grab();
     chartWidget_->resize(original);
+    plot_->replot();
     return pix;
 }
 #endif
