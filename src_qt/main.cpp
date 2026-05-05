@@ -5,7 +5,6 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
-#include <QMessageBox>
 #include <QProcessEnvironment>
 #include <QScreen>
 #include <QSettings>
@@ -25,44 +24,42 @@ static void applyEnvOverrides() {
     setIf("RESULTSEARCH_PASSWORD", "Database/Password");
 }
 
-static QPixmap makeDemoChart() {
-    // Build mock data — a complete trend chart without database
+// Mock 10 test data points with high/low/reference
+static std::vector<search::TrendPoint> buildMockData() {
     std::vector<search::TrendPoint> mock;
-    auto add = [&](const char* date, double val, const char* normal = "") {
-        search::TrendPoint p;
-        p.item_code = "HbA1c";
-        p.item_name = "糖化血红蛋白";
-        p.item_eng = "HbA1c";
-        p.unit = "%";
-        p.result_text = std::to_string(val);
-        p.result_value = val;
-        p.has_numeric_value = true;
-        p.report_time = date;
-        p.lower_bound = "4.0";
-        p.upper_bound = "6.0";
-        p.normal = normal;
-        mock.push_back(p);
+    struct Row { const char* d; double v; const char* n; };
+    Row rows[] = {
+        {"2024-01-15 08:30:00", 5.2, ""},
+        {"2024-02-20 09:15:00", 5.5, ""},
+        {"2024-03-10 07:45:00", 5.1, ""},
+        {"2024-04-05 10:00:00", 6.3, "1"},
+        {"2024-05-18 08:00:00", 5.8, ""},
+        {"2024-06-22 09:30:00", 5.4, ""},
+        {"2024-07-15 07:00:00", 3.5, "5"},
+        {"2024-08-10 10:15:00", 5.0, ""},
+        {"2024-09-05 08:45:00", 5.6, ""},
+        {"2024-10-20 09:00:00", 5.3, ""},
     };
-    add("2024-01-15 08:30:00", 5.2);
-    add("2024-02-20 09:15:00", 5.5);
-    add("2024-03-10 07:45:00", 5.1);
-    add("2024-04-05 10:00:00", 6.3, "1");   // high
-    add("2024-05-18 08:00:00", 5.8);
-    add("2024-06-22 09:30:00", 5.4);
-    add("2024-07-15 07:00:00", 3.5, "5");   // low
-    add("2024-08-10 10:15:00", 5.0);
-    add("2024-09-05 08:45:00", 5.6);
-    add("2024-10-20 09:00:00", 5.3);
-
-    TrendChartWidget chart;
-    std::vector<const search::TrendPoint*> ptrs;
-    for (auto& p : mock) ptrs.push_back(&p);
-    chart.setData(ptrs);
-    chart.resize(1600, 900);
-    chart.show();
-    QApplication::processEvents();
-    QPixmap pix = chart.grab();
-    return pix;
+    for (auto& r : rows) {
+        search::TrendPoint p;
+        p.item_code = "HbA1c"; p.item_name = "糖化血红蛋白";
+        p.item_eng = "HbA1c"; p.unit = "%";
+        p.result_text = std::to_string(r.v); p.result_value = r.v;
+        p.has_numeric_value = true; p.report_time = r.d;
+        p.lower_bound = "4.0"; p.upper_bound = "6.0"; p.normal = r.n;
+        mock.push_back(p);
+    }
+    // Second item for list interaction
+    for (auto& r : rows) {
+        search::TrendPoint p;
+        p.item_code = "GLU"; p.item_name = "葡萄糖";
+        p.item_eng = "GLU"; p.unit = "mmol/L";
+        p.result_text = std::to_string(r.v * 1.1); p.result_value = r.v * 1.1;
+        p.has_numeric_value = true; p.report_time = r.d;
+        p.lower_bound = "3.9"; p.upper_bound = "6.1"; p.normal = r.n;
+        mock.push_back(p);
+    }
+    return mock;
 }
 
 int main(int argc, char* argv[]) {
@@ -73,14 +70,20 @@ int main(int argc, char* argv[]) {
     applyEnvOverrides();
 
     if (argc >= 2 && QString(argv[1]) == "--demo") {
-        // Demo mode — generate chart with mock data, save PNG, exit
-        QPixmap pix = makeDemoChart();
-        QString outPath = QCoreApplication::applicationDirPath() + "/demo_chart.png";
-        if (pix.save(outPath, "PNG")) {
-            QMessageBox::information(nullptr, "Demo",
-                QString::fromWCharArray(L"演示图已保存到:\n") + outPath);
-        }
-        return 0;
+        // Interactive demo — open trend window with mock data
+        search::DbSettings db;
+        search::QueryInput qi;
+        qi.patient_name = "Demo";
+        qi.patient_no = "0001";
+        qi.start_date = "2024-01-01";
+        qi.end_date = "2024-12-31";
+
+        TrendWindow win(db, qi);
+        // Inject mock data directly
+        auto mock = buildMockData();
+        win.setMockData(mock);
+        win.show();
+        return app.exec();
     }
 
     MainWindow window;

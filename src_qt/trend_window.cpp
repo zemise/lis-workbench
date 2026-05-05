@@ -318,6 +318,11 @@ void TrendWindow::setupUi() {
     connect(exportImageBtn_, &QPushButton::clicked, this, &TrendWindow::onExportImages);
 }
 
+void TrendWindow::setMockData(const std::vector<search::TrendPoint>& data) {
+    points_ = data;
+    onTrendDataLoaded();
+}
+
 void TrendWindow::loadTrendData() {
     auto& pts = points_; auto db = db_; auto in = lastQuery_;
     QtConcurrent::run([this,db,in,&pts]() {

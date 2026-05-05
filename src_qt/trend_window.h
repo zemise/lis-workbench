@@ -47,6 +47,9 @@ public:
                 const search::QueryInput& lastQuery,
                 QWidget* parent = nullptr);
 
+    // Inject pre-loaded data (demo/test mode — skips DB query)
+    void setMockData(const std::vector<search::TrendPoint>& data);
+
 private slots:
     void onItemClicked(const QModelIndex& index);
     void onExportCsv();
