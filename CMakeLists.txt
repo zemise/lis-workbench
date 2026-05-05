@@ -70,4 +70,17 @@ if(BUILD_QT_GUI)
     )
     target_include_directories(result_search_qt PRIVATE src src_qt)
     target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
+
+    # Bundle gnuplot.exe from resource/ into build output
+    set(GNUPLOT_SRC "${CMAKE_SOURCE_DIR}/resource/gnuplot/gnuplot.exe")
+    if(EXISTS "${GNUPLOT_SRC}")
+        add_custom_command(TARGET result_search_qt POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:result_search_qt>/gnuplot"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${GNUPLOT_SRC}"
+                "$<TARGET_FILE_DIR:result_search_qt>/gnuplot/gnuplot.exe"
+            COMMENT "Bundling gnuplot..."
+        )
+    endif()
 endif()
