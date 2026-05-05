@@ -129,6 +129,8 @@ void TrendWindow::setupUi() {
     lineCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"结果线"));
     lineCurve_->setPen(QPen(QColor(0x1E,0x5F,0xB4), 3.0));
     lineCurve_->setStyle(QwtPlotCurve::Lines);
+    QVector<double> d1{0, 1}, d2{0, 1};
+    lineCurve_->setSamples(d1, d2);
     lineCurve_->attach(plot_);
 
     normalScatter_ = new QwtPlotCurve();  // no legend entry
