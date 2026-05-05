@@ -5,8 +5,8 @@
 #include "search_core.h"
 #include "search_view_state.h"
 
+#include <QCoreApplication>
 #include <QMainWindow>
-#include <QSettings>
 
 class QLineEdit;
 class QDateEdit;
@@ -71,5 +71,8 @@ private:
     // ── Data ─────────────────────────────────────────
     search::ViewState state_;
     search::QueryInput lastQuery_;
-    QSettings settings_{"result_search.ini", QSettings::IniFormat};
+
+    static QString iniPath() {
+        return QCoreApplication::applicationDirPath() + "/result_search.ini";
+    }
 };

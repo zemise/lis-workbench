@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -73,7 +74,7 @@ void MainWindow::setupUi() {
     splitter_->setStretchFactor(0, 0);
     splitter_->setStretchFactor(1, 3);
     splitter_->setStretchFactor(2, 1);
-    if (!splitter_->restoreState(settings_.value("UI/SplitterState").toByteArray())) {
+    if (!splitter_->restoreState(QSettings(iniPath(), QSettings::IniFormat).value("UI/SplitterState").toByteArray())) {
         splitter_->setSizes({400, 700, 350});
     }
 
@@ -246,15 +247,15 @@ void MainWindow::setupConnections() {
 }
 
 void MainWindow::applySettings() {
-    state_.settings.db.server = settings_.value("Database/Server").toString().toStdWString();
-    state_.settings.db.initial_database = settings_.value("Database/InitialDatabase").toString().toStdWString();
-    state_.settings.db.user = settings_.value("Database/User").toString().toStdWString();
-    state_.settings.db.password = settings_.value("Database/Password").toString().toStdWString();
-    state_.settings.ui.font_size = settings_.value("UI/FontSize", 9).toInt();
+    state_.settings.db.server = QSettings(iniPath(), QSettings::IniFormat).value("Database/Server").toString().toStdWString();
+    state_.settings.db.initial_database = QSettings(iniPath(), QSettings::IniFormat).value("Database/InitialDatabase").toString().toStdWString();
+    state_.settings.db.user = QSettings(iniPath(), QSettings::IniFormat).value("Database/User").toString().toStdWString();
+    state_.settings.db.password = QSettings(iniPath(), QSettings::IniFormat).value("Database/Password").toString().toStdWString();
+    state_.settings.ui.font_size = QSettings(iniPath(), QSettings::IniFormat).value("UI/FontSize", 9).toInt();
 
-    int splitterX = settings_.value("UI/SplitterX", 0).toInt();
+    int splitterX = QSettings(iniPath(), QSettings::IniFormat).value("UI/SplitterX", 0).toInt();
     if (splitterX > 0 && splitter_) {
-        splitter_->restoreState(settings_.value("UI/SplitterState").toByteArray());
+        splitter_->restoreState(QSettings(iniPath(), QSettings::IniFormat).value("UI/SplitterState").toByteArray());
     }
 }
 
@@ -419,11 +420,11 @@ void MainWindow::openSettings() {
         state_.settings.db = dlg.dbSettings();
         state_.settings.ui.font_size = dlg.fontSize();
 
-        settings_.setValue("Database/Server", QString::fromStdWString(state_.settings.db.server));
-        settings_.setValue("Database/InitialDatabase", QString::fromStdWString(state_.settings.db.initial_database));
-        settings_.setValue("Database/User", QString::fromStdWString(state_.settings.db.user));
-        settings_.setValue("Database/Password", QString::fromStdWString(state_.settings.db.password));
-        settings_.setValue("UI/FontSize", state_.settings.ui.font_size);
+        QSettings(iniPath(), QSettings::IniFormat).setValue("Database/Server", QString::fromStdWString(state_.settings.db.server));
+        QSettings(iniPath(), QSettings::IniFormat).setValue("Database/InitialDatabase", QString::fromStdWString(state_.settings.db.initial_database));
+        QSettings(iniPath(), QSettings::IniFormat).setValue("Database/User", QString::fromStdWString(state_.settings.db.user));
+        QSettings(iniPath(), QSettings::IniFormat).setValue("Database/Password", QString::fromStdWString(state_.settings.db.password));
+        QSettings(iniPath(), QSettings::IniFormat).setValue("UI/FontSize", state_.settings.ui.font_size);
 
         roomCombo_->clear();
         machCombo_->clear();
