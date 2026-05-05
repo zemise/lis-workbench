@@ -129,7 +129,8 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         maxYTickW = std::max(maxYTickW,
             tickFm.horizontalAdvance(QString::number(val, 'g', 4)));
     }
-    int yAxisW = maxYTickW + yLabelW + gap_;
+    // yLabelW column on left, tick labels on right
+    int yAxisW = yLabelW + gap_ + maxYTickW;
 
     QString qXLabel = QString::fromWCharArray(L"检测日期（按结果顺序）");
     int xTickH = tickFm.height() * 2 + gap_;   // date + time
@@ -170,16 +171,16 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
         p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
         p.setPen(QColor(0x55,0x55,0x55));
-        p.drawText(QRect(0, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
+        int tickLeft = yLabelW + gap_;
+        p.drawText(QRect(tickLeft, yy - tickFm.height()/2, maxYTickW, tickFm.height()),
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
-    // Y-axis label (vertical, pinned to left edge)
+    // Y-axis label (vertical, in its own left column)
     p.save();
     p.setFont(labelFont);
-    p.translate(gap_, plotArea.center().y());
+    p.translate(yLabelW / 2, plotArea.center().y());
     p.rotate(-90);
-    // The rotated text reads bottom-to-top; rect height = labelW controls text width
     p.drawText(QRect(-plotArea.height()/2, 0,
                      plotArea.height(), yLabelW), Qt::AlignCenter, qYLabel);
     p.restore();
