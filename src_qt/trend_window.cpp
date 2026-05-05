@@ -106,12 +106,12 @@ static void writeGnuplotScript(QTextStream& out,
     out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
     out << "set encoding utf8\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
-    out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
-    out << "set xlabel '检测日期（按结果顺序）' font 'Microsoft YaHei,10'\n";
-    out << "set ylabel '" << yLabel.c_str() << "' font 'Microsoft YaHei,10'\n";
+    out << "set title '" << title.c_str() << "' font ',13'\n";
+    out << "set xlabel '检测日期（按结果顺序）' font ',10'\n";
+    out << "set ylabel '" << yLabel.c_str() << "' font ',10'\n";
     out << "set yrange [" << yMin << ":" << yMax << "]\n";
     out << "set grid ytics lc rgb '#E0E0E0'\n";
-    out << "set key inside right top font 'Microsoft YaHei,8' width 1\n";
+    out << "set key inside right top font ',8' width 1\n";
     out << "set style fill transparent solid 0.3\n";
     out << "set format y '%.4g'\n";
 
@@ -135,7 +135,7 @@ static void writeGnuplotScript(QTextStream& out,
                        : (rt.length() >= 10) ? rt.mid(5, 5) : rt;
         out << "\"" << label.toStdString().c_str() << "\" " << idx;
     }
-    out << ") font 'Microsoft YaHei,9' rotate by 0 offset 0,-0.8\n";
+    out << ") font ',9' rotate by 0 offset 0,-0.8\n";
 
     // Plot command — line + color-coded points
     // Normal points
