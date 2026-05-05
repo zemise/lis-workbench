@@ -137,7 +137,15 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
     int xAxisH = xTickH + xLabelH;
 
     QFontMetrics legendFm(legendFont);
-    int legendW = legendFm.averageCharWidth() * 6 + 24;  // ~6 chars + icon
+    // Measure widest legend text
+    int legendTextW = 0;
+    for (auto* s : {QString::fromWCharArray(L"结果线"),
+                    QString::fromWCharArray(L"参考范围"),
+                    QString::fromWCharArray(L"高值"),
+                    QString::fromWCharArray(L"低值")}) {
+        legendTextW = std::max(legendTextW, legendFm.horizontalAdvance(s));
+    }
+    int legendW = legendTextW + 28;  // text + icon(18) + margin
 
     // ── Layout areas ───────────────────────────
     QRect titleArea(0, 0, w, titleH);
