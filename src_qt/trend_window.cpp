@@ -176,10 +176,21 @@ TrendWindow::TrendWindow(const search::DbSettings& db,
 
 QString TrendWindow::gnuplotPath() const {
     // 1. Bundled with app (deployment)
-    QString local = QCoreApplication::applicationDirPath() + "/gnuplot/gnuplot.exe";
-    if (QFile::exists(local)) return local;
+    QString local = QCoreApplication::applicationDirPath() + "/gnuplot/bin/gnuplot.exe";
+    if (QFile::exists(local)) {
+        // Set PATH so gnuplot finds its DLLs
+        QString gnuplotBin = QCoreApplication::applicationDirPath() + "/gnuplot/bin";
+        qputenv("PATH", (gnuplotBin + ";" + QString::fromLocal8Bit(qgetenv("PATH"))).toLocal8Bit());
+        return local;
+    }
 
-    // 2. System PATH (development)
+    // 2. System install (development)
+    for (const auto& base : {"C:/Program Files/gnuplot/bin/gnuplot.exe",
+                              "C:/Program Files (x86)/gnuplot/bin/gnuplot.exe"}) {
+        if (QFile::exists(base)) return base;
+    }
+
+    // 3. System PATH
     QProcess test;
     test.start("gnuplot", {"--version"});
     if (test.waitForFinished(2000) && test.exitCode() == 0) return "gnuplot";
