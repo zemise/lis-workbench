@@ -95,7 +95,7 @@ void TrendWindow::setupUi() {
     chart_ = new QCustomPlot;
     chart_->setInteractions(0);
     chart_->setAntialiasedElements(QCP::aeAll);
-    chart_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    chart_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
     chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
     chart_->legend->setVisible(true);
@@ -108,8 +108,8 @@ void TrendWindow::setupUi() {
     chartArea->addWidget(chart_);
     chartArea->addWidget(loadingLabel_);
     auto* chartContainer = new QWidget;
-    chartContainer->setMinimumHeight(380);
-    chartContainer->setMaximumHeight(620);
+    chartContainer->setMinimumSize(600, 380);
+    chartContainer->setMaximumWidth(1000);
     chartContainer->setLayout(chartArea);
 
     // Detail table (bottom-left)
@@ -134,8 +134,8 @@ void TrendWindow::setupUi() {
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 0);  // chart: fixed
-    leftSplitter->setStretchFactor(1, 1);  // detail: stretches
+    leftSplitter->setStretchFactor(0, 1);  // chart: stretches within limits
+    leftSplitter->setStretchFactor(1, 2);  // detail: stretches more
 
     // Right panel: item list (top) + buttons (bottom)
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
@@ -521,7 +521,7 @@ void TrendWindow::onExportImages() {
         QString fullPath = dir + "/" + fileName;
 
         updateChart(code);
-        chart_->savePng(fullPath, 1600, 1000, 1.0);
+        chart_->savePng(fullPath, 0, 0, 2.0);
     }
     updateChart(currentItemCode_);
 
