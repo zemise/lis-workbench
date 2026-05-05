@@ -98,10 +98,21 @@ void TrendWindow::setupUi() {
     chart_->setAntialiasedElements(QCP::aeAll);
     chart_->setMinimumHeight(300);
     chart_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    chart_->xAxis->setLabel(QString::fromWCharArray(L"检测日期（按结果顺序等距）"));
-    chart_->yAxis->setLabel(QString::fromWCharArray(L"结果值"));
+
+    // Build fixed layout: row 0 = title, row 1 = chart, row 2 = legend
+    chart_->plotLayout()->insertRow(0);  // title row (axis rect moves to row 1)
+    chart_->plotLayout()->setRowStretchFactor(0, 0.001);
+    chart_->plotLayout()->setRowStretchFactor(1, 1);
+
+    // Legend below chart
     chart_->legend->setVisible(true);
+    chart_->legend->setBrush(Qt::NoBrush);
+    chart_->legend->setBorderPen(Qt::NoPen);
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
+    chart_->legend->setIconSize(12, 10);
+    chart_->legend->setSelectableParts(QCPLegend::spNone);
+    chart_->plotLayout()->addElement(2, 0, chart_->legend);
+    chart_->plotLayout()->setRowStretchFactor(2, 0.001);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
@@ -407,10 +418,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         title += " - " + fmt(itemPoints[0]->unit);
     }
     title += QString::fromWCharArray(L" 趋势图");
-    // Ensure title row exists (only once, above axis rect)
-    if (chart_->plotLayout()->rowCount() < 2) {
-        chart_->plotLayout()->insertRow(0);
-    }
+    // Update or create title element at row 0
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
     if (existingTitle) {
         existingTitle->setText(title);
@@ -420,17 +428,6 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         el->setTextColor(QColor(0x33, 0x33, 0x33));
         chart_->plotLayout()->addElement(0, 0, el);
     }
-
-    // ── Legend — outside plot, below chart (never overlaps) ──
-    chart_->legend->setVisible(true);
-    chart_->legend->setBrush(Qt::NoBrush);
-    chart_->legend->setBorderPen(Qt::NoPen);
-    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(12, 10);
-    chart_->legend->setSelectableParts(QCPLegend::spNone);
-    // Move legend to a dedicated row below the axis rect
-    chart_->plotLayout()->addElement(2, 0, chart_->legend);
-    chart_->plotLayout()->setRowStretchFactor(2, 0.001);
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
