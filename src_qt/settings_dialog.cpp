@@ -65,6 +65,11 @@ SettingsDialog::SettingsDialog(const search::DbSettings& settings,
     connect(testBtn, &QPushButton::clicked, this, &SettingsDialog::onTestConnection);
     connect(saveBtn, &QPushButton::clicked, this, &SettingsDialog::onSave);
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+
+    // Apply font size to the dialog itself
+    QFont f = font();
+    f.setPointSize(fontSize);
+    setFont(f);
 }
 
 search::DbSettings SettingsDialog::dbSettings() const {
