@@ -34,7 +34,7 @@ private:
     void loadTrendData();
     void updateChart(const std::string& itemCode);
     void updateLegend();
-    QWidget* makeLegendItem(const QColor& color, const QString& text, bool isLine = false);
+    QWidget* makeLegendItem(const QColor& color, const QString& text, bool isLine = false, bool isRect = false);
 
     const search::DbSettings db_;
     const search::QueryInput lastQuery_;
