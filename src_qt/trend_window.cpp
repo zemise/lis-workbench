@@ -97,21 +97,20 @@ static void writeGnuplotScript(QTextStream& out,
     std::string title = pts[0]->item_name;
     if (!pts[0]->item_eng.empty()) title += " (" + pts[0]->item_eng + ")";
     if (!pts[0]->unit.empty()) title += " - " + pts[0]->unit;
-    title += " 趋势图";
+    title += " Trend";
 
-    std::string yLabel = pts[0]->unit.empty()
-        ? "结果值" : "结果值 (" + pts[0]->unit + ")";
+    std::string unit = pts[0]->unit;
+    std::string yLabel = unit.empty() ? "Value" : ("Value (" + unit + ")");
 
     // gnuplot — png terminal + UTF-8 for Chinese
-    out << "set terminal png truecolor enhanced size " << width << "," << height << "\n";
-    out << "set encoding utf8\n";
+    out << "set terminal pngcairo enhanced size " << width << "," << height << "\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
-    out << "set title '" << title.c_str() << "' font 'Microsoft YaHei,13'\n";
-    out << "set xlabel '检测日期（按结果顺序）' font 'Microsoft YaHei,10'\n";
-    out << "set ylabel '" << yLabel.c_str() << "' font 'Microsoft YaHei,10'\n";
+    out << "set title '" << title.c_str() << "'\n";
+    out << "set xlabel 'Date'\n";
+    out << "set ylabel '" << yLabel.c_str() << "'\n";
     out << "set yrange [" << yMin << ":" << yMax << "]\n";
     out << "set grid ytics lc rgb '#E0E0E0'\n";
-    out << "set key inside right top font 'Microsoft YaHei,8' width 1\n";
+    out << "set key inside right top width 1\n";
     out << "set style fill transparent solid 0.3\n";
     out << "set format y '%.4g'\n";
 
@@ -135,12 +134,12 @@ static void writeGnuplotScript(QTextStream& out,
                        : (rt.length() >= 10) ? rt.mid(5, 5) : rt;
         out << "\"" << label.toStdString().c_str() << "\" " << idx;
     }
-    out << ") font 'Microsoft YaHei,9' rotate by 0 offset 0,-0.8\n";
+    out << ") rotate by 0 offset 0,-0.8\n";
 
-    out << "plot '-' using 1:2 with lines lw 2.5 lc rgb '#1E5FB4' title '结果线', \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#232323' title '正常', \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#D22828' title '偏高', \\\n";
-    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' title '低值'\n";
+    out << "plot '-' using 1:2 with lines lw 2.5 lc rgb '#1E5FB4' title 'Result', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#232323' title 'Normal', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#D22828' title 'High', \\\n";
+    out << "     '' using 1:2 with points pt 7 ps 1.3 lc rgb '#2850D2' title 'Low'\n";
 
     // Write data: all points for line, then filtered by normal status
     auto writePoints = [&](const std::function<bool(const search::TrendPoint*)>& filter) {
@@ -390,7 +389,6 @@ void TrendWindow::renderChart(const std::string& itemCode) {
         writeGnuplotScript(buf, itemPoints, w, h, pngPath);
         QTextStream out(&scriptFile);
         out.setCodec("UTF-8");
-        out.setGenerateByteOrderMark(true);
         out << script;
     }
     scriptFile.close();
