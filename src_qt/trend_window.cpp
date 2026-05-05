@@ -133,8 +133,8 @@ void TrendWindow::setupUi() {
     auto* leftSplitter = new QSplitter(Qt::Vertical);
     leftSplitter->addWidget(chartContainer);
     leftSplitter->addWidget(detailTable_);
-    leftSplitter->setStretchFactor(0, 1);  // chart: stretches within limits
-    leftSplitter->setStretchFactor(1, 2);  // detail: stretches more
+    leftSplitter->setStretchFactor(0, 3);  // chart
+    leftSplitter->setStretchFactor(1, 1);  // detail table
 
     // Right panel: item list (top) + buttons (bottom)
     exportCsvBtn_ = new QPushButton(QString::fromWCharArray(L"导出勾选项目"));
