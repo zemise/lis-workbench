@@ -145,6 +145,94 @@ src/
 | 配置共享 | `result_search.ini` | 延用现有格式 |
 | 数据库连接 | 主窗口持有 `DbSettings` | 避免各模块重复配置 |
 
+## 设计原则
+
+### 模块接口标准化
+
+每个功能模块对外暴露统一接口，主窗口不关心模块内部实现：
+
+```cpp
+// main_module.h — 所有模块遵循此约定
+struct ModuleDef {
+    const wchar_t* menuParent;   // 所属菜单，如 L"检验管理"
+    const wchar_t* menuLabel;    // 菜单项文字，如 L"检验结果查询"
+    HWND (*create)(HINSTANCE, HWND parent, const DbSettings&, HFONT);
+    void (*destroy)(HWND);
+};
+
+// 各模块注册示例
+ModuleDef g_queryModule = {
+    L"检验管理", L"检验结果查询(&Q)...",
+    create_query_window, destroy_query_window
+};
+```
+
+新增模块只需编写 `ModuleDef` + 窗口过程，主窗口代码零修改。
+
+### 构建隔离
+
+```
+CMake 目标：
+  result_search.exe       ← 独立查询工具（现有，不受影响）
+  main_app.exe            ← 主程序（新）
+    ├── main_frame.cpp    ← 主窗口
+    ├── main_menu.cpp     ← 菜单系统
+    ├── main_mdi.cpp      ← MDI 管理
+    ├── main.cpp          ← 查询模块（从现有改造）
+    └── blood_query.cpp   ← 输血模块（新）
+```
+
+- `result_search.exe` 的 CMake 目标和源码不变
+- 主程序作为独立的 `add_executable(main_app WIN32 ...)`
+- 两个目标链接同一个 `search_core` 静态库
+- 新增模块只改主程序的 CMake 文件，不影响查询工具
+
+### 共享状态
+
+```cpp
+// main_app.h — 主程序全局上下文
+struct AppContext {
+    HINSTANCE instance;
+    HWND mainWindow;
+    HWND mdiClient;
+    HFONT uiFont;
+    search::DbSettings dbSettings;
+    int fontSize;
+};
+```
+
+- 主窗口创建时初始化 `AppContext`，通过 `GWLP_USERDATA` 或参数传递给子模块
+- 子模块不直接访问全局变量，只通过上下文结构体获取所需资源
+- 避免各模块各自读 INI、各自连数据库
+
+### 向后兼容
+
+| 保证项 | 措施 |
+|--------|------|
+| 查询工具独立运行 | `result_search.exe` 目标不变，不引入主程序依赖 |
+| INI 格式不变 | 主程序沿用 `result_search.ini`，不新增必填字段 |
+| 核心库不变 | `search_core` 只加功能不改接口 |
+| Qt 版不受影响 | 主程序只做 Win32 入口，Qt 版保持原样 |
+| CI 双版继续 | `build-win32` + `build-qt` job 不动，新加 `build-main-app` job |
+
+### 测试策略
+
+每个模块可脱离主程序独立测试：
+
+```
+独立模式：
+  result_search.exe   ← 查询模块独立运行
+  blood_query.exe     ← 输血模块独立运行（调试用）
+  settings.exe        ← 参数设置独立运行
+
+集成模式：
+  main_app.exe        ← 所有模块在主窗口中运行
+```
+
+- 每个模块保留独立的 `WinMain` + 独立窗口入口
+- 主程序模式下，模块的独立入口被替换为子窗口创建函数
+- 用 `#ifdef STANDALONE` 或不同的 `.cpp` 入口文件控制
+
 ## 后续扩展
 
 主程序平台建立后，新增功能只需：
