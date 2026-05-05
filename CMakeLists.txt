@@ -59,34 +59,7 @@ endif()
 option(BUILD_QT_GUI "Build Qt 5.15 GUI" OFF)
 
 if(BUILD_QT_GUI)
-    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent PrintSupport OpenGL)
-
-    # Qwt 6.3.0 — scientific chart library (LGPL)
-    find_package(Qwt QUIET)
-    if(NOT Qwt_FOUND)
-        # Fallback: manual search for qmake-built Qwt
-        find_path(QWT_INCLUDE_DIR qwt_plot.h
-            PATHS "C:/Qwt-6.3.0/src" "C:/qwt-src/src"
-                  "C:/qwt-6.3.0/src" "${CMAKE_PREFIX_PATH}/include/qwt"
-            PATH_SUFFIXES qwt
-        )
-        find_library(QWT_LIBRARY qwt
-            PATHS "C:/Qwt-6.3.0/lib" "C:/qwt-src/lib"
-                  "C:/qwt-6.3.0/lib"
-        )
-        if(QWT_INCLUDE_DIR AND QWT_LIBRARY)
-            message(STATUS "Qwt found (manual): ${QWT_INCLUDE_DIR}")
-            set(Qwt_FOUND TRUE)
-            add_library(qwt::qwt UNKNOWN IMPORTED)
-            set_target_properties(qwt::qwt PROPERTIES
-                IMPORTED_LOCATION "${QWT_LIBRARY}"
-                INTERFACE_INCLUDE_DIRECTORIES "${QWT_INCLUDE_DIR}"
-            )
-        else()
-            message(WARNING "Qwt not found — trend chart will be placeholder."
-                            " Build Qwt with: qmake && nmake && nmake install")
-        endif()
-    endif()
+    find_package(Qt5 REQUIRED COMPONENTS Widgets Concurrent)
 
     add_executable(result_search_qt WIN32
         src_qt/main.cpp
@@ -96,16 +69,5 @@ if(BUILD_QT_GUI)
         src_qt/resources.qrc
     )
     target_include_directories(result_search_qt PRIVATE src src_qt)
-    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent Qt5::PrintSupport Qt5::OpenGL)
-    if(Qwt_FOUND)
-        target_link_libraries(result_search_qt PRIVATE qwt::qwt)
-        target_compile_definitions(result_search_qt PRIVATE HAS_QWT)
-        # Copy qwt.dll + Qt5OpenGL.dll to exe dir (windeployqt misses them)
-        add_custom_command(TARGET result_search_qt POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "C:/qwt-src/lib/qwt.dll" "$<TARGET_FILE_DIR:result_search_qt>"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${Qt5_DIR}/../../../bin/Qt5OpenGL.dll" "$<TARGET_FILE_DIR:result_search_qt>"
-            COMMENT "Copying Qwt + Qt5OpenGL DLLs...")
-    endif()
+    target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
 endif()

@@ -1,27 +1,15 @@
 #include "trend_window.h"
 #include "trend_core.h"
 
-#ifdef HAS_QWT
-#include <qwt_plot.h>
-#include <qwt_plot_curve.h>
-#include <qwt_plot_grid.h>
-#include <qwt_plot_zoneitem.h>
-#include <qwt_plot_layout.h>
-#include <qwt_legend.h>
-#include <qwt_symbol.h>
-#include <qwt_scale_draw.h>
-#include <qwt_scale_widget.h>
-#endif
-
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFrame>
-#include <QPainter>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -29,8 +17,8 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+#include <algorithm>
 #include <cmath>
-#include <functional>
 
 // ── helpers ──────────────────────────────────────────────────
 
@@ -63,25 +51,197 @@ static QString ebn(const search::QueryInput& in) {
     return p.join("-");
 }
 
-#ifdef HAS_QWT
-// Custom X-axis tick labels: date + time, two-line
-class TrendScaleDraw : public QwtScaleDraw {
-public:
-    TrendScaleDraw(const std::vector<const search::TrendPoint*>& pts)
-        : pts_(pts) {}
-    QwtText label(double v) const override {
-        int i = static_cast<int>(v + 0.5);
-        if (i < 0 || i >= static_cast<int>(pts_.size())) return QwtText();
-        QString rt = s8(pts_[i]->report_time);
-        QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
-        QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : QString();
-        return timePart.isEmpty() ? QwtText(datePart)
-                                  : QwtText(datePart + "\n" + timePart);
+// ── TrendChartWidget ─────────────────────────────────────────
+
+TrendChartWidget::TrendChartWidget(QWidget* parent) : QWidget(parent) {
+    setMinimumSize(600, 400);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+}
+
+void TrendChartWidget::setData(const std::vector<const search::TrendPoint*>& pts) {
+    pts_ = pts;
+    if (pts_.size() < 2) { update(); return; }
+
+    yMin_ = pts_[0]->result_value; yMax_ = pts_[0]->result_value;
+    hasRef_ = false; refLo_ = 0; refHi_ = 0;
+    for (const auto* p : pts_) {
+        yMin_ = std::min(yMin_, p->result_value);
+        yMax_ = std::max(yMax_, p->result_value);
+        if (!p->lower_bound.empty() || !p->upper_bound.empty()) {
+            hasRef_ = true;
+            try { refLo_ = std::stod(p->lower_bound); } catch(...) {}
+            try { refHi_ = std::stod(p->upper_bound); } catch(...) {}
+        }
     }
-private:
-    const std::vector<const search::TrendPoint*>& pts_;
-};
-#endif
+    double pad = (yMax_ - yMin_) * 0.2;
+    if (pad < 0.01) pad = 1.0;
+    if (hasRef_) { yMin_ = std::min(yMin_, refLo_) - pad; yMax_ = std::max(yMax_, refHi_) + pad; }
+    else         { yMin_ -= pad; yMax_ += pad; }
+    update();
+}
+
+QPixmap TrendChartWidget::exportPixmap(int w, int h) {
+    QSize orig = size();
+    resize(w, h);
+    QPixmap pix = grab();
+    resize(orig);
+    return pix;
+}
+
+void TrendChartWidget::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), Qt::white);
+
+    if (pts_.size() < 2) {
+        p.setPen(QColor(0x99,0x99,0x99));
+        p.setFont(QFont("Microsoft YaHei", 14));
+        p.drawText(rect(), Qt::AlignCenter,
+                   QString::fromWCharArray(L"该项目不足两个有效数值点，暂无法绘制趋势线"));
+        return;
+    }
+
+    int w = width(), h = height();
+
+    // Layout areas
+    QRect titleArea(padding_, padding_, w - 2*padding_, titleHeight_);
+    QRect yAxisArea(0, titleArea.bottom(), yAxisWidth_, h - titleArea.bottom() - xLabelHeight_);
+    QRect xAxisArea(yAxisWidth_, h - xLabelHeight_, w - yAxisWidth_ - legendWidth_ - padding_, xLabelHeight_);
+    QRect plotArea(yAxisWidth_, titleArea.bottom() + padding_,
+                   w - yAxisWidth_ - legendWidth_ - padding_, h - titleArea.bottom() - xLabelHeight_ - padding_);
+    QRect legendArea(w - legendWidth_ - padding_, titleArea.bottom(),
+                     legendWidth_, h - titleArea.bottom() - xLabelHeight_ - padding_);
+
+    // ── Title ──────────────────────────────────
+    std::string titleStr = pts_[0]->item_name;
+    if (!pts_[0]->item_eng.empty()) titleStr += " (" + pts_[0]->item_eng + ")";
+    if (!pts_[0]->unit.empty()) titleStr += " [" + pts_[0]->unit + "]";
+    titleStr += " 趋势图";
+    p.setPen(Qt::black);
+    p.setFont(QFont("Microsoft YaHei", 13, QFont::Bold));
+    p.drawText(titleArea, Qt::AlignHCenter | Qt::AlignBottom, s8(titleStr));
+
+    // ── Y-axis ──────────────────────────────────
+    p.setFont(QFont("Microsoft YaHei", 10));
+    double yRange = yMax_ - yMin_;
+    int yTicks = 5;
+    for (int i = 0; i <= yTicks; ++i) {
+        double val = yMin_ + yRange * i / yTicks;
+        int yy = plotArea.bottom() - static_cast<int>((val - yMin_) / yRange * plotArea.height());
+        p.setPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
+        p.drawLine(plotArea.left(), yy, plotArea.right(), yy);
+        p.setPen(QColor(0x55,0x55,0x55));
+        p.drawText(QRect(0, yy - 10, yAxisWidth_ - 8, 20),
+                   Qt::AlignRight | Qt::AlignVCenter,
+                   QString::number(val, 'g', 4));
+    }
+    // Y label
+    p.save();
+    p.translate(16, plotArea.center().y());
+    p.rotate(-90);
+    std::string yl = pts_[0]->unit.empty() ? "结果值" : "结果值 (" + pts_[0]->unit + ")";
+    p.drawText(QRect(-60, -10, 120, 20), Qt::AlignCenter, s8(yl));
+    p.restore();
+
+    // ── X-axis ──────────────────────────────────
+    p.setFont(QFont("Microsoft YaHei", 9));
+    int maxTicks = std::min(5, static_cast<int>(pts_.size()));
+    for (int t = 0; t < maxTicks; ++t) {
+        size_t idx = (maxTicks <= 1) ? 0
+            : static_cast<size_t>(std::llround(t * (pts_.size() - 1.0) / (maxTicks - 1)));
+        int xx = plotArea.left() + static_cast<int>(idx * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
+        p.setPen(QColor(0x55,0x55,0x55));
+        p.drawLine(xx, plotArea.bottom(), xx, plotArea.bottom() + 4);
+        QString rt = s8(pts_[idx]->report_time);
+        QString datePart = rt.length() >= 10 ? rt.mid(5, 5) : rt;
+        QString timePart = rt.length() >= 16 ? rt.mid(11, 5) : "";
+        p.drawText(QRect(xx - 35, plotArea.bottom() + 6, 70, 18), Qt::AlignHCenter, datePart);
+        if (!timePart.isEmpty())
+            p.drawText(QRect(xx - 35, plotArea.bottom() + 22, 70, 18), Qt::AlignHCenter, timePart);
+    }
+    p.setFont(QFont("Microsoft YaHei", 10));
+    p.drawText(QRect(plotArea.left(), xAxisArea.top() + 30, plotArea.width(), 20),
+               Qt::AlignHCenter, QString::fromWCharArray(L"检测日期（按结果顺序）"));
+
+    // ── Reference band ──────────────────────────
+    if (hasRef_) {
+        int yLo = plotArea.bottom() - static_cast<int>((refLo_ - yMin_) / yRange * plotArea.height());
+        int yHi = plotArea.bottom() - static_cast<int>((refHi_ - yMin_) / yRange * plotArea.height());
+        QRect refRect(plotArea.left(), std::min(yLo, yHi),
+                      plotArea.width(), std::abs(yHi - yLo));
+        p.fillRect(refRect, QColor(0xF2,0xF2,0xF2));
+        p.setPen(QPen(QColor(0xAA,0xAA,0xAA), 1, Qt::DashLine));
+        p.drawLine(plotArea.left(), yLo, plotArea.right(), yLo);
+        p.drawLine(plotArea.left(), yHi, plotArea.right(), yHi);
+    }
+
+    // ── Axis frame ──────────────────────────────
+    p.setPen(QPen(QColor(0x55,0x55,0x55), 1.2));
+    p.drawLine(plotArea.topLeft(), plotArea.bottomLeft());
+    p.drawLine(plotArea.bottomLeft(), plotArea.bottomRight());
+
+    // ── Trend line ──────────────────────────────
+    p.setRenderHint(QPainter::Antialiasing, false);
+    QPen linePen(QColor(0x1E,0x5F,0xB4), 3.0);
+    linePen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(linePen);
+    for (size_t i = 0; i < pts_.size(); ++i) {
+        int x = plotArea.left() + static_cast<int>(i * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
+        int y = plotArea.bottom() - static_cast<int>((pts_[i]->result_value - yMin_) / yRange * plotArea.height());
+        if (i == 0) { QPoint prev(x, y); continue; }
+        QPoint prev(plotArea.left() + static_cast<int>((i-1) * plotArea.width() / std::max<size_t>(1, pts_.size()-1)),
+                     plotArea.bottom() - static_cast<int>((pts_[i-1]->result_value - yMin_) / yRange * plotArea.height()));
+        p.drawLine(prev, QPoint(x, y));
+    }
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    // ── Scatter points ──────────────────────────
+    for (size_t i = 0; i < pts_.size(); ++i) {
+        int x = plotArea.left() + static_cast<int>(i * plotArea.width() / std::max<size_t>(1, pts_.size() - 1));
+        int y = plotArea.bottom() - static_cast<int>((pts_[i]->result_value - yMin_) / yRange * plotArea.height());
+        QColor fill = QColor(0x23,0x23,0x23);
+        if (pts_[i]->normal == "1") fill = QColor(0xD2,0x28,0x28);
+        else if (pts_[i]->normal == "5") fill = QColor(0x28,0x50,0xD2);
+        p.setPen(QPen(Qt::white, 2.5));
+        p.setBrush(fill);
+        p.drawEllipse(QPoint(x, y), 5, 5);
+    }
+
+    // ── Legend (inside plot, top-right) ─────────
+    int lx = legendArea.left() + 4, ly = legendArea.top() + 4;
+    // Legend background
+    p.setPen(QPen(QColor(0xDD,0xDD,0xDD), 0.5));
+    p.setBrush(QColor(0xFF,0xFF,0xFF,0xE0));
+    int legendW = 86, legendH = 90;
+    p.drawRect(lx - 2, ly - 2, legendW, legendH);
+
+    auto drawItem = [&](int& y, const QColor& c, const QString& text, bool isLine, bool isRect) {
+        p.setPen(Qt::NoPen);
+        if (isLine) {
+            p.setPen(QPen(c, 2.5));
+            p.drawLine(lx, y + 7, lx + 18, y + 7);
+            p.setPen(Qt::NoPen);
+        } else if (isRect) {
+            p.fillRect(lx + 2, y + 2, 14, 10, c);
+            p.setPen(QPen(QColor(0x99,0x99,0x99), 0.8, Qt::DashLine));
+            p.drawRect(lx + 2, y + 2, 14, 10);
+            p.setPen(Qt::NoPen);
+        } else {
+            p.setPen(QPen(Qt::white, 2));
+            p.setBrush(c);
+            p.drawEllipse(lx + 4, y + 2, 10, 10);
+            p.setPen(Qt::NoPen);
+        }
+        p.setPen(Qt::black);
+        p.setFont(QFont("Microsoft YaHei", 8));
+        p.drawText(lx + 24, y, 60, 14, Qt::AlignVCenter, text);
+        y += 18;
+    };
+    drawItem(ly, QColor(0x1E,0x5F,0xB4), QString::fromWCharArray(L"结果线"), true, false);
+    drawItem(ly, QColor(0xF2,0xF2,0xF2), QString::fromWCharArray(L"参考范围"), false, true);
+    drawItem(ly, QColor(0xD2,0x28,0x28), QString::fromWCharArray(L"高值"), false, false);
+    drawItem(ly, QColor(0x28,0x50,0xD2), QString::fromWCharArray(L"低值"), false, false);
+}
 
 // ── TrendWindow ──────────────────────────────────────────────
 
@@ -108,112 +268,13 @@ void TrendWindow::setupUi() {
     itemTable_->horizontalHeader()->setStretchLastSection(true);
     itemTable_->verticalHeader()->setVisible(false);
 
-#ifdef HAS_QWT
-    plot_ = new QwtPlot(this);
-    plot_->setCanvasBackground(Qt::white);
-    plot_->setMinimumHeight(300);
-    plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-
-    // Disable built-in legend — use custom QFrame legend instead
-    plot_->insertLegend(nullptr);
-
-    // Grid
-    grid_ = new QwtPlotGrid;
-    grid_->enableY(true);
-    grid_->enableX(false);
-    grid_->setMajorPen(QPen(QColor(0xE8,0xE8,0xE8), 1, Qt::DotLine));
-    grid_->attach(plot_);
-
-    // Curves (created in renderChart)
-    lineCurve_ = new QwtPlotCurve(QString::fromWCharArray(L"结果线"));
-    lineCurve_->setPen(QPen(QColor(0x1E,0x5F,0xB4), 3.0));
-    lineCurve_->setStyle(QwtPlotCurve::Lines);
-    lineCurve_->attach(plot_);
-
-    normalScatter_ = new QwtPlotCurve();  // no legend entry
-    normalScatter_->setItemAttribute(QwtPlotItem::Legend, false);
-    normalScatter_->setStyle(QwtPlotCurve::Dots);
-    normalScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
-        QBrush(QColor(0x23,0x23,0x23)), QPen(Qt::white, 2.5), QSize(11,11)));
-    highScatter_   = new QwtPlotCurve(QString::fromWCharArray(L"高值"));
-    highScatter_->setStyle(QwtPlotCurve::Dots);
-    highScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
-        QBrush(QColor(0xD2,0x28,0x28)), QPen(Qt::white, 2.5), QSize(11,11)));
-    lowScatter_    = new QwtPlotCurve(QString::fromWCharArray(L"低值"));
-    lowScatter_->setStyle(QwtPlotCurve::Dots);
-    lowScatter_->setSymbol(new QwtSymbol(QwtSymbol::Ellipse,
-        QBrush(QColor(0x28,0x50,0xD2)), QPen(Qt::white, 2.5), QSize(11,11)));
-    // Dummy samples so legend icons render immediately
-    QVector<double> d1{99999}, d2{0};
-    normalScatter_->setSamples(d1, d2); normalScatter_->attach(plot_);
-    highScatter_->setSamples(d1, d2);   highScatter_->attach(plot_);
-    lowScatter_->setSamples(d1, d2);    lowScatter_->attach(plot_);
-
-    // Reference zone (attached in renderChart)
-    refZone_ = new QwtPlotZoneItem;
-    refZone_->setOrientation(Qt::Horizontal);
-    refZone_->setBrush(QColor(0xF2,0xF2,0xF2));
-    refZone_->setPen(QPen(QColor(0x99,0x99,0x99), 1, Qt::DashLine));
-
-
-    // Custom legend — QFrame with painted icons (Qwt legend unreliable on Win)
-    auto* legendFrame = new QFrame;
-    legendFrame->setFrameStyle(QFrame::NoFrame);
-    legendFrame->setFixedWidth(90);
-    legendFrame->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    auto* legendLayout_ = new QVBoxLayout(legendFrame);
-    legendLayout_->setContentsMargins(4,8,4,4);
-    legendLayout_->setSpacing(4);
-
-    auto addLegendItem = [&](const QString& text, const QPixmap& icon) {
-        auto* w = new QWidget;
-        auto* row = new QHBoxLayout(w);
-        row->setContentsMargins(0,0,0,0); row->setSpacing(4);
-        auto* iconLabel = new QLabel; iconLabel->setPixmap(icon); iconLabel->setFixedSize(18,14);
-        auto* textLabel = new QLabel(text);
-        textLabel->setFont(QFont("Microsoft YaHei", 8));
-        row->addWidget(iconLabel); row->addWidget(textLabel, 1);
-        legendLayout_->addWidget(w);
-    };
-
-    auto makePix = [](std::function<void(QPainter&)> draw) {
-        QPixmap pix(18, 14); pix.fill(Qt::transparent);
-        QPainter p(&pix); p.setRenderHint(QPainter::Antialiasing); draw(p); p.end();
-        return pix;
-    };
-
-    addLegendItem(QString::fromWCharArray(L"结果线"),
-        makePix([](QPainter& p){ p.setPen(QPen(QColor(0x1E,0x5F,0xB4), 2.5)); p.drawLine(0,7,18,7); }));
-    addLegendItem(QString::fromWCharArray(L"参考范围"),
-        makePix([](QPainter& p){ p.fillRect(1,2,16,10, QColor(0xF2,0xF2,0xF2)); p.setPen(QPen(QColor(0x99,0x99,0x99), 0.8, Qt::DashLine)); p.drawRect(1,2,16,10); }));
-    addLegendItem(QString::fromWCharArray(L"高值"),
-        makePix([](QPainter& p){ p.setPen(QPen(Qt::white, 2)); p.setBrush(QColor(0xD2,0x28,0x28)); p.drawEllipse(4,2,10,10); }));
-    addLegendItem(QString::fromWCharArray(L"低值"),
-        makePix([](QPainter& p){ p.setPen(QPen(Qt::white, 2)); p.setBrush(QColor(0x28,0x50,0xD2)); p.drawEllipse(4,2,10,10); }));
-    legendLayout_->addStretch();
-
-    auto* chartRow = new QHBoxLayout;
-    chartRow->setContentsMargins(0,0,0,0); chartRow->setSpacing(0);
-    chartRow->addWidget(plot_, 1);
-    chartRow->addWidget(legendFrame, 0, Qt::AlignTop);
-    auto* chartWrapper = new QWidget;
-    chartWrapper->setLayout(chartRow);
-
-    chartWidget_ = chartWrapper;
-#else
-    auto* label = new QLabel(QString::fromWCharArray(L"趋势图（待实现）\n\n请先在左侧选择项目"));
-    label->setAlignment(Qt::AlignCenter);
-    label->setMinimumSize(600,400);
-    label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    label->setStyleSheet("QLabel{background:white; font-size:18px; color:#888;}");
-    chartWidget_ = label;
-#endif
+    chart_ = new TrendChartWidget(this);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
 
     auto* ca = new QVBoxLayout; ca->setContentsMargins(0,0,0,0);
-    ca->addWidget(chartWidget_); ca->addWidget(loadingLabel_);
+    ca->addWidget(chart_); ca->addWidget(loadingLabel_);
     auto* cc = new QWidget; cc->setMinimumHeight(300); cc->setLayout(ca);
 
     detailModel_ = new QStandardItemModel(0,7,this);
@@ -278,9 +339,7 @@ void TrendWindow::onTrendDataLoaded() {
         itemModel_->appendRow(chk);
     }
     exportCsvBtn_->setEnabled(true);
-#ifdef HAS_QWT
     exportImageBtn_->setEnabled(true);
-#endif
     if (!items_.empty()) itemTable_->selectRow(0);
 }
 
@@ -289,114 +348,11 @@ void TrendWindow::onItemClicked(const QModelIndex& idx) {
     size_t i = static_cast<size_t>(idx.row());
     if (i >= items_.size()) return;
     currentItemCode_ = items_[i].item_code;
-    renderChart(currentItemCode_);
-}
 
-#ifdef HAS_QWT
-void TrendWindow::renderQwtChart(const std::vector<const search::TrendPoint*>& pts) {
-    // Build data vectors
-    QVector<double> x(pts.size()), y(pts.size());
-    QVector<double> xn, yn, xh, yh, xlVals, ylVals;
-    double yMin=pts[0]->result_value, yMax=pts[0]->result_value;
-    bool hasRef=false; double refLo=0, refHi=0;
-
-    for (size_t i=0; i<pts.size(); ++i) {
-        double val = pts[i]->result_value;
-        x[i] = static_cast<double>(i);
-        y[i] = val;
-        yMin = std::min(yMin, val); yMax = std::max(yMax, val);
-
-        if (pts[i]->normal == "1")      { xh.push_back(i); yh.push_back(val); }
-        else if (pts[i]->normal == "5") { xlVals.push_back(i); ylVals.push_back(val); }
-        else                            { xn.push_back(i); yn.push_back(val); }
-
-        if (!pts[i]->lower_bound.empty() || !pts[i]->upper_bound.empty()) {
-            hasRef = true;
-            try { refLo = std::stod(pts[i]->lower_bound); } catch(...) {}
-            try { refHi = std::stod(pts[i]->upper_bound); } catch(...) {}
-        }
-    }
-
-    double pad = (yMax - yMin) * 0.2;
-    if (pad < 0.01) pad = 1.0;
-    if (hasRef) { yMin = std::min(yMin,refLo) - pad; yMax = std::max(yMax,refHi) + pad; }
-    else        { yMin -= pad; yMax += pad; }
-
-    plot_->setAxisScale(QwtPlot::xBottom, 0.0, pts.size() - 1.0);
-    plot_->setAxisScale(QwtPlot::yLeft, yMin, yMax);
-
-    // Title
-    std::string title = pts[0]->item_name;
-    if (!pts[0]->item_eng.empty()) title += " (" + pts[0]->item_eng + ")";
-    if (!pts[0]->unit.empty()) title += " [" + pts[0]->unit + "]";
-    title += " 趋势图";
-    plot_->setTitle(s8(title));
-
-    // Axis labels
-    plot_->setAxisTitle(QwtPlot::xBottom,
-        QString::fromWCharArray(L"检测日期（按结果顺序）"));
-    std::string yLabel = pts[0]->unit.empty() ? "结果值" : "结果值 (" + pts[0]->unit + ")";
-    plot_->setAxisTitle(QwtPlot::yLeft, s8(yLabel));
-
-    // Trend line
-    lineCurve_->setSamples(x, y);
-
-    // Scatter — attach all (even empty) so legend shows correct symbols
-    auto setScatter = [this](QwtPlotCurve* c, const QVector<double>& xs,
-                              const QVector<double>& ys) {
-        if (!c->plot()) c->attach(plot_);
-        if (xs.isEmpty()) {
-            c->setVisible(false);
-            return;
-        }
-        c->setVisible(true);
-        c->setSamples(xs, ys);
-        c->setStyle(QwtPlotCurve::Dots);
-        c->setZ(lineCurve_->z() + 1);
-    };
-    setScatter(normalScatter_, xn, yn);
-    setScatter(highScatter_,   xh, yh);
-    setScatter(lowScatter_,    xlVals, ylVals);
-
-    // Reference zone
-    refZone_->detach();
-    if (hasRef) {
-        refZone_->setInterval(std::min(refLo,refHi), std::max(refLo,refHi));
-        refZone_->attach(plot_);
-    }
-
-    // X-axis ticks — max 5, date+time
-    plot_->setAxisScaleDraw(QwtPlot::xBottom, new TrendScaleDraw(pts));
-    plot_->setAxisMaxMajor(QwtPlot::xBottom, 5);
-
-    // Fonts
-    QFont axisFont("Microsoft YaHei", 9);
-    plot_->setAxisFont(QwtPlot::xBottom, axisFont);
-    plot_->setAxisFont(QwtPlot::yLeft, axisFont);
-
-    plot_->replot();
-}
-
-QPixmap TrendWindow::renderQwtToPixmap(int w, int h) {
-    // Render chart + legend at export resolution
-    QSize original = chartWidget_->size();
-    chartWidget_->resize(w, h);
-    plot_->replot();
-    QApplication::processEvents();
-    QPixmap pix = chartWidget_->grab();
-    chartWidget_->resize(original);
-    plot_->replot();
-    return pix;
-}
-#endif
-
-void TrendWindow::renderChart(const std::string& itemCode) {
-    // Collect points for this item
     std::vector<const search::TrendPoint*> pts;
     for (const auto& p : points_)
-        if (p.item_code == itemCode && p.has_numeric_value) pts.push_back(&p);
+        if (p.item_code == currentItemCode_ && p.has_numeric_value) pts.push_back(&p);
 
-    // Detail table
     detailModel_->removeRows(0, detailModel_->rowCount());
     for (const auto* p : pts) {
         QList<QStandardItem*> row;
@@ -411,11 +367,7 @@ void TrendWindow::renderChart(const std::string& itemCode) {
         detailModel_->appendRow(row);
     }
 
-    if (pts.size() < 2) return;  // keep previous chart
-
-#ifdef HAS_QWT
-    renderQwtChart(pts);
-#endif
+    chart_->setData(pts);
 }
 
 void TrendWindow::onExportCsv() {
@@ -427,8 +379,7 @@ void TrendWindow::onExportCsv() {
         auto* chk = itemModel_->item(i,0);
         if (!chk || chk->checkState() != Qt::Checked) continue;
         if (i >= (int)items_.size()) continue;
-        const auto& code = items_[i].item_code;
-        const auto& name = items_[i].item_name;
+        const auto& code = items_[i].item_code; const auto& name = items_[i].item_name;
         QString fn = base + "-" + san(code);
         if (!name.empty()) fn += "-" + san(name);
         fn += ".csv";
@@ -450,49 +401,37 @@ void TrendWindow::onExportCsv() {
 }
 
 void TrendWindow::onExportImages() {
-#ifdef HAS_QWT
     QString d = QFileDialog::getExistingDirectory(this,
         QString::fromWCharArray(L"选择导出文件夹"));
     if (d.isEmpty()) return;
     QString base = ebn(lastQuery_);
-
-    // Save current chart state
     std::string savedCode = currentItemCode_;
 
     for (int i=0; i<itemModel_->rowCount(); ++i) {
         auto* chk = itemModel_->item(i,0);
         if (!chk || chk->checkState() != Qt::Checked) continue;
         if (i >= (int)items_.size()) continue;
-        const auto& code = items_[i].item_code;
-        const auto& name = items_[i].item_name;
+        const auto& code = items_[i].item_code; const auto& name = items_[i].item_name;
         QString fn = base + "-" + san(code);
         if (!name.empty()) fn += "-" + san(name);
         fn += ".png";
 
-        // Generate chart for this item
         std::vector<const search::TrendPoint*> pts;
         for (const auto& p : points_)
             if (p.item_code == code && p.has_numeric_value) pts.push_back(&p);
         if (pts.size() < 2) continue;
-
-        renderQwtChart(pts);
-        QPixmap pix = renderQwtToPixmap(3200, 1800);
+        chart_->setData(pts);
+        QPixmap pix = chart_->exportPixmap(3200, 1800);
         pix.save(d + "/" + fn, "PNG");
     }
 
-    // Restore current chart
-    if (!savedCode.empty()) {
-        currentItemCode_ = savedCode;
-        std::vector<const search::TrendPoint*> pts;
-        for (const auto& p : points_)
-            if (p.item_code == savedCode && p.has_numeric_value) pts.push_back(&p);
-        if (pts.size() >= 2) renderQwtChart(pts);
-    }
+    // Restore
+    currentItemCode_ = savedCode;
+    std::vector<const search::TrendPoint*> pts;
+    for (const auto& p : points_)
+        if (p.item_code == savedCode && p.has_numeric_value) pts.push_back(&p);
+    if (pts.size() >= 2) chart_->setData(pts);
 
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
-#else
-    QMessageBox::information(this, QString::fromWCharArray(L"导出图片"),
-                             QString::fromWCharArray(L"Qwt 未安装，暂不支持导出图片。"));
-#endif
 }
