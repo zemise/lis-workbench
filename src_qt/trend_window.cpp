@@ -204,7 +204,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         else if (pts_[i]->normal == "5") fill = QColor(0x28,0x50,0xD2);
         p.setPen(QPen(Qt::white, 2.5));
         p.setBrush(fill);
-        p.drawEllipse(QPoint(x, y), 5, 5);
+        p.drawEllipse(QPoint(x, y), 6, 6);
     }
 
     // ── Legend (inside plot, top-right) ─────────
