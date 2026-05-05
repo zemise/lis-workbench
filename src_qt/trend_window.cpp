@@ -136,12 +136,12 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
-    // Y label (vertical, left edge)
+    // Y label (vertical, positioned left of tick labels)
     p.save();
-    p.translate(22, plotArea.center().y());
+    p.translate(14, plotArea.center().y());
     p.rotate(-90);
     std::string yl = pts_[0]->unit.empty() ? "结果值" : "结果值 (" + pts_[0]->unit + ")";
-    p.drawText(QRect(-100, -12, 200, 24), Qt::AlignCenter, s8(yl));
+    p.drawText(QRect(-plotArea.height()/2, -10, plotArea.height(), 20), Qt::AlignCenter, s8(yl));
     p.restore();
 
     // ── X-axis ──────────────────────────────────
@@ -162,7 +162,7 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
             p.drawText(QRect(xx - lw/2, plotArea.bottom() + 22, lw, 18), Qt::AlignHCenter, timePart);
     }
     p.setFont(QFont("Microsoft YaHei", 10));
-    p.drawText(QRect(plotArea.left(), xAxisArea.top() + 30, plotArea.width(), 20),
+    p.drawText(QRect(plotArea.left(), plotArea.bottom() + 40, plotArea.width(), 20),
                Qt::AlignHCenter, QString::fromWCharArray(L"检测日期（按结果顺序）"));
 
     // ── Reference band ──────────────────────────
