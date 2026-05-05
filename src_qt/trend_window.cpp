@@ -110,13 +110,14 @@ void TrendWindow::setupUi() {
     // Hide built-in legend — use external legend widget instead
     chart_->legend->setVisible(false);
 
-    // External legend frame
+    // External legend — plain widget, no border
     legendFrame_ = new QFrame;
-    legendFrame_->setFrameStyle(QFrame::StyledPanel);
-    legendFrame_->setMaximumWidth(140);
+    legendFrame_->setFrameStyle(QFrame::NoFrame);
+    legendFrame_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    legendFrame_->setContentsMargins(0, 0, 0, 0);
     legendLayout_ = new QVBoxLayout(legendFrame_);
-    legendLayout_->setContentsMargins(6, 4, 6, 4);
-    legendLayout_->setSpacing(3);
+    legendLayout_->setContentsMargins(4, 8, 4, 4);
+    legendLayout_->setSpacing(2);
     updateLegend();
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
@@ -124,7 +125,7 @@ void TrendWindow::setupUi() {
     auto* chartArea = new QHBoxLayout;
     chartArea->setContentsMargins(0, 0, 0, 0);
     chartArea->addWidget(chart_, 1);
-    chartArea->addWidget(legendFrame_);
+    chartArea->addWidget(legendFrame_, 0, Qt::AlignTop);
 
     auto* containerLayout = new QVBoxLayout;
     containerLayout->setContentsMargins(0, 0, 0, 0);
