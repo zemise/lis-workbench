@@ -1,8 +1,15 @@
 #include "main_app.h"
 #include "resource.h"
+#include "search_text.h"
 
+#include <vector>
 #include <windows.h>
+#include <winsock2.h>
+#include <iphlpapi.h>
 #include <commctrl.h>
+
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 namespace {
 
@@ -76,17 +83,36 @@ void updateTimePane(HWND hwnd) {
     wchar_t buf[64];
     swprintf(buf, 64, L"当前时间：%d年%d月%d日 %d:%02d:%02d",
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(1, SBT_NOBORDERS), (LPARAM)buf);
+    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS), (LPARAM)buf);
+}
+
+std::wstring getLocalIp() {
+    ULONG bufLen = 0;
+    GetAdaptersInfo(nullptr, &bufLen);
+    if (bufLen == 0) return L"0.0.0.0";
+    std::vector<BYTE> buf(bufLen);
+    auto* p = reinterpret_cast<PIP_ADAPTER_INFO>(buf.data());
+    if (GetAdaptersInfo(p, &bufLen) != ERROR_SUCCESS) return L"0.0.0.0";
+    while (p) {
+        if (p->IpAddressList.IpAddress.String[0] != '0' &&
+            strcmp(p->IpAddressList.IpAddress.String, "127.0.0.1") != 0) {
+            return utf8_to_wide(p->IpAddressList.IpAddress.String);
+        }
+        p = p->Next;
+    }
+    return L"0.0.0.0";
 }
 
 void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
                               0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
                               g_ctx.instance, nullptr);
-    int parts[] = {300, -1};
-    SendMessageW(sb, SB_SETPARTS, 2, (LPARAM)parts);
+    int parts[] = {300, -1, 260};
+    SendMessageW(sb, SB_SETPARTS, 3, (LPARAM)parts);
     SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
     SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(1, SBT_NOBORDERS), (LPARAM)L"");
+    std::wstring ip = L"本机：" + getLocalIp();
+    SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS), (LPARAM)ip.c_str());
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
