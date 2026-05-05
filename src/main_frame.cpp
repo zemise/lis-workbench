@@ -18,11 +18,12 @@ constexpr int IDM_QUERY    = 1001;
 constexpr int IDM_BLOOD    = 1002;
 constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT     = 2002;
-constexpr int IDM_TOOL1    = 3001;
-constexpr int IDM_TOOL2    = 3002;
-constexpr int IDM_TOOL3    = 3003;
-constexpr int IDM_TOOL4    = 3004;
-constexpr int IDM_TOOL5    = 3005;
+constexpr int IDM_CLOSE    = 3001;
+constexpr int IDM_TOOL1    = 3011;
+constexpr int IDM_TOOL2    = 3012;
+constexpr int IDM_TOOL3    = 3013;
+constexpr int IDM_TOOL4    = 3014;
+constexpr int IDM_TOOL5    = 3015;
 constexpr int ID_STATUS    = 4001;
 constexpr int ID_TIMER     = 5001;
 
@@ -113,6 +114,21 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             setupMenus(hwnd);
+
+            // Toolbar below menu bar
+            HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"",
+                WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS,
+                0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, nullptr);
+            SendMessageW(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+            TBBUTTON tbb[1] = {};
+            tbb[0].iBitmap = I_IMAGENONE;
+            tbb[0].fsState = TBSTATE_ENABLED;
+            tbb[0].fsStyle = BTNS_BUTTON | BTNS_SHOWTEXT;
+            tbb[0].idCommand = IDM_CLOSE;
+            tbb[0].iString = (INT_PTR)L"关闭";
+            SendMessageW(tb, TB_ADDBUTTONS, 1, (LPARAM)tbb);
+            SendMessageW(tb, TB_AUTOSIZE, 0, 0);
+
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
             SetTimer(hwnd, ID_TIMER, 1000, nullptr);
@@ -136,6 +152,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND: {
             switch (LOWORD(wp)) {
+                case IDM_CLOSE:
+                    MessageBoxW(hwnd, L"关闭当前子窗口 — 待实现", L"关闭", MB_ICONINFORMATION);
+                    break;
                 case IDM_QUERY:    onQuery(hwnd);    break;
                 case IDM_BLOOD:    onBlood(hwnd);    break;
                 case IDM_SETTINGS: onSettings(hwnd); break;
@@ -170,7 +189,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
 
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_STANDARD_CLASSES;
+    icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
 
     WNDCLASSEXW wc{};
