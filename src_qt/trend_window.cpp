@@ -107,6 +107,7 @@ static void writeGnuplotScript(QTextStream& out,
 
     // gnuplot script — pngcairo, enhanced text, SCI quality
     out << "set terminal svg enhanced size " << width << "," << height << "\n";
+    out << "set encoding utf8\n";
     out << "set output '" << output.toStdString().c_str() << "'\n";
     out << "set title '" << title.c_str() << "'\n";
     out << "set xlabel '检测日期（按结果顺序）'\n";
