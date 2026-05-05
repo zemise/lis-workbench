@@ -117,7 +117,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupMenus(hwnd);
 
             // Toolbar panel — menu font, close button on far right
-            int tbH = abs(nm.lfMenuFont.lfHeight) * 1.6;
+            int tbH = 28;
             HWND tb = CreateWindowExW(0, L"STATIC", L"",
                 WS_CHILD | WS_VISIBLE,
                 0, 0, 0, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
