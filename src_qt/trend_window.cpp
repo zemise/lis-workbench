@@ -280,17 +280,18 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     const QString YUnitLabel = unit.empty()
         ? QString::fromWCharArray(L"结果值")
         : QString::fromWCharArray(L"结果值 (") + fmt(unit) + ")";
-    const QColor lineColor(0x00, 0x7A, 0xB8);    // deep sky blue
-    const QColor normalColor(0x70, 0x70, 0x70);   // gray
-    const QColor highColor(0xC8, 0x28, 0x28);     // muted red
-    const QColor lowColor(0x28, 0x5E, 0xC8);      // muted blue
+    // Win32-matched colors
+    const QColor lineColor(0x1E, 0x5F, 0xB4);    // blue trend line (RGB 30,95,180)
+    const QColor normalColor(0x23, 0x23, 0x23);   // dark gray (RGB 35,35,35)
+    const QColor highColor(0xD2, 0x28, 0x28);     // red (RGB 210,40,40)
+    const QColor lowColor(0x28, 0x50, 0xD2);      // blue (RGB 40,80,210)
     const QColor refFill(0xF2, 0xF2, 0xF2);
     const QColor gridColor(0xEA, 0xEA, 0xEA);
     const QColor axisColor(0x4D, 0x4D, 0x4D);
 
     // ── Reference range band ───────────────────────────────
     if (hasRef) {
-        QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size()) - 1.0};
+        QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size() - 1)};
         auto* upper = chart_->addGraph();
         upper->setData(bandX, QVector<double>(2, refHigh));
         upper->setPen(Qt::NoPen);
@@ -310,7 +311,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     line->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
     line->setName(fmt(itemPoints[0]->item_name));
 
-    // ── Scatter points (open circles = R default style) ────
+    // ── Scatter points (filled circles matching Win32) ─────
     auto addScatter = [&](const QVector<double>& xs, const QVector<double>& ys,
                           const QColor& color, const QString& name) {
         if (xs.isEmpty()) return;
@@ -318,8 +319,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         g->setData(xs, ys);
         g->setPen(Qt::NoPen);
         g->setLineStyle(QCPGraph::lsNone);
-        QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(color, 1.8), QBrush(Qt::white), 6);
-        g->setScatterStyle(ss);
+        g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, color, 6));
         g->setName(name);
     };
     addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
@@ -327,7 +327,7 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
 
     // ── Axes styling (ggplot2 theme_bw equivalent) ──────
-    chart_->xAxis->setRange(-0.5, static_cast<double>(itemPoints.size()) - 0.5);
+    chart_->xAxis->setRange(0.0, static_cast<double>(itemPoints.size()) - 1.0);
     chart_->yAxis->setRange(yMin, yMax);
 
     // Common axis pen: clean thin line, ticks outward
@@ -418,13 +418,11 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xEE)));
     chart_->legend->setBorderPen(QPen(QColor(0xDD, 0xDD, 0xDD), 0.5));
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(12, 12);
+    chart_->legend->setIconSize(14, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    chart_->legend->setRowSpacing(2);
+    chart_->legend->setRowSpacing(1);
+    // Position legend inside plot area, top-right
     chart_->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
-    chart_->axisRect()->insetLayout()->setInsetPlacement(0, QCPLayoutInset::ipFree);
-    chart_->axisRect()->insetLayout()->setInsetRect(0,
-        QRectF(0.65, 0.02, 0.33, 0.28));  // relative coords: right 1/3, top quarter
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
