@@ -300,9 +300,12 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     const QColor gridColor(0xEA, 0xEA, 0xEA);
     const QColor axisColor(0x4D, 0x4D, 0x4D);
 
+    // Edge padding so scatter points at axis boundaries are fully visible
+    double xPad = std::max(0.3, (itemPoints.size() - 1.0) * 0.04);
+
     // ── Reference range band ───────────────────────────────
     if (hasRef) {
-        QVector<double> bandX = {0.0, static_cast<double>(itemPoints.size() - 1)};
+        QVector<double> bandX = {-xPad, static_cast<double>(itemPoints.size()) - 1.0 + xPad};
         auto* upper = chart_->addGraph();
         upper->setData(bandX, QVector<double>(2, refHigh));
         upper->setPen(Qt::NoPen);
@@ -334,14 +337,13 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         QCPScatterStyle ss(QCPScatterStyle::ssCircle, QPen(Qt::white, 1.0), QBrush(fill), 7);
         g->setScatterStyle(ss);
         g->setName(name);
-        g->setClipAxisRect(nullptr);
     };
     addScatter(xNormal, yNormal, normalColor, QString::fromWCharArray(L"正常"));
     addScatter(xHigh,   yHigh,   highColor,   QString::fromWCharArray(L"偏高"));
     addScatter(xLow,    yLow,    lowColor,    QString::fromWCharArray(L"偏低"));
 
     // ── Axes styling (ggplot2 theme_bw equivalent) ──────
-    chart_->xAxis->setRange(0.0, static_cast<double>(itemPoints.size()) - 1.0);
+    chart_->xAxis->setRange(-xPad, static_cast<double>(itemPoints.size()) - 1.0 + xPad);
     chart_->yAxis->setRange(yMin, yMax);
 
     // Common axis pen: clean thin line, ticks outward
