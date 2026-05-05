@@ -31,14 +31,11 @@ private:
     void setupUi();
     void loadTrendData();
     void renderChart(const std::string& itemCode);
-    void renderToFile(const std::string& itemCode,
-                      const QString& path, int w, int h);
     QString gnuplotPath() const;
 
     const search::DbSettings db_;
     const search::QueryInput lastQuery_;
 
-    // Widgets
     QSplitter* mainSplitter_ = nullptr;
     QTableView* itemTable_ = nullptr;
     QTableView* detailTable_ = nullptr;
@@ -47,11 +44,9 @@ private:
     QPushButton* exportCsvBtn_ = nullptr;
     QPushButton* exportImageBtn_ = nullptr;
 
-    // Models
     QStandardItemModel* itemModel_ = nullptr;
     QStandardItemModel* detailModel_ = nullptr;
 
-    // Data
     std::vector<search::TrendPoint> points_;
     std::vector<search::TrendItemOption> items_;
     std::string currentItemCode_;
