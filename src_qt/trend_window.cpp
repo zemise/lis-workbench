@@ -9,7 +9,6 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPainter>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -519,18 +518,9 @@ void TrendWindow::onExportImages() {
         QString fullPath = dir + "/" + fileName;
 
         updateChart(code);
-        QPixmap pix(1600, 1000);
-        pix.fill(Qt::white);
-        QPainter painter(&pix);
-        double sx = 1600.0 / chart_->width();
-        double sy = 1000.0 / chart_->height();
-        painter.scale(sx, sy);
-        chart_->render(&painter);
-        painter.end();
-        pix.save(fullPath, "PNG");
+        chart_->savePng(fullPath, 1600, 1000, 1.0);
     }
     updateChart(currentItemCode_);
-    chart_->replot();
 
     QMessageBox::information(this, QString::fromWCharArray(L"导出完成"),
                              QString::fromWCharArray(L"已导出勾选项目的 PNG 图片。"));
