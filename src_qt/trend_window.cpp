@@ -99,20 +99,21 @@ void TrendWindow::setupUi() {
     chart_->setMinimumHeight(300);
     chart_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Build fixed layout: row 0 = title, row 1 = chart, row 2 = legend
-    chart_->plotLayout()->insertRow(0);  // title row (axis rect moves to row 1)
+    // Layout: row 0 = title, row 1 = chart(left) + legend(right)
+    chart_->plotLayout()->insertRow(0);
     chart_->plotLayout()->setRowStretchFactor(0, 0.001);
     chart_->plotLayout()->setRowStretchFactor(1, 1);
+    chart_->plotLayout()->setColumnStretchFactor(0, 1);  // chart column
+    chart_->plotLayout()->setColumnStretchFactor(1, 0);  // legend column
 
-    // Legend below chart
+    // Legend to the right of chart
     chart_->legend->setVisible(true);
     chart_->legend->setBrush(Qt::NoBrush);
     chart_->legend->setBorderPen(Qt::NoPen);
     chart_->legend->setFont(QFont("Microsoft YaHei", 8));
     chart_->legend->setIconSize(12, 10);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    chart_->plotLayout()->addElement(2, 0, chart_->legend);
-    chart_->plotLayout()->setRowStretchFactor(2, 0.001);
+    chart_->plotLayout()->addElement(1, 1, chart_->legend);
 
     loadingLabel_ = new QLabel(QString::fromWCharArray(L"正在加载趋势数据..."));
     loadingLabel_->setAlignment(Qt::AlignCenter);
