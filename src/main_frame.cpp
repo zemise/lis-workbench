@@ -20,6 +20,7 @@ constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT     = 2002;
 constexpr int ID_TOOLBAR   = 3100;
 constexpr int ID_BTNCLOSE  = 3101;
+constexpr int ID_BTNABOUT  = 3102;
 constexpr int IDM_TOOL1    = 3011;
 constexpr int IDM_TOOL2    = 3012;
 constexpr int IDM_TOOL3    = 3013;
@@ -124,13 +125,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int tbParts[] = { -1 };
             SendMessageW(tb, SB_SETPARTS, 1, (LPARAM)tbParts);
             SendMessageW(tb, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-            // Close button overlaid on right side of toolbar
+            // About button on left side
+            HWND btnAbout = CreateWindowExW(0, L"BUTTON", L"关于",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNABOUT)),
+                g_ctx.instance, nullptr);
+            // Close button on right side
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
-            // Font set in WM_SIZE after dimensions are known
-            (void)btnClose;
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -141,6 +145,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == ID_TIMER) updateTimePane(hwnd);
             return 0;
         }
+        case WM_CTLCOLORSTATIC:
+            if ((HWND)lp == GetDlgItem(hwnd, ID_TOOLBAR)) {
+                HBRUSH br = GetSysColorBrush(COLOR_MENU);
+                SetBkColor((HDC)wp, GetSysColor(COLOR_MENU));
+                return (LRESULT)br;
+            }
+            break;
         case WM_SIZE: {
             // Toolbar — full width, close button sized to font
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
@@ -150,13 +161,21 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int tbH = rc.bottom - rc.top;
                 SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
                 HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                if (btn) {
-                    SendMessageW(btn, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-                    int btnH = tbH * 7 / 10;
-                    int btnW = cw * 5 / 100;
-                    if (btnW < 50) btnW = 50;
-                    if (btnW > 80) btnW = 80;
-                    SetWindowPos(btn, nullptr, cw - btnW - 10, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
+                int btnH = tbH * 7 / 10;
+                int btnW = cw * 5 / 100;
+                if (btnW < 50) btnW = 50;
+                if (btnW > 80) btnW = 80;
+                // Close button — far right
+                HWND btnClose = GetDlgItem(hwnd, ID_BTNCLOSE);
+                if (btnClose) {
+                    SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+                    SetWindowPos(btnClose, nullptr, cw - btnW - 10, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
+                }
+                // About button — far left
+                HWND btnAbout = GetDlgItem(hwnd, ID_BTNABOUT);
+                if (btnAbout) {
+                    SendMessageW(btnAbout, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+                    SetWindowPos(btnAbout, nullptr, 6, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
                 }
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
@@ -172,6 +191,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND: {
             switch (LOWORD(wp)) {
+                case ID_BTNABOUT:
+                    MessageBoxW(hwnd,
+                        L"检验结果查询平台\n版本 v2026.05.06\n\n作者：Zhao Wang",
+                        L"关于", MB_ICONINFORMATION);
+                    break;
                 case ID_BTNCLOSE:
                     MessageBoxW(hwnd, L"关闭当前子窗口 — 待实现", L"关闭", MB_ICONINFORMATION);
                     break;
