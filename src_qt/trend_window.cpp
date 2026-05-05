@@ -411,6 +411,8 @@ void TrendWindow::updateChart(const std::string& itemCode) {
     while (chart_->plotLayout()->rowCount() < 3) {
         chart_->plotLayout()->insertRow(0);
     }
+    // If legend was moved to plotLayout, return it to inset
+    chart_->axisRect()->insetLayout()->addElement(chart_->legend);
     auto* existingTitle = dynamic_cast<QCPTextElement*>(chart_->plotLayout()->element(0, 0));
     if (existingTitle) {
         existingTitle->setText(title);
@@ -421,17 +423,20 @@ void TrendWindow::updateChart(const std::string& itemCode) {
         chart_->plotLayout()->addElement(0, 0, el);
     }
 
-    // ── Legend — title area, right side (Win32: above plot, not overlapping) ──
+    // ── Legend — SCI style: top-right inset, semi-transparent ──
     chart_->legend->setVisible(true);
-    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xEE)));
-    chart_->legend->setBorderPen(QPen(QColor(0xDD, 0xDD, 0xDD), 0.5));
-    chart_->legend->setFont(QFont("Microsoft YaHei", 8));
-    chart_->legend->setIconSize(14, 10);
+    chart_->legend->setBrush(QBrush(QColor(0xFF, 0xFF, 0xFF, 0xD0)));
+    chart_->legend->setBorderPen(QPen(QColor(0xCC, 0xCC, 0xCC), 0.5));
+    chart_->legend->setFont(QFont("Microsoft YaHei", 7));
+    chart_->legend->setIconSize(10, 8);
     chart_->legend->setSelectableParts(QCPLegend::spNone);
-    // Position legend in the title row, right-aligned, sharing space with title
-    chart_->plotLayout()->addElement(0, 1, chart_->legend);
-    chart_->plotLayout()->setColumnStretchFactor(0, 1);  // title column stretches
-    chart_->plotLayout()->setColumnStretchFactor(1, 0);  // legend column fixed
+    chart_->legend->setRowSpacing(0);
+    chart_->legend->setMargins(QMargins(4, 2, 4, 2));
+    // Position inside plot, top-right corner
+    chart_->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
+    chart_->axisRect()->insetLayout()->setInsetPlacement(0, QCPLayoutInset::ipFree);
+    chart_->axisRect()->insetLayout()->setInsetRect(0,
+        QRectF(0.72, 0.02, 0.26, 0.22));
 
     // ── Final ─────────────────────────────────────────────
     chart_->setBackground(QBrush(Qt::white));
