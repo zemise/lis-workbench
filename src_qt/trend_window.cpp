@@ -165,12 +165,13 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
                    Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(val, 'g', 4));
     }
-    // Y-axis label (vertical, left of ticks)
+    // Y-axis label (vertical, pinned to left edge)
     p.save();
     p.setFont(labelFont);
-    p.translate(yLabelW, plotArea.center().y());
+    p.translate(gap_, plotArea.center().y());
     p.rotate(-90);
-    p.drawText(QRect(-plotArea.height()/2, -gap_,
+    // The rotated text reads bottom-to-top; rect height = labelW controls text width
+    p.drawText(QRect(-plotArea.height()/2, 0,
                      plotArea.height(), yLabelW), Qt::AlignCenter, qYLabel);
     p.restore();
 
@@ -243,40 +244,43 @@ void TrendChartWidget::paintEvent(QPaintEvent*) {
         p.drawEllipse(QPoint(x, y), 6, 6);
     }
 
-    // ── Legend (inside plot, top-right) ─────────
-    int lx = legendArea.left() + 4, ly = legendArea.top() + 4;
-    // Legend background
+    // ── Legend (dynamic sizing) ─────────────────
+    int lx = legendArea.left() + 4;
+    int itemH = legendFm.height() + 4;  // text height + spacing
+    int legendH = itemH * 4 + 8;  // 4 items + padding
+
+    // Background
     p.setPen(QPen(QColor(0xDD,0xDD,0xDD), 0.5));
     p.setBrush(QColor(0xFF,0xFF,0xFF,0xE0));
-    int legendH = 90;
-    p.drawRect(lx - 2, ly - 2, legendW, legendH);
+    p.drawRect(lx - 2, legendArea.top() + 2, legendW, legendH);
 
-    auto drawItem = [&](int& y, const QColor& c, const QString& text, bool isLine, bool isRect) {
+    int ly = legendArea.top() + 6;
+    auto drawItem = [&](const QColor& c, const QString& text, bool isLine, bool isRect) {
         p.setPen(Qt::NoPen);
         if (isLine) {
             p.setPen(QPen(c, 2.5));
-            p.drawLine(lx, y + 7, lx + 18, y + 7);
+            p.drawLine(lx, ly + itemH/2, lx + 18, ly + itemH/2);
             p.setPen(Qt::NoPen);
         } else if (isRect) {
-            p.fillRect(lx + 2, y + 2, 14, 10, c);
+            p.fillRect(lx + 2, ly + 3, 14, itemH - 6, c);
             p.setPen(QPen(QColor(0x99,0x99,0x99), 0.8, Qt::DashLine));
-            p.drawRect(lx + 2, y + 2, 14, 10);
+            p.drawRect(lx + 2, ly + 3, 14, itemH - 6);
             p.setPen(Qt::NoPen);
         } else {
             p.setPen(QPen(Qt::white, 2));
             p.setBrush(c);
-            p.drawEllipse(lx + 4, y + 2, 10, 10);
+            p.drawEllipse(lx + 4, ly + 3, itemH - 6, itemH - 6);
             p.setPen(Qt::NoPen);
         }
         p.setPen(Qt::black);
-        p.setFont(QFont("Microsoft YaHei", 8));
-        p.drawText(lx + 24, y, 60, 14, Qt::AlignVCenter, text);
-        y += 18;
+        p.setFont(legendFont);
+        p.drawText(lx + 24, ly, legendW - 28, itemH, Qt::AlignVCenter, text);
+        ly += itemH;
     };
-    drawItem(ly, QColor(0x1E,0x5F,0xB4), QString::fromWCharArray(L"结果线"), true, false);
-    drawItem(ly, QColor(0xF2,0xF2,0xF2), QString::fromWCharArray(L"参考范围"), false, true);
-    drawItem(ly, QColor(0xD2,0x28,0x28), QString::fromWCharArray(L"高值"), false, false);
-    drawItem(ly, QColor(0x28,0x50,0xD2), QString::fromWCharArray(L"低值"), false, false);
+    drawItem(QColor(0x1E,0x5F,0xB4), QString::fromWCharArray(L"结果线"), true, false);
+    drawItem(QColor(0xF2,0xF2,0xF2), QString::fromWCharArray(L"参考范围"), false, true);
+    drawItem(QColor(0xD2,0x28,0x28), QString::fromWCharArray(L"高值"), false, false);
+    drawItem(QColor(0x28,0x50,0xD2), QString::fromWCharArray(L"低值"), false, false);
 }
 
 // ── TrendWindow ──────────────────────────────────────────────
