@@ -153,7 +153,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == ID_TIMER) updateTimePane(hwnd);
             return 0;
         }
-        case WM_SIZE: {
+        case WM_SIZE: { {
             // Toolbar — full width, height from font
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             int tbH = tb ? mtGetHeight(tb) : 28;
@@ -177,7 +177,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SendMessageW(sb, WM_SIZE, 0, 0);
             }
             return 0;
-        }
+        } }
         case WM_COMMAND: {
             switch (LOWORD(wp)) {
                 case IDM_ABOUT:
