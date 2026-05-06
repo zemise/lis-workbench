@@ -22,11 +22,13 @@
 // Button styles
 #define MTBS_SEPARATOR  0x0001
 #define MTBS_DISABLED   0x0002
+#define MTBS_STRETCH    0x0004
 
 HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId);
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, bool enabled = true);
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, HICON icon, bool enabled = true);
 void mtAddSeparator(HWND hwnd);
+void mtAddStretch(HWND hwnd);
 void mtEnableButton(HWND hwnd, int cmdId, bool enable);
 int  mtGetHeight(HWND hwnd);
 

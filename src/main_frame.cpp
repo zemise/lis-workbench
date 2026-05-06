@@ -121,6 +121,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             // Custom menu-style toolbar
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
+            mtAddStretch(tb);
             HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
             mtAddButton(tb, L"关闭", ID_BTNCLOSE, closeIcon);
 

@@ -136,9 +136,30 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HFONT oldFont = s->font ? (HFONT)SelectObject(dc, s->font) : nullptr;
             SetBkMode(dc, TRANSPARENT);
 
+            // Pass 1: measure button widths
+            int widths[MT_MAXBTN] = {};
+            int totalW = 12;
+            for (int i = 0; i < s->count; ++i) {
+                auto& b = s->btns[i];
+                if (b.flags & MTBS_SEPARATOR) { widths[i] = 8; totalW += 8; continue; }
+                if (b.flags & MTBS_STRETCH) continue;
+                SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
+                int iconSz = b.icon ? sz.cy : 0;
+                widths[i] = sz.cx + 24 + iconSz + (b.icon ? 6 : 0);
+                totalW += widths[i] + 2;
+            }
+            int stretchW = rc.right - totalW;
+            if (stretchW < 0) stretchW = 0;
+
+            // Pass 2: draw
             int x = 6;
             for (int i = 0; i < s->count; ++i) {
                 auto& b = s->btns[i];
+
+                if (b.flags & MTBS_STRETCH) {
+                    x += stretchW;
+                    continue;
+                }
 
                 if (b.flags & MTBS_SEPARATOR) {
                     // Vertical separator line
@@ -235,6 +256,14 @@ void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, HICON icon, bool ena
     if (s && s->count < MT_MAXBTN) {
         int flags = enabled ? 0 : MTBS_DISABLED;
         s->btns[s->count++] = {text, cmdId, flags, icon};
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+}
+
+void mtAddStretch(HWND hwnd) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (s && s->count < MT_MAXBTN) {
+        s->btns[s->count++] = {nullptr, 0, MTBS_STRETCH};
         InvalidateRect(hwnd, nullptr, TRUE);
     }
 }
