@@ -119,6 +119,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
+            // Register MDI child window class (for future modular windows)
+            WNDCLASSEXW childWc{};
+            childWc.cbSize = sizeof(childWc);
+            childWc.lpfnWndProc = DefMDIChildProcW;
+            childWc.hInstance = g_ctx.instance;
+            childWc.hIcon = LoadIconW(g_ctx.instance, MAKEINTRESOURCEW(IDI_APP));
+            childWc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            childWc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+            childWc.lpszClassName = L"ResultSearchMDIChild";
+            RegisterClassExW(&childWc);
+
+            // MDI client — container for child windows
+            CLIENTCREATESTRUCT ccs{};
+            ccs.hWindowMenu = nullptr;
+            ccs.idFirstChild = 5000;
+            g_ctx.mdiClient = CreateWindowExW(WS_EX_CLIENTEDGE, L"MDICLIENT", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL | WS_HSCROLL,
+                0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, &ccs);
+
             // Custom menu-style toolbar
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
             mtAddStretch(tb);
@@ -137,8 +156,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             // Toolbar — full width, height from font
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
-            if (tb) MoveWindow(tb, 0, 0, LOWORD(lp), mtGetHeight(tb), TRUE);
+            int tbH = tb ? mtGetHeight(tb) : 28;
+            if (tb) MoveWindow(tb, 0, 0, LOWORD(lp), tbH, TRUE);
+
+            // MDI client — fills space between toolbar and status bar
+            RECT sbRc{};
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
+            if (sb) GetWindowRect(sb, &sbRc);
+            int sbH = sb ? (sbRc.bottom - sbRc.top) : 24;
+            if (g_ctx.mdiClient)
+                MoveWindow(g_ctx.mdiClient, 0, tbH, LOWORD(lp), HIWORD(lp) - tbH - sbH, TRUE);
+
+            if (sb) {
             if (sb) {
                 int cw = LOWORD(lp);
                 int ipW2  = (std::max)(220, cw * 22 / 100);

@@ -11,6 +11,7 @@ namespace app {
 struct Context {
     HINSTANCE instance = nullptr;
     HWND mainWindow = nullptr;
+    HWND mdiClient = nullptr;
     HFONT uiFont = nullptr;
     HFONT menuFont = nullptr;
     search::DbSettings dbSettings;
