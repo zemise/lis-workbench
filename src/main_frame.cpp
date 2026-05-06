@@ -124,7 +124,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 200, 28, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
             HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
                 140, 2, 52, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
                 g_ctx.instance, nullptr);
             SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
