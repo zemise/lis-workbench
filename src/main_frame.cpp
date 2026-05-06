@@ -118,7 +118,7 @@ LRESULT CALLBACK menuToolbarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-HWND createMenuToolbar(HWND parent, HINSTANCE inst, HFONT font) {
+HWND createMenuToolbar(HWND parent, HINSTANCE inst, HFONT font, int ctrlId) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW wc{};
@@ -132,7 +132,7 @@ HWND createMenuToolbar(HWND parent, HINSTANCE inst, HFONT font) {
     }
     return CreateWindowExW(0, L"MenuToolbar", L"",
         WS_CHILD | WS_VISIBLE, 0, 0, 0, 28,
-        parent, nullptr, inst, font);
+        parent, reinterpret_cast<HMENU>(static_cast<intptr_t>(ctrlId)), inst, font);
 }
 
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId) {
@@ -231,7 +231,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupMenus(hwnd);
 
             // Custom menu-style toolbar
-            HWND tb = createMenuToolbar(hwnd, g_ctx.instance, g_ctx.menuFont);
+            HWND tb = createMenuToolbar(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
             mtAddButton(tb, L"关闭", ID_BTNCLOSE);
 
             setupStatusBar(hwnd);
