@@ -14,6 +14,7 @@
 
 #include "app_settings.h"
 #include "app_settings_io.h"
+#include "blood_module.h"
 #include "menu_toolbar.h"
 #include "module_registry.h"
 #include "query_module.h"
@@ -89,7 +90,6 @@ void closeActiveMdiChild() {
 
 // ── placeholder factories (to be replaced with real modules) ────
 
-HWND create_blood_placeholder(const ModuleContext&) { return createMdiChild(L"输血结果查询"); }
 HWND create_tool1_placeholder(const ModuleContext&) { return createMdiChild(L"工具1"); }
 HWND create_tool2_placeholder(const ModuleContext&) { return createMdiChild(L"工具2"); }
 HWND create_tool3_placeholder(const ModuleContext&) { return createMdiChild(L"工具3"); }
@@ -100,7 +100,7 @@ HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"�
 
 const ModuleDef g_modules[] = {
     { L"Query",    L"检验管理", L"检验结果查询(&Q)...", IDM_QUERY,    create_query_module    },
-    { L"Blood",    L"检验管理", L"输血结果查询(&B)...", IDM_BLOOD,    create_blood_placeholder },
+    { L"Blood",    L"检验管理", L"输血结果查询(&B)...", IDM_BLOOD,    create_blood_module },
     { L"Tool1",    L"工具",     L"工具1(&1)",           IDM_TOOL1,   create_tool1_placeholder },
     { L"Tool2",    L"工具",     L"工具2(&2)",           IDM_TOOL2,   create_tool2_placeholder },
     { L"Tool3",    L"工具",     L"工具3(&3)",           IDM_TOOL3,   create_tool3_placeholder },

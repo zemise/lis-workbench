@@ -56,16 +56,16 @@
 | 任务 | 说明 | 状态 |
 |:-----|------|------|
 | 2.1 检验结果查询接入 | `search_child.cpp` — SearchQueryChild 类 + QueryState 每实例独立 + 分割器持久化 | ✅ |
-| 2.2 输血结果查询占位 | 空子窗口，显示"输血结果查询 — 待开发" | 待开发 |
+| 2.2 输血结果查询模块 | `blood_module.cpp` — 独立 `BloodModuleChild` 类，占位"待开发" | ✅ |
 | 2.3 系统设置接入 | `main_frame.cpp` — 复用 `MdiPlaceholderChild` 类 + 设置表单控件 + 单实例模式 | ✅ |
 
 ### 阶段 3：统一配置
 
-| 任务 | 说明 |
-|------|------|
-| 3.1 统一 INI | `search::default_ini_path()` 全模块共用 + 启动加载 + 保存回写 `g_ctx` | ✅ |
-| 3.2 统一数据库连接 | `g_ctx.dbSettings` 启动加载 INI，`create_search_child` 传入，设置保存回写 | ✅ |
-| 3.3 关于对话框 | 版本号、作者信息 |
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| 3.1 统一 INI | `default_ini_path()` 全模块共用；`wWinMain` 启动加载；系统设置保存回写 `g_ctx` | ✅ |
+| 3.2 统一数据库连接 | `g_ctx.dbSettings` 启动加载，`ModuleContext` 传递给各模块，设置保存回写 | ✅ |
+| 3.3 关于对话框 | `IDM_ABOUT` 弹出 MessageBox（版本号 + 作者信息） | ✅ |
 
 ### 阶段 4：Qt 主程序（后期）
 
@@ -129,7 +129,7 @@ src/
 |------|------|
 | Win32 检验结果查询 | 完整，独立运行 |
 | Qt 检验结果查询 | 完整，独立运行 |
-| Win32 主程序平台 | 阶段 1 完成，MDI 窗口壳就绪 |
+| Win32 主程序平台 | 阶段 1~3 完成，模块系统就绪，查询+设置已接入 |
 | 核心数据库层 | `search_core` 静态库，双版共用 |
 | CI 构建 | Win32 + Qt 双绿 |
 
