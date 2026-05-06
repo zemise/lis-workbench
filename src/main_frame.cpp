@@ -12,6 +12,7 @@
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 
+#include "menu_toolbar.h"
 namespace {
 
 constexpr int IDM_QUERY    = 1001;
@@ -31,7 +32,6 @@ constexpr int ID_TIMER     = 5001;
 
 app::Context g_ctx;
 
-#include "menu_toolbar.h"
 void onQuery(HWND owner) {
     MessageBoxW(owner, L"检验结果查询 — 待接入", L"检验结果查询", MB_ICONINFORMATION);
 }
@@ -133,9 +133,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE: {
-            // Toolbar — full width
+            // Toolbar — full width, height from font
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
-            if (tb) MoveWindow(tb, 0, 0, LOWORD(lp), 28, TRUE);
+            if (tb) MoveWindow(tb, 0, 0, LOWORD(lp), mtGetHeight(tb), TRUE);
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
                 int cw = LOWORD(lp);
