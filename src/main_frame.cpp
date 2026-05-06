@@ -246,7 +246,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             // Toolbar — full width
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
-            if (tb) SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 0, SWP_NOZORDER | SWP_NOSIZE);
+            if (tb) MoveWindow(tb, 0, 0, LOWORD(lp), 28, TRUE);
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
                 int cw = LOWORD(lp);
