@@ -111,13 +111,15 @@
 
 ```
 src/
-  main_frame.cpp          ← 主窗口入口、消息循环、菜单、MDI、状态栏、工具栏
-  main_app.h              ← 主程序上下文 + ModuleDef（共享状态）
+  main_frame.cpp          ← 主窗口入口 + g_modules[] 注册表 + 自动菜单/分发
+  main_app.h              ← 主程序上下文（共享状态）
+  module_registry.h       ← ModuleContext + ModuleDef 统一接口
   menu_toolbar.cpp/h      ← 自绘菜单风格工具栏组件
+  query_module.cpp/h      ← 检验结果查询 MDI 子窗口
+  settings_module.cpp/h   ← 系统设置 MDI 子窗口
 
-  main.cpp                ← 待改造：提取窗口创建逻辑，改为 MDI 子窗口
-  search_ui_layout.cpp    ← 现有：查询界面控件布局（不变）
-  search_core.cpp         ← 现有：数据库查询（不变）
+  main.cpp                ← 独立查询工具（不变）
+  search_ui_layout.cpp    ← 查询界面控件布局（共享）
   ...                     ← 其余文件不变
 ```
 
@@ -175,8 +177,10 @@ ModuleDef g_queryModule = {
 CMake 目标：
   result_search.exe       ← 独立查询工具（现有，不受影响）
   main_app.exe            ← 主程序
-    ├── main_frame.cpp    ← 主窗口 + 菜单 + MDI + 状态栏 + 工具栏
-    └── menu_toolbar.cpp  ← 自绘工具栏组件
+    ├── main_frame.cpp        ← 主窗口 + g_modules[] 注册表
+    ├── query_module.cpp      ← 查询 MDI 子窗口
+    ├── settings_module.cpp   ← 设置 MDI 子窗口
+    └── menu_toolbar.cpp      ← 自绘工具栏组件
 ```
 
 - `result_search.exe` 的 CMake 目标和源码不变

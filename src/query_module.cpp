@@ -1,4 +1,4 @@
-#include "search_child.h"
+#include "query_module.h"
 
 #ifdef _WIN32
 
@@ -46,9 +46,9 @@ constexpr int IDC_SETTINGS = 3006;
 constexpr int IDC_TREND = 3007;
 constexpr int IDC_STATUS = 4001;
 
-constexpr const wchar_t* WINDOW_CLASS = L"SearchQueryChild";
+constexpr const wchar_t* WND_CLASS   = L"QueryModuleChild";
 constexpr const wchar_t* SPLITTER_CLASS = L"ResultSearchSplitter";
-constexpr const wchar_t* PROP_QUERY = L"QuerySt";
+constexpr const wchar_t* PROP_STATE  = L"QuerySt";
 
 int clampFontSize(int value) { return value < 8 ? 8 : (value > 24 ? 24 : value); }
 
@@ -64,6 +64,7 @@ HFONT createUiFont(int pointSize) {
 }
 
 struct QueryState {
+    ModuleContext ctx;
     search::MainUiIds ids{IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER,
         IDC_START, IDC_END, IDC_ROOM, IDC_MACH, IDC_GROUP, IDC_ITEM, IDC_PATIENT_TYPE,
         IDC_REPORT_STATUS, IDC_REPORTS, IDC_RESULTS, IDC_SPLITTER,
@@ -75,10 +76,9 @@ struct QueryState {
     bool hasLastQueryInput = false;
     bool draggingSplitter = false;
     int pendingSplitterX = 0;
-    HINSTANCE instance = nullptr;
 };
 
-QueryState* g_pendingQuery = nullptr;
+QueryState* g_pending = nullptr;
 
 search::DbSettings& db(QueryState* q)  { return q->viewState.settings.db; }
 int& fontSize(QueryState* q)          { return q->viewState.settings.ui.font_size; }
@@ -92,11 +92,6 @@ auto& connStr(QueryState* q)          { return q->viewState.connection_string; }
 
 void setStatus(QueryState* q, const std::wstring& text) {
     search::set_status_text(q->ui, text);
-}
-
-void saveSettingsToIni(QueryState* q) {
-    q->viewState.ini_path = search::default_ini_path();
-    search::save_settings(q->viewState.ini_path, q->viewState.settings);
 }
 
 COLORREF reportRowBg(const search::ReportRow& row) {
@@ -223,21 +218,21 @@ LRESULT CALLBACK splitterProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONUP:
             if (q && q->draggingSplitter) {
                 q->draggingSplitter = false; ReleaseCapture();
-                saveSettingsToIni(q);
+                search::save_module_int(L"Query", L"SplitterX", splitterX(q));
             }
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT CALLBACK searchChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* q = reinterpret_cast<QueryState*>(GetPropW(hwnd, PROP_QUERY));
+LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* q = reinterpret_cast<QueryState*>(GetPropW(hwnd, PROP_STATE));
 
     switch (msg) {
         case WM_CREATE: {
-            q = g_pendingQuery;
-            g_pendingQuery = nullptr;
-            SetPropW(hwnd, PROP_QUERY, reinterpret_cast<HANDLE>(q));
+            q = g_pending;
+            g_pending = nullptr;
+            SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(q));
 
             q->uiFont = createUiFont(fontSize(q));
             HFONT font = q->uiFont ? q->uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
@@ -251,10 +246,7 @@ LRESULT CALLBACK searchChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             reloadRoomOptions(q);
             reloadPatientTypeOptions(q);
             reloadMachineOptions(q);
-            {
-                auto ini = search::default_ini_path();
-                q->pendingSplitterX = GetPrivateProfileIntW(L"UI", L"SplitterX", 0, ini.c_str());
-            }
+            q->pendingSplitterX = search::load_module_int(L"Query", L"SplitterX", 0);
             int initX = 0;
             search::layout_main_window(hwnd, q->ui, initX);
             return 0;
@@ -304,7 +296,7 @@ LRESULT CALLBACK searchChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY: {
             delete q;
-            RemovePropW(hwnd, PROP_QUERY);
+            RemovePropW(hwnd, PROP_STATE);
             break;
         }
     }
@@ -313,23 +305,23 @@ LRESULT CALLBACK searchChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
-HWND create_search_child(HWND mdiClient, HINSTANCE inst, HFONT, const search::DbSettings& dbSettings, int initFontSize) {
+HWND create_query_module(const ModuleContext& ctx) {
     static bool classesRegistered = false;
     if (!classesRegistered) {
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = searchChildProc;
-        wc.hInstance = inst;
-        wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
+        wc.lpfnWndProc = wndProc;
+        wc.hInstance = ctx.instance;
+        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WINDOW_CLASS;
+        wc.lpszClassName = WND_CLASS;
         RegisterClassExW(&wc);
 
         WNDCLASSEXW swc{};
         swc.cbSize = sizeof(swc);
         swc.lpfnWndProc = splitterProc;
-        swc.hInstance = inst;
+        swc.hInstance = ctx.instance;
         swc.hCursor = LoadCursor(nullptr, IDC_SIZEWE);
         swc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DSHADOW + 1);
         swc.lpszClassName = SPLITTER_CLASS;
@@ -338,22 +330,20 @@ HWND create_search_child(HWND mdiClient, HINSTANCE inst, HFONT, const search::Db
     }
 
     auto* q = new QueryState;
-    q->instance = inst;
-    q->viewState.settings.db = dbSettings;
-    fontSize(q) = clampFontSize(initFontSize);
-    MDICREATESTRUCTW mcs{};
-    mcs.szClass = WINDOW_CLASS;
-    mcs.szTitle = L"检验结果查询";
-    mcs.hOwner = inst;
-    mcs.x = CW_USEDEFAULT;
-    mcs.y = CW_USEDEFAULT;
-    mcs.cx = CW_USEDEFAULT;
-    mcs.cy = CW_USEDEFAULT;
+    q->ctx = ctx;
+    q->viewState.settings.db = ctx.dbSettings;
+    fontSize(q) = clampFontSize(ctx.fontSize);
 
-    g_pendingQuery = q;
-    HWND child = reinterpret_cast<HWND>(SendMessageW(mdiClient, WM_MDICREATE, 0,
+    MDICREATESTRUCTW mcs{};
+    mcs.szClass = WND_CLASS;
+    mcs.szTitle = L"检验结果查询";
+    mcs.hOwner = ctx.instance;
+    mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
+
+    g_pending = q;
+    HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
     return child;
 }
 

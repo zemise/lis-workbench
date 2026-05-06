@@ -54,10 +54,12 @@
 | 文件 | 职责 |
 |------|------|
 | `main.cpp` | Win32 入口、消息循环、窗口过程、全局状态（独立查询工具） |
-| `main_frame.cpp` | 主程序入口、MDI 框架窗口、菜单、状态栏、工具栏 |
-| `main_app.h` | 主程序全局上下文 + ModuleDef 模块注册接口 |
+| `main_frame.cpp` | 主程序入口、g_modules[] 注册表、自动菜单/分发 |
+| `main_app.h` | 主程序全局上下文 |
+| `module_registry.h` | ModuleContext + ModuleDef 统一模块接口 |
 | `menu_toolbar.cpp/h` | 自绘菜单风格工具栏组件 |
-| `search_child.cpp/h` | 检验结果查询 MDI 子窗口，QueryState 每实例独立 + 分割器持久化 |
+| `query_module.cpp/h` | 检验结果查询 MDI 子窗口 |
+| `settings_module.cpp/h` | 系统设置 MDI 子窗口 |
 | `search_ui_context.h` | Win32 句柄集合、字体上下文 |
 
 ## 代码分层约定
@@ -84,6 +86,7 @@
 - ~~主程序阶段 1：MDI 窗口壳~~ ✅
 - ~~主程序阶段 2.3：系统设置接入~~ ✅
 - ~~主程序阶段 2.1：检验结果查询接入~~ ✅
+- ~~模块系统改造（5.1~5.7）~~ ✅
 - **当前**：主程序阶段 2.2 — 输血结果查询接入
 - **中期**：Qt 版本功能对齐 Win32 版
 - **长期**：Qt 版本稳定后，Win32 入口降级为可选回退构建

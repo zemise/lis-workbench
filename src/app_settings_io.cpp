@@ -62,6 +62,28 @@ bool save_settings(const std::filesystem::path& ini_path, const AppSettings& s) 
     return ok;
 }
 
+void save_module_int(const wchar_t* module, const wchar_t* key, int value) {
+    WritePrivateProfileStringW(module, key, std::to_wstring(value).c_str(),
+                               default_ini_path().c_str());
+}
+
+void save_module_str(const wchar_t* module, const wchar_t* key, const std::wstring& value) {
+    WritePrivateProfileStringW(module, key, value.c_str(),
+                               default_ini_path().c_str());
+}
+
+int load_module_int(const wchar_t* module, const wchar_t* key, int fallback) {
+    return static_cast<int>(GetPrivateProfileIntW(module, key, fallback,
+                                                  default_ini_path().c_str()));
+}
+
+std::wstring load_module_str(const wchar_t* module, const wchar_t* key, const wchar_t* fallback) {
+    wchar_t buf[1024] = {};
+    GetPrivateProfileStringW(module, key, fallback, buf, 1024,
+                             default_ini_path().c_str());
+    return std::wstring(buf);
+}
+
 }  // namespace search
 
 #endif

@@ -15,20 +15,10 @@
 #include "app_settings.h"
 #include "app_settings_io.h"
 #include "menu_toolbar.h"
-#include "search_child.h"
-#include "search_controller.h"
-#include "search_ui_layout.h"
+#include "module_registry.h"
+#include "query_module.h"
+#include "settings_module.h"
 namespace {
-
-constexpr int IDC_SET_SERVER   = 5101;
-constexpr int IDC_SET_USER     = 5103;
-constexpr int IDC_SET_PASSWORD = 5104;
-constexpr int IDC_SET_TEST     = 5106;
-constexpr int IDC_SET_SAVE     = 5107;
-constexpr int IDC_SET_CANCEL   = 5108;
-constexpr int IDC_SET_INITIAL_DATABASE = 5109;
-constexpr int IDC_SET_FONT_SIZE = 5110;
-constexpr const wchar_t* PROP_SETTINGS = L"SettingsSt";
 
 constexpr int IDM_QUERY        = 1001;
 constexpr int IDM_BLOOD        = 1002;
@@ -54,74 +44,9 @@ constexpr const wchar_t* MDI_CHILD_CLASS = L"MdiPlaceholderChild";
 
 app::Context g_ctx;
 
-struct SettingsState {
-    HFONT font = nullptr;
-    search::AppSettings app;
-};
-SettingsState* g_pendingSettings = nullptr;
-
-int clampFontSize(int v) { return v < 8 ? 8 : (v > 24 ? 24 : v); }
-
-std::wstring readEdit(HWND hwnd, int id) {
-    HWND ctrl = GetDlgItem(hwnd, id);
-    int len = GetWindowTextLengthW(ctrl);
-    std::wstring text(static_cast<size_t>(len), L'\0');
-    GetWindowTextW(ctrl, text.data(), len + 1);
-    return text;
-}
-
-search::DbSettings collectForm(HWND hwnd) {
-    search::DbSettings s;
-    s.server = readEdit(hwnd, IDC_SET_SERVER);
-    s.initial_database = readEdit(hwnd, IDC_SET_INITIAL_DATABASE);
-    s.user = readEdit(hwnd, IDC_SET_USER);
-    s.password = readEdit(hwnd, IDC_SET_PASSWORD);
-    return s;
-}
-
 LRESULT CALLBACK mdiChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
-            if (g_pendingSettings) {
-                auto* st = g_pendingSettings;
-                g_pendingSettings = nullptr;
-                SetPropW(hwnd, PROP_SETTINGS, reinterpret_cast<HANDLE>(st));
-
-                const float s = search::dpi_scale_factor(hwnd);
-                auto S = [s](int v) { return static_cast<int>(v * s); };
-
-                search::create_label(hwnd, L"服务器", S(20), S(22), S(86), S(22));
-                search::create_edit(hwnd, IDC_SET_SERVER, S(116), S(22), S(330), S(24));
-
-                search::create_label(hwnd, L"初始数据库", S(20), S(56), S(86), S(22));
-                search::create_edit(hwnd, IDC_SET_INITIAL_DATABASE, S(116), S(56), S(330), S(24));
-
-                search::create_label(hwnd, L"用户名", S(20), S(90), S(86), S(22));
-                search::create_edit(hwnd, IDC_SET_USER, S(116), S(90), S(330), S(24));
-
-                search::create_label(hwnd, L"密码", S(20), S(124), S(86), S(22));
-                search::create_password_edit(hwnd, IDC_SET_PASSWORD, S(116), S(124), S(330), S(24));
-
-                search::create_label(hwnd, L"字号", S(20), S(158), S(86), S(22));
-                search::create_edit(hwnd, IDC_SET_FONT_SIZE, S(116), S(158), S(80), S(24));
-
-                search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(200), S(92), S(30));
-                search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(200), S(84), S(30));
-                search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(200), S(84), S(30));
-
-                auto& app = st->app;
-                SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
-                SetWindowTextW(GetDlgItem(hwnd, IDC_SET_INITIAL_DATABASE), app.db.initial_database.c_str());
-                SetWindowTextW(GetDlgItem(hwnd, IDC_SET_USER), app.db.user.c_str());
-                SetWindowTextW(GetDlgItem(hwnd, IDC_SET_PASSWORD), app.db.password.c_str());
-                SetWindowTextW(GetDlgItem(hwnd, IDC_SET_FONT_SIZE), std::to_wstring(app.ui.font_size).c_str());
-
-                EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
-                    SendMessageW(child, WM_SETFONT, param, TRUE);
-                    return TRUE;
-                }, reinterpret_cast<LPARAM>(st->font));
-                return 0;
-            }
             wchar_t title[256];
             GetWindowTextW(hwnd, title, 256);
             CreateWindowExW(0, L"STATIC", title,
@@ -129,53 +54,14 @@ LRESULT CALLBACK mdiChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, nullptr);
             return 0;
         }
-        case WM_SIZE:
-            // Settings form uses fixed layout — skip fill, and do NOT fall
-            // through to DefMDIChildProcW (causes menu bar artifacts on maximize).
-            if (GetPropW(hwnd, PROP_SETTINGS)) return 0;
-            {
-                HWND label = GetWindow(hwnd, GW_CHILD);
-                if (label) {
-                    RECT rc;
-                    GetClientRect(hwnd, &rc);
-                    MoveWindow(label, 0, 0, rc.right, rc.bottom, TRUE);
-                }
+        case WM_SIZE: {
+            HWND label = GetWindow(hwnd, GW_CHILD);
+            if (label) {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                MoveWindow(label, 0, 0, rc.right, rc.bottom, TRUE);
             }
             return 0;
-        case WM_COMMAND: {
-            auto* st = reinterpret_cast<SettingsState*>(GetPropW(hwnd, PROP_SETTINGS));
-            if (!st) break;
-            int id = LOWORD(wp);
-            if (id == IDC_SET_CANCEL) { DestroyWindow(hwnd); return 0; }
-            if (id == IDC_SET_TEST) {
-                auto db = collectForm(hwnd);
-                if (search::build_connection_string_w(db).empty()) {
-                    MessageBoxW(hwnd, L"请先填写服务器、初始数据库和用户名。", L"测试连接", MB_ICONWARNING);
-                } else {
-                    std::string error;
-                    if (search::test_database_connection(db, error))
-                        MessageBoxW(hwnd, L"数据库连接成功。", L"测试连接", MB_ICONINFORMATION);
-                    else
-                        MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"数据库连接失败", MB_ICONERROR);
-                }
-                return 0;
-            }
-            if (id == IDC_SET_SAVE) {
-                st->app.db = collectForm(hwnd);
-                st->app.ui.font_size = clampFontSize(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
-                search::save_settings(search::default_ini_path(), st->app);
-                g_ctx.dbSettings = st->app.db;
-                g_ctx.fontSize = st->app.ui.font_size;
-                MessageBoxW(hwnd, L"数据库设置已保存。", L"保存", MB_ICONINFORMATION);
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            break;
-        }
-        case WM_DESTROY: {
-            auto* st = reinterpret_cast<SettingsState*>(RemovePropW(hwnd, PROP_SETTINGS));
-            delete st;
-            break;
         }
     }
     return DefMDIChildProcW(hwnd, msg, wp, lp);
@@ -196,29 +82,35 @@ HWND createMdiChild(const wchar_t* title) {
     return child;
 }
 
-void openSettingsChild() {
-    // Single-instance: if already open, just activate it
-    HWND existing = GetWindow(g_ctx.mdiClient, GW_CHILD);
-    while (existing) {
-        wchar_t title[256];
-        if (GetWindowTextW(existing, title, 256) && wcscmp(title, L"系统设置") == 0) {
-            SendMessageW(g_ctx.mdiClient, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(existing), 0);
-            return;
-        }
-        existing = GetWindow(existing, GW_HWNDNEXT);
-    }
-    auto* st = new SettingsState;
-    st->font = g_ctx.uiFont;
-    st->app = search::load_settings(search::default_ini_path());
-    g_pendingSettings = st;
-    createMdiChild(L"系统设置");
-    g_pendingSettings = nullptr;
-}
-
 void closeActiveMdiChild() {
     HWND active = reinterpret_cast<HWND>(SendMessageW(g_ctx.mdiClient, WM_MDIGETACTIVE, 0, 0));
     if (active) SendMessageW(g_ctx.mdiClient, WM_MDIDESTROY, reinterpret_cast<WPARAM>(active), 0);
 }
+
+// ── placeholder factories (to be replaced with real modules) ────
+
+HWND create_blood_placeholder(const ModuleContext&) { return createMdiChild(L"输血结果查询"); }
+HWND create_tool1_placeholder(const ModuleContext&) { return createMdiChild(L"工具1"); }
+HWND create_tool2_placeholder(const ModuleContext&) { return createMdiChild(L"工具2"); }
+HWND create_tool3_placeholder(const ModuleContext&) { return createMdiChild(L"工具3"); }
+HWND create_tool4_placeholder(const ModuleContext&) { return createMdiChild(L"工具4"); }
+HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"工具5"); }
+
+// ── module registry ─────────────────────────────────────────────
+
+const ModuleDef g_modules[] = {
+    { L"Query",    L"检验管理", L"检验结果查询(&Q)...", IDM_QUERY,    create_query_module    },
+    { L"Blood",    L"检验管理", L"输血结果查询(&B)...", IDM_BLOOD,    create_blood_placeholder },
+    { L"Tool1",    L"工具",     L"工具1(&1)",           IDM_TOOL1,   create_tool1_placeholder },
+    { L"Tool2",    L"工具",     L"工具2(&2)",           IDM_TOOL2,   create_tool2_placeholder },
+    { L"Tool3",    L"工具",     L"工具3(&3)",           IDM_TOOL3,   create_tool3_placeholder },
+    { L"Tool4",    L"工具",     L"工具4(&4)",           IDM_TOOL4,   create_tool4_placeholder },
+    { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
+    { L"Settings", L"系统",     L"系统设置(&S)...",     IDM_SETTINGS, create_settings_module  },
+};
+constexpr int g_moduleCount = sizeof(g_modules) / sizeof(g_modules[0]);
+
+// ── helpers ─────────────────────────────────────────────────────
 
 void updateStatusBarParts(HWND sb, int clientWidth) {
     int ipW  = (std::max)(220, clientWidth * 22 / 100);
@@ -228,22 +120,36 @@ void updateStatusBarParts(HWND sb, int clientWidth) {
     SendMessageW(sb, WM_SIZE, 0, 0);
 }
 
+ModuleContext makeCtx() {
+    return { g_ctx.mdiClient, g_ctx.instance, g_ctx.uiFont,
+             g_ctx.dbSettings, g_ctx.fontSize, &g_ctx };
+}
+
+// ── menu setup ──────────────────────────────────────────────────
+
 HMENU setupMenus(HWND hwnd) {
     HMENU bar = CreateMenu();
+    HMENU subMenus[8]{};
+    const wchar_t* subNames[8]{};
+    int subCount = 0;
 
-    HMENU labMenu = CreatePopupMenu();
-    AppendMenuW(labMenu, MF_STRING, IDM_QUERY, L"检验结果查询(&Q)...");
-    AppendMenuW(labMenu, MF_STRING, IDM_BLOOD, L"输血结果查询(&B)...");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)labMenu, L"检验管理(&L)");
+    // Auto-generate menus from g_modules[], grouped by menuParent
+    for (int i = 0; i < g_moduleCount; i++) {
+        const auto& m = g_modules[i];
+        int idx = -1;
+        for (int j = 0; j < subCount; j++) {
+            if (wcscmp(subNames[j], m.menuParent) == 0) { idx = j; break; }
+        }
+        if (idx < 0) {
+            subMenus[subCount] = CreatePopupMenu();
+            subNames[subCount] = m.menuParent;
+            AppendMenuW(bar, MF_POPUP, (UINT_PTR)subMenus[subCount], m.menuParent);
+            idx = subCount++;
+        }
+        AppendMenuW(subMenus[idx], MF_STRING, m.menuId, m.menuLabel);
+    }
 
-    HMENU toolMenu = CreatePopupMenu();
-    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL1, L"工具1(&1)");
-    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL2, L"工具2(&2)");
-    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL3, L"工具3(&3)");
-    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL4, L"工具4(&4)");
-    AppendMenuW(toolMenu, MF_STRING, IDM_TOOL5, L"工具5(&5)");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)toolMenu, L"工具(&T)");
-
+    // Fixed: window menu
     HMENU windowMenu = CreatePopupMenu();
     AppendMenuW(windowMenu, MF_STRING, IDM_CASCADE, L"层叠(&C)");
     AppendMenuW(windowMenu, MF_STRING, IDM_TILE_H, L"水平平铺(&H)");
@@ -254,12 +160,15 @@ HMENU setupMenus(HWND hwnd) {
     AppendMenuW(windowMenu, MF_STRING, IDM_CLOSE_ACTIVE, L"关闭当前(&L)");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)windowMenu, L"窗口(&W)");
 
-    HMENU sysMenu = CreatePopupMenu();
-    AppendMenuW(sysMenu, MF_STRING, IDM_SETTINGS, L"系统设置(&S)...");
-    AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(sysMenu, MF_STRING, IDM_ABOUT, L"关于(&A)...");
-    AppendMenuW(sysMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)sysMenu, L"系统(&Y)");
+    // Fixed items appended to last menu (L"系统")
+    for (int j = 0; j < subCount; j++) {
+        if (wcscmp(subNames[j], L"系统") == 0) {
+            AppendMenuW(subMenus[j], MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(subMenus[j], MF_STRING, IDM_ABOUT, L"关于(&A)...");
+            AppendMenuW(subMenus[j], MF_STRING, IDM_EXIT, L"退出(&X)");
+            break;
+        }
+    }
 
     SetMenu(hwnd, bar);
     return windowMenu;
@@ -357,30 +266,30 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_COMMAND: {
-            switch (LOWORD(wp)) {
+            int id = LOWORD(wp);
+
+            // Module registry dispatch
+            for (int i = 0; i < g_moduleCount; i++) {
+                if (g_modules[i].menuId == id) {
+                    g_modules[i].create(makeCtx());
+                    return 0;
+                }
+            }
+
+            // Fixed items
+            switch (id) {
                 case IDM_ABOUT:
                     MessageBoxW(hwnd,
-                        L"检验结果查询平台\n版本 v2026.05.06\n\n作者：Zhao Wang",
+                        L"检验结果查询平台\n版本 v2026.05.07\n\n作者：Zhao Wang",
                         L"关于", MB_ICONINFORMATION);
-                    break;
-                case ID_BTNCLOSE:
-                    closeActiveMdiChild();
-                    break;
-                case IDM_QUERY:    create_search_child(g_ctx.mdiClient, g_ctx.instance, g_ctx.uiFont, g_ctx.dbSettings, g_ctx.fontSize); break;
-                case IDM_BLOOD:    createMdiChild(L"输血结果查询"); break;
-                case IDM_SETTINGS: openSettingsChild();              break;
-                case IDM_EXIT:     DestroyWindow(hwnd);             break;
-                case IDM_TOOL1: case IDM_TOOL2: case IDM_TOOL3:
-                case IDM_TOOL4: case IDM_TOOL5: {
-                    static const wchar_t* names[] = {L"工具1", L"工具2", L"工具3", L"工具4", L"工具5"};
-                    createMdiChild(names[LOWORD(wp) - IDM_TOOL1]);
-                    break;
-                }
-                case IDM_CASCADE:      SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); break;
-                case IDM_TILE_H:       SendMessageW(g_ctx.mdiClient, WM_MDITILE, MDITILE_HORIZONTAL, 0); break;
-                case IDM_TILE_V:       SendMessageW(g_ctx.mdiClient, WM_MDITILE, MDITILE_VERTICAL, 0); break;
-                case IDM_ARRANGE:      SendMessageW(g_ctx.mdiClient, WM_MDIICONARRANGE, 0, 0); break;
-                case IDM_CLOSE_ACTIVE: closeActiveMdiChild(); break;
+                    return 0;
+                case ID_BTNCLOSE:        closeActiveMdiChild(); return 0;
+                case IDM_EXIT:           DestroyWindow(hwnd); return 0;
+                case IDM_CASCADE:        SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); return 0;
+                case IDM_TILE_H:         SendMessageW(g_ctx.mdiClient, WM_MDITILE, MDITILE_HORIZONTAL, 0); return 0;
+                case IDM_TILE_V:         SendMessageW(g_ctx.mdiClient, WM_MDITILE, MDITILE_VERTICAL, 0); return 0;
+                case IDM_ARRANGE:        SendMessageW(g_ctx.mdiClient, WM_MDIICONARRANGE, 0, 0); return 0;
+                case IDM_CLOSE_ACTIVE:   closeActiveMdiChild(); return 0;
             }
             return 0;
         }

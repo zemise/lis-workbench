@@ -1,5 +1,11 @@
 # Changelog
 
+## v2026.05.07
+
+- **模块系统**：`ModuleContext` + `ModuleDef` 统一接口；`g_modules[]` 注册表自动菜单+自动分发；`save/load_module_int` 分区配置；设置表单提取为 `settings_module.cpp`；占位模块预留扩展点。新增模块只需写一个 `.cpp` + 注册一行。
+- **检验结果查询接入**：`query_module.cpp` — 每实例独立 `QueryState`，复用全部查询/趋势逻辑，分割器位置 INI 持久化。
+- 版本号 v2026.05.07。
+
 ## v2026.05.06
 
 - **主程序壳**：新建 `main_app.exe`（Win32），全屏平台窗口。
@@ -12,9 +18,6 @@
 - `DefFrameProcW` 替代 `DefWindowProcW`，`TranslateMDISysAccel` 处理 MDI 快捷键。
 - 工具栏"关闭"按钮接入 MDI，关闭活动子窗口。
 - 所有菜单项创建 MDI 占位子窗口（阶段 2 将替换为真实模块）。
-- **系统设置**：`IDM_SETTINGS` 打开配置 MDI 子窗口（服务器/数据库/用户名/密码/字号），测试连接 + INI 持久化。单实例模式，重复点击激活已有窗口。
-- **检验结果查询接入**：`search_child.cpp` — 独立 `SearchQueryChild` 类，每实例一个 `QueryState`，复用全部查询/趋势逻辑，分割器位置 INI 持久化。
-- 版本号 v2026.05.06。
 
 ## v2026.05.05
 
