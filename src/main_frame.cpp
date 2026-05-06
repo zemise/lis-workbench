@@ -54,7 +54,6 @@ void setupMenus(HWND hwnd) {
     HMENU sysMenu = CreatePopupMenu();
     AppendMenuW(sysMenu, MF_STRING, IDM_SETTINGS, L"参数设置(&S)...");
     AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(sysMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(sysMenu, MF_STRING, IDM_ABOUT, L"关于(&A)...");
     AppendMenuW(sysMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
     HMENU toolMenu = CreatePopupMenu();
@@ -119,19 +118,27 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar — matching menu bar: height = menu font + padding
-            LOGFONTW lf{};
-            GetObjectW(g_ctx.menuFont, sizeof(lf), &lf);
-            int tbH = abs(lf.lfHeight) * 2;
-            HWND tb = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE,
-                0, 0, 0, tbH, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
+            // Toolbar — flat buttons blend with menu bar
+            HWND tb = CreateWindowExW(0, TOOLBARCLASSNAMEW, L"",
+                WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_LIST | TBSTYLE_TOOLTIPS | CCS_NORESIZE | CCS_NODIVIDER,
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
                 g_ctx.instance, nullptr);
-            // Close button on right side
-            HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
-                g_ctx.instance, nullptr);
+            SendMessageW(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+            SendMessageW(tb, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
+            SendMessageW(tb, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+            TBBUTTON tbb[2] = {};
+            tbb[0].fsStyle = BTNS_SEP;
+            tbb[1].iBitmap = I_IMAGENONE;
+            tbb[1].fsState = TBSTATE_ENABLED;
+            tbb[1].fsStyle = BTNS_BUTTON | BTNS_SHOWTEXT | BTNS_AUTOSIZE;
+            tbb[1].idCommand = ID_BTNCLOSE;
+            tbb[1].iString = (INT_PTR)L"关闭";
+            SendMessageW(tb, TB_ADDBUTTONS, 2, (LPARAM)tbb);
+            SendMessageW(tb, TB_AUTOSIZE, 0, 0);
+            // Right-align the close button
+            RECT tbRc;
+            GetClientRect(tb, &tbRc);
+            SendMessageW(tb, TB_SETBUTTONSIZE, 0, MAKELPARAM(0, tbRc.bottom - 4));
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -155,24 +162,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_SIZE: {
-            // Toolbar — full width, close button sized to font
+            // Toolbar — full width, auto-sized buttons
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             if (tb) {
-                int cw = LOWORD(lp);
-                RECT rc; GetWindowRect(tb, &rc);
-                int tbH = rc.bottom - rc.top;
-                SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
-                HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                int btnH = tbH * 7 / 10;
-                int btnW = cw * 5 / 100;
-                if (btnW < 50) btnW = 50;
-                if (btnW > 80) btnW = 80;
-                // Close button — far right
-                HWND btnClose = GetDlgItem(hwnd, ID_BTNCLOSE);
-                if (btnClose) {
-                    SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
-                    SetWindowPos(btnClose, nullptr, cw - btnW - 10, (tbH - btnH) / 2, btnW, btnH, SWP_NOZORDER);
-                }
+                SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 0, SWP_NOZORDER | SWP_NOSIZE);
+                SendMessageW(tb, TB_AUTOSIZE, 0, 0);
+            }
             }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
