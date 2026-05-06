@@ -2,4 +2,5 @@
 #include "resource.h"
 
 IDI_APP ICON "app.ico"
+IDI_CLOSE ICON "close.ico"
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
