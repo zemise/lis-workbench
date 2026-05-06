@@ -10,6 +10,7 @@ struct MTButton {
     const wchar_t* text = nullptr;
     int id = 0;
     int flags = 0;
+    HICON icon = nullptr;
     RECT rect{};
 };
 
@@ -153,7 +154,9 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
 
                 SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
-                RECT br = {x, 0, x + sz.cx + 20, rc.bottom};
+                int iconW = b.icon ? 18 : 0;
+                int iconPad = b.icon ? 2 : 0;
+                RECT br = {x, 0, x + sz.cx + 20 + iconW + iconPad, rc.bottom};
                 bool isHover = (i == s->hover);
                 bool isFocus = (i == s->focus);
                 bool isDisabled = (b.flags & MTBS_DISABLED);
@@ -170,7 +173,15 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     : GetSysColor(COLOR_MENUTEXT);
                 SetTextColor(dc, textColor);
 
-                DrawTextW(dc, b.text, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                // Icon
+                if (b.icon) {
+                    int iy = (rc.bottom - 16) / 2;
+                    DrawIconEx(dc, x + 4, iy, b.icon, 16, 16, 0, nullptr, DI_NORMAL);
+                }
+
+                RECT textRect = br;
+                textRect.left += iconW + iconPad;
+                DrawTextW(dc, b.text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
                 // Focus rectangle
                 if (isFocus && !isDisabled) {
@@ -216,10 +227,14 @@ HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId) {
 }
 
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, bool enabled) {
+    mtAddButton(hwnd, text, cmdId, nullptr, enabled);
+}
+
+void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, HICON icon, bool enabled) {
     auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (s && s->count < MT_MAXBTN) {
         int flags = enabled ? 0 : MTBS_DISABLED;
-        s->btns[s->count++] = {text, cmdId, flags};
+        s->btns[s->count++] = {text, cmdId, flags, icon};
         InvalidateRect(hwnd, nullptr, TRUE);
     }
 }
