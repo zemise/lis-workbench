@@ -48,23 +48,23 @@
 | 1.2 菜单栏 | 检验管理 / 工具 / 系统，菜单项占位 | ✅ |
 | 1.3 状态栏 | 4 栏百分比宽度 + 系统字体 + IP + 时钟 | ✅ |
 | 1.4 图标+标题 | `resource/app.ico`，标题 "检验结果查询平台" | ✅ |
-| 1.5 MDI 客户区 | `main_mdi.cpp` — MDI 子窗口容器 | 待开发 |
+| 1.5 MDI 客户区 | `main_frame.cpp` — MDI 子窗口容器 + 窗口菜单 + 占位子窗口 | ✅ |
 | 1.6 构建脚本 | `scripts/build_main.ps1` | ✅ |
 
 ### 阶段 2：模块接入
 
-| 任务 | 说明 |
-|------|------|
-| 2.1 检验结果查询接入 | 将现有 `main.cpp` 的窗口创建改为 MDI 子窗口 |
-| 2.2 输血结果查询占位 | 空子窗口，显示"输血结果查询 — 待开发" |
-| 2.3 参数设置接入 | 复用现有 `search_settings_dialog` 或创建系统配置页 |
+| 任务 | 说明 | 状态 |
+|:-----|------|------|
+| 2.1 检验结果查询接入 | `search_child.cpp` — SearchQueryChild 类 + QueryState 每实例独立 + 分割器持久化 | ✅ |
+| 2.2 输血结果查询占位 | 空子窗口，显示"输血结果查询 — 待开发" | 待开发 |
+| 2.3 系统设置接入 | `main_frame.cpp` — 复用 `MdiPlaceholderChild` 类 + 设置表单控件 + 单实例模式 | ✅ |
 
 ### 阶段 3：统一配置
 
 | 任务 | 说明 |
 |------|------|
-| 3.1 统一 INI | 所有模块共享同一个 `result_search.ini` 配置 |
-| 3.2 统一数据库连接 | 主窗口持有 `DbSettings`，各模块共用 |
+| 3.1 统一 INI | `search::default_ini_path()` 全模块共用 + 启动加载 + 保存回写 `g_ctx` | ✅ |
+| 3.2 统一数据库连接 | `g_ctx.dbSettings` 启动加载 INI，`create_search_child` 传入，设置保存回写 | ✅ |
 | 3.3 关于对话框 | 版本号、作者信息 |
 
 ### 阶段 4：Qt 主程序（后期）
@@ -107,17 +107,15 @@
 - 数据库连接由主窗口持有，通过 `DbSettings` 结构体传递给子模块
 - 子模块不依赖主窗口的具体实现（Win32 或 Qt），只接收数据结构和回调
 
-## 文件结构（计划）
+## 文件结构（现状）
 
 ```
 src/
-  main_frame.cpp          ← 新建：主窗口入口、消息循环
-  main_menu.cpp           ← 新建：菜单创建与命令分发
-  main_mdi.cpp            ← 新建：MDI 客户区管理
-  main_statusbar.cpp      ← 新建：状态栏
-  main_app.h              ← 新建：主程序上下文（共享状态）
+  main_frame.cpp          ← 主窗口入口、消息循环、菜单、MDI、状态栏、工具栏
+  main_app.h              ← 主程序上下文 + ModuleDef（共享状态）
+  menu_toolbar.cpp/h      ← 自绘菜单风格工具栏组件
 
-  main.cpp                ← 修改：提取窗口创建逻辑，改为子窗口模式
+  main.cpp                ← 待改造：提取窗口创建逻辑，改为 MDI 子窗口
   search_ui_layout.cpp    ← 现有：查询界面控件布局（不变）
   search_core.cpp         ← 现有：数据库查询（不变）
   ...                     ← 其余文件不变
@@ -129,6 +127,7 @@ src/
 |------|------|
 | Win32 检验结果查询 | 完整，独立运行 |
 | Qt 检验结果查询 | 完整，独立运行 |
+| Win32 主程序平台 | 阶段 1 完成，MDI 窗口壳就绪 |
 | 核心数据库层 | `search_core` 静态库，双版共用 |
 | CI 构建 | Win32 + Qt 双绿 |
 
@@ -175,18 +174,15 @@ ModuleDef g_queryModule = {
 ```
 CMake 目标：
   result_search.exe       ← 独立查询工具（现有，不受影响）
-  main_app.exe            ← 主程序（新）
-    ├── main_frame.cpp    ← 主窗口
-    ├── main_menu.cpp     ← 菜单系统
-    ├── main_mdi.cpp      ← MDI 管理
-    ├── main.cpp          ← 查询模块（从现有改造）
-    └── blood_query.cpp   ← 输血模块（新）
+  main_app.exe            ← 主程序
+    ├── main_frame.cpp    ← 主窗口 + 菜单 + MDI + 状态栏 + 工具栏
+    └── menu_toolbar.cpp  ← 自绘工具栏组件
 ```
 
 - `result_search.exe` 的 CMake 目标和源码不变
 - 主程序作为独立的 `add_executable(main_app WIN32 ...)`
 - 两个目标链接同一个 `search_core` 静态库
-- 新增模块只改主程序的 CMake 文件，不影响查询工具
+- 新增模块直接添加到 `main_app` 的 CMake 源文件列表
 
 ### 共享状态
 
@@ -205,6 +201,21 @@ struct AppContext {
 - 主窗口创建时初始化 `AppContext`，通过 `GWLP_USERDATA` 或参数传递给子模块
 - 子模块不直接访问全局变量，只通过上下文结构体获取所需资源
 - 避免各模块各自读 INI、各自连数据库
+
+### MDI 子窗口消息处理规则
+
+在 `mdiChildProc` 中处理消息时需遵循以下规则，否则会导致菜单栏残留、窗口控件异常等 bug：
+
+| 消息 | 规则 | 原因 |
+|------|------|------|
+| `WM_NCCREATE` | **不拦截**，交 `DefMDIChildProcW` 全权处理 | MDI 框架内部初始化子窗口跟踪数据（窗口菜单、激活状态） |
+| `WM_NCDESTROY` | **不拦截**，交 `DefMDIChildProcW` 全权处理 | MDI 框架清理最大化控件（菜单栏图标、还原/关闭按钮） |
+| `WM_SIZE` | **必须 `return 0`**，不可落入 `DefMDIChildProcW` | `DefMDIChildProcW` 的 WM_SIZE 处理与 MDI 客户端状态交互会导致菜单栏出现残留 |
+| `WM_DESTROY` | 可拦截做用户态清理，但不可跳过 `DefMDIChildProcW` | 框架需感知子窗口销毁以移除窗口菜单条目 |
+| `GWLP_USERDATA` | **禁止使用** | `DefMDIChildProcW` 内部使用，覆盖会导致 MDI 状态损坏 |
+| 状态存储 | 用 `SetProp`/`GetProp`/`RemoveProp` | 窗口属性独立于 MDI 内部结构，无冲突 |
+
+核心原则：**所有 MDI 生命周期消息（NCCREATE/NCDESTROY）必须原封不动传给 `DefMDIChildProcW`；WM_SIZE 必须直接 return 0 不传给框架。**
 
 ### 向后兼容
 

@@ -8,6 +8,12 @@
 - 状态栏：系统字体 + 百分比宽度，本机 IP + 实时时钟。
 - `result_search.exe` 构建隔离；`scripts/build_main.ps1` 一键构建。
 - `MAIN_APP_PLAN.md`：开发计划含模块接口、Qt 迁移预留。
+- **MDI 客户区**：完整 MDI 子窗口容器，窗口菜单（层叠/平铺/排列/关闭）+ 子窗口默认最大化 + Ctrl+F6/F4 键盘导航。
+- `DefFrameProcW` 替代 `DefWindowProcW`，`TranslateMDISysAccel` 处理 MDI 快捷键。
+- 工具栏"关闭"按钮接入 MDI，关闭活动子窗口。
+- 所有菜单项创建 MDI 占位子窗口（阶段 2 将替换为真实模块）。
+- **系统设置**：`IDM_SETTINGS` 打开配置 MDI 子窗口（服务器/数据库/用户名/密码/字号），测试连接 + INI 持久化。单实例模式，重复点击激活已有窗口。
+- **检验结果查询接入**：`search_child.cpp` — 独立 `SearchQueryChild` 类，每实例一个 `QueryState`，复用全部查询/趋势逻辑，分割器位置 INI 持久化。
 - 版本号 v2026.05.06。
 
 ## v2026.05.05

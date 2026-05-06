@@ -63,11 +63,20 @@ endif()
 add_executable(main_app WIN32
     src/main_frame.cpp
     src/menu_toolbar.cpp
+    src/app_settings_io.cpp
+    src/search_child.cpp
+    src/search_input_view_model.cpp
+    src/search_ui_events.cpp
+    src/search_ui_presenter.cpp
+    src/search_settings_dialog.cpp
+    src/search_ui_layout.cpp
+    src/trend_window.cpp
+    src/trend_chart_renderer.cpp
     resource/app.rc
 )
 target_include_directories(main_app PRIVATE src resource)
-target_compile_definitions(main_app PRIVATE UNICODE _UNICODE)
-target_link_libraries(main_app PRIVATE search_core comctl32)
+target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32)
 
 # MSVC auto-generates manifest; conflict with app.rc. Disable.
 if(MSVC)
