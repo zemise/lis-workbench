@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <windows.h>
+#include <windowsx.h>
 #include <iphlpapi.h>
 #include <commctrl.h>
 
