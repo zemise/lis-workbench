@@ -154,8 +154,8 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
 
                 SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
-                int iconSz = b.icon ? (rc.bottom - 6) : 0;   // fill bar height
-                int iconW = iconSz + 6;   // icon width + padding
+                int iconSz = b.icon ? sz.cy : 0;   // match text height
+                int iconW = iconSz + 6;             // icon + padding
                 RECT br = {x, 0, x + sz.cx + 24 + iconW, rc.bottom};
                 bool isHover = (i == s->hover);
                 bool isFocus = (i == s->focus);
