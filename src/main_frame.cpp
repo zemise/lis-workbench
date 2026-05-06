@@ -168,7 +168,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 0, SWP_NOZORDER | SWP_NOSIZE);
                 SendMessageW(tb, TB_AUTOSIZE, 0, 0);
             }
-            }
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
                 int cw = LOWORD(lp);
