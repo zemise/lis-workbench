@@ -62,6 +62,7 @@ endif()
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
     src/main_frame.cpp
+    src/menu_toolbar.cpp
     resource/app.rc
 )
 target_include_directories(main_app PRIVATE src resource)
