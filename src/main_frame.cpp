@@ -31,6 +31,117 @@ constexpr int ID_TIMER     = 5001;
 
 app::Context g_ctx;
 
+// ── MenuToolbar — flat buttons matching menu bar style ──────
+
+constexpr int MT_MAXBTN  = 16;
+
+struct MTButton { const wchar_t* text; int id; RECT rect; };
+struct MTState {
+    HFONT font = nullptr;
+    MTButton btns[MT_MAXBTN];
+    int count = 0;
+    int hover = -1;
+};
+
+LRESULT CALLBACK menuToolbarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_NCCREATE:
+            s = new MTState;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
+            return TRUE;
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            s->font = reinterpret_cast<HFONT>(cs->lpCreateParams);
+            return 0;
+        }
+        case WM_NCDESTROY:
+            delete s;
+            return 0;
+        case WM_MOUSEMOVE: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            int hit = -1;
+            for (int i = 0; i < s->count; ++i) {
+                if (PtInRect(&s->btns[i].rect, {x, y})) { hit = i; break; }
+            }
+            if (hit != s->hover) {
+                s->hover = hit;
+                if (hit != -1) SetCapture(hwnd); else ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                if (hit != -1) SetTimer(hwnd, 1, 50, nullptr);  // track leave
+                else KillTimer(hwnd, 1);
+            }
+            return 0;
+        }
+        case WM_TIMER: {
+            POINT pt; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+            RECT rc; GetClientRect(hwnd, &rc);
+            if (!PtInRect(&rc, pt)) { s->hover = -1; ReleaseCapture(); KillTimer(hwnd, 1); InvalidateRect(hwnd, nullptr, FALSE); }
+            return 0;
+        }
+        case WM_LBUTTONUP:
+            if (s->hover >= 0 && s->hover < s->count)
+                PostMessageW(GetParent(hwnd), WM_COMMAND, s->btns[s->hover].id, 0);
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps; HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc; GetClientRect(hwnd, &rc);
+            // Background: COLOR_MENU
+            FillRect(dc, &rc, GetSysColorBrush(COLOR_MENU));
+            // Draw each button
+            HFONT oldFont = s->font ? (HFONT)SelectObject(dc, s->font) : nullptr;
+            SetBkMode(dc, TRANSPARENT);
+            int x = 4;
+            for (int i = 0; i < s->count; ++i) {
+                const auto& b = s->btns[i];
+                SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
+                RECT br = {x, 0, x + sz.cx + 16, rc.bottom};
+                if (i == s->hover) {
+                    FillRect(dc, &br, GetSysColorBrush(COLOR_MENUHILIGHT));
+                    SetTextColor(dc, GetSysColor(COLOR_MENUTEXT));
+                } else {
+                    SetTextColor(dc, GetSysColor(COLOR_MENUTEXT));
+                }
+                DrawTextW(dc, b.text, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                s->btns[i].rect = br;
+                x = br.right + 2;
+            }
+            if (oldFont) SelectObject(dc, oldFont);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_SIZE:
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+HWND createMenuToolbar(HWND parent, HINSTANCE inst, HFONT font) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = menuToolbarProc;
+        wc.hInstance = inst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_MENU + 1);
+        wc.lpszClassName = L"MenuToolbar";
+        RegisterClassW(&wc);
+        registered = true;
+    }
+    return CreateWindowExW(0, L"MenuToolbar", L"",
+        WS_CHILD | WS_VISIBLE, 0, 0, 0, 28,
+        parent, nullptr, inst, font);
+}
+
+void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (s && s->count < MT_MAXBTN) {
+        s->btns[s->count++] = {text, cmdId};
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+}
+
 void onQuery(HWND owner) {
     MessageBoxW(owner, L"检验结果查询 — 待接入", L"检验结果查询", MB_ICONINFORMATION);
 }
@@ -118,16 +229,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             setupMenus(hwnd);
 
-            // Toolbar panel — menu color, close button on right
-            HWND tb = CreateWindowExW(0, L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE,
-                0, 0, 200, 28, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_TOOLBAR)),
-                g_ctx.instance, nullptr);
-            HWND btnClose = CreateWindowExW(0, L"BUTTON", L"关闭",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-                140, 2, 52, 24, tb, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_BTNCLOSE)),
-                g_ctx.instance, nullptr);
-            SendMessageW(btnClose, WM_SETFONT, (WPARAM)g_ctx.menuFont, TRUE);
+            // Custom menu-style toolbar
+            HWND tb = createMenuToolbar(hwnd, g_ctx.instance, g_ctx.menuFont);
+            mtAddButton(tb, L"关闭", ID_BTNCLOSE);
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -138,29 +242,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == ID_TIMER) updateTimePane(hwnd);
             return 0;
         }
-        case WM_CTLCOLORBTN:
-            if ((HWND)lp == GetDlgItem(hwnd, ID_BTNCLOSE)) {
-                return (LRESULT)GetSysColorBrush(COLOR_MENU);
-            }
-            break;
-        case WM_CTLCOLORSTATIC:
-            if ((HWND)lp == GetDlgItem(hwnd, ID_TOOLBAR)) {
-                HBRUSH br = GetSysColorBrush(COLOR_MENU);
-                SetBkColor((HDC)wp, GetSysColor(COLOR_MENU));
-                return (LRESULT)br;
-            }
-            break;
         case WM_SIZE: {
-            // Toolbar — full width, close button on right
+            // Toolbar — full width
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
-            if (tb) {
-                int cw = LOWORD(lp);
-                RECT rc; GetWindowRect(tb, &rc);
-                int tbH = rc.bottom - rc.top;
-                SetWindowPos(tb, nullptr, 0, 0, cw, tbH, SWP_NOZORDER);
-                HWND btn = GetDlgItem(hwnd, ID_BTNCLOSE);
-                if (btn) SetWindowPos(btn, nullptr, cw - 64, 2, 56, tbH - 4, SWP_NOZORDER);
-            }
+            if (tb) SetWindowPos(tb, nullptr, 0, 0, LOWORD(lp), 0, SWP_NOZORDER | SWP_NOSIZE);
             HWND sb = GetDlgItem(hwnd, ID_STATUS);
             if (sb) {
                 int cw = LOWORD(lp);
