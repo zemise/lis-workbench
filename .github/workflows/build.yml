@@ -114,3 +114,41 @@ jobs:
         with:
           name: ResultSearch-Qt-Setup-${{ steps.version.outputs.value }}
           path: out/windows/installer/ResultSearch-Qt-Setup.exe
+
+  # ── Main application (Win32 MDI shell) ────────────────────────
+  build-main-app:
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
+          echo "value=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build/main-app \
+            -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/main-app --target main_app --config Release -j
+
+      - name: Package portable
+        shell: bash
+        run: |
+          mkdir -p deploy/main-app
+          cp build/main-app/Release/main_app.exe deploy/main-app/
+          cp "${{ runner.temp }}/result_search.ini" deploy/main-app/ 2>/dev/null || true
+
+      - name: Upload main_app
+        uses: actions/upload-artifact@v4
+        with:
+          name: main_app-${{ steps.version.outputs.value }}
+          path: deploy/main-app/
