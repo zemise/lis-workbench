@@ -25,6 +25,7 @@
 #define MTBS_STRETCH    0x0004
 
 HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId);
+void mtSetFont(HWND hwnd, HFONT font);
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, bool enabled = true);
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, HICON icon, bool enabled = true);
 void mtAddSeparator(HWND hwnd);

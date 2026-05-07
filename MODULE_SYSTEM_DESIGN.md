@@ -218,6 +218,12 @@ const ModuleDef g_modules[] = {
 constexpr int g_moduleCount = sizeof(g_modules) / sizeof(g_modules[0]);
 ```
 
+当前 `Blood` 模块通过 `ModuleContext.dbSettings` 复用主程序数据库配置，只执行只读查询：
+
+- 主表：`LS_XK_BloodRequestApply`
+- 子表：`LS_XK_BloodRequestApplySon`，通过 `ApplyFormNO` 聚合申请成分
+- 申请状态：按 `LS_XK_BloodRequestApply.ApplyForm_Statue` 的中文值（`未审核` / `已审核` / `已完结`）匹配
+
 ### 自动菜单注册
 
 `setupMenus` 中遍历 `g_modules`，按 `menuParent` 去重创建弹出菜单，按数组顺序追加菜单项：
@@ -348,7 +354,7 @@ case WM_COMMAND: {
 在 `ModuleContext` 加字段。所有模块的 `create` 自动获取。
 
 **Q：单实例模块（如设置窗口）怎么处理？**
-模块自己的工厂函数里做；遍历 MDI 子窗口检查标题，已存在则 `WM_MDIACTIVATE`，不创建新的。主窗口注册表不关心这个。
+模块自己的工厂函数里调用 `activate_existing_mdi_child_by_title(ctx.mdiClient, WINDOW_TITLE)`。该 helper 在 `module_registry.h` 中统一遍历 MDI 子窗口标题，已存在则 `WM_MDIACTIVATE`，不创建新的。主窗口注册表不关心这个。
 
 **Q：模块的菜单项需要放在两个不同的 parent 下？**
 注册两行 `ModuleDef`，用同一个 `create` 但不同 `menuParent`/`menuLabel`/`menuId`。

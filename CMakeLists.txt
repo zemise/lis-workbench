@@ -78,7 +78,7 @@ add_executable(main_app WIN32
 )
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32)
+target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32)
 
 # MSVC auto-generates manifest; conflict with app.rc. Disable.
 if(MSVC)

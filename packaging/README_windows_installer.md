@@ -53,6 +53,17 @@ makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64\Release ^
   /DOUTPUT_DIR=..\out\windows\installer packaging\ResultSearch.nsi
 ```
 
+如果安装到未安装 VC++ 运行库的电脑，需要把 MSVC x64 CRT 一起打进安装包：
+
+```powershell
+$vcRedistDir = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Directory -Filter "Microsoft.VC*.CRT" |
+  Where-Object { $_.FullName -match "\\x64\\Microsoft\.VC.*\.CRT$" } |
+  Sort-Object FullName -Descending |
+  Select-Object -First 1 -ExpandProperty FullName
+
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.05.07 /DAPP_EXE=main_app.exe /DBUILD_DIR=..\build\main-app\Release /DVC_REDIST_DIR="$vcRedistDir" /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=ResultSearch-Setup.exe packaging\ResultSearch.nsi
+```
+
 ## Visual Studio 版本
 
 | VS 版本 | CMake Generator |
@@ -63,9 +74,10 @@ makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64\Release ^
 ## 运行时依赖
 
 - 目标 Windows 需安装 SQL Server ODBC 驱动（ODBC Driver 17/18 for SQL Server 或系统自带）
+- VS 原生构建的 Win32 主程序依赖 MSVC x64 CRT；安装包可通过 `VC_REDIST_DIR` 把 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll` 等运行库一起打入安装目录。
 - Qt 版需附带 Qt5Widgets.dll、Qt5Core.dll、Qt5Gui.dll 等（或用 `windeployqt` 自动收集）
 - **Qwt**（趋势图渲染）：`qwt.dll` + `Qt5OpenGL.dll` 由 CMake post-build 自动复制到 exe 目录。
-- Win32 版用 MinGW 静态链接，无需额外 GCC 运行时
+- MinGW 静态链接的 Win32 版无需额外 GCC 运行时
 
 ## 构建 Qwt
 

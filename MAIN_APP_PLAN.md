@@ -32,7 +32,7 @@
 检验结果查询平台
 ├── 检验管理
 │   ├── 检验结果查询    → 打开当前 cpp_search 窗口
-│   └── 输血结果查询    → 预留（待开发）
+│   └── 输血结果查询    → 打开输血申请查询窗口
 │
 └── 系统
     └── 参数设置         → 打开数据库/系统配置窗口
@@ -56,7 +56,7 @@
 | 任务 | 说明 | 状态 |
 |:-----|------|------|
 | 2.1 检验结果查询接入 | `search_child.cpp` — SearchQueryChild 类 + QueryState 每实例独立 + 分割器持久化 | ✅ |
-| 2.2 输血结果查询模块 | `blood_module.cpp` — 独立 `BloodModuleChild` 类，占位"待开发" | ✅ |
+| 2.2 输血结果查询模块 | `blood_module.cpp` — 独立 `BloodModuleChild` 类，接入 `LS_XK_BloodRequestApply` 只读查询；支持病人编号、病人姓名、申请单号、申请状态、申请日期过滤，其中申请状态按 `ApplyForm_Statue` 中文值匹配；LIS 结果弹窗中组合项目列表和摘要信息独立后台查询 | ✅ |
 | 2.3 系统设置接入 | `main_frame.cpp` — 复用 `MdiPlaceholderChild` 类 + 设置表单控件 + 单实例模式 | ✅ |
 
 ### 阶段 3：统一配置
@@ -226,7 +226,7 @@ struct AppContext {
 | 保证项 | 措施 |
 |--------|------|
 | 查询工具独立运行 | `result_search.exe` 目标不变，不引入主程序依赖 |
-| INI 格式不变 | 主程序沿用 `result_search.ini`，不新增必填字段 |
+| INI 格式扩展 | 主程序沿用 `result_search.ini`，新增可选 `[LisSummary]` 项目代码配置，缺失时使用内置默认值 |
 | 核心库不变 | `search_core` 只加功能不改接口 |
 | Qt 版不受影响 | 主程序只做 Win32 入口，Qt 版保持原样 |
 | CI 双版继续 | `build-win32` + `build-qt` job 不动，新加 `build-main-app` job |

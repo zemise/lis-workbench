@@ -37,6 +37,7 @@
 - 从 `LS_AS_REPORT` 查询报告主记录。
 - 通过 `REP_NO` 联查 `LS_AS_REPENTRY` 中的项目结果。
 - 支持按姓名、诊疗卡号、病人号、条码号、样本号、仪器、组合项目、日期范围等条件过滤。
+- 在主程序中接入输血结果查询模块，从 `LS_XK_BloodRequestApply` 查询输血申请，并通过 `LS_XK_BloodRequestApplySon.ApplyFormNO` 聚合申请成分。
 
 ## 当前实现范围
 
@@ -74,9 +75,18 @@
   - 右侧底部 `导出勾选图片` 可选择一个文件夹，并将勾选项目分别导出为多张 PNG。
   - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
-- 设置页面支持字号配置，保存后会持久化到 `result_search.ini` 并立即应用到主界面。
+- 设置页面支持字号配置，保存后会持久化到 `result_search.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
+- 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `result_search.ini` 的 `[LisSummary]`。
 - 数据库配置持久化保存到程序同目录 `result_search.ini`。
 - `设置`、`查询` 和 `退出` 按钮。
+- 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
+- 主程序 `输血结果查询` 模块：
+  - 默认按最近 7 天申请日期自动查询。
+  - 支持按病人编号、病人姓名、申请单号、申请状态、申请日期筛选。
+  - `申请状态` 直接对应 `LS_XK_BloodRequestApply.ApplyForm_Statue` 的中文值，支持“未审核 / 已审核 / 已完结”过滤。
+  - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
+  - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果，并根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
+  - `查询检验结果` 窗口的组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
 
 暂未实现：
 
@@ -166,9 +176,16 @@ cmake --build build/windows-x64 -j
 
 - [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
 - [CHANGELOG.md](CHANGELOG.md)
+- [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
 - [QUERY_DESIGN.md](QUERY_DESIGN.md)
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
+
+## Windows 安装包
+
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。
+
+VS 原生构建的 `main_app.exe` 依赖 MSVC x64 运行库。打包时可通过 `VC_REDIST_DIR` 把 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll` 等 CRT DLL 一起写入安装包，避免目标电脑未安装 VC++ 运行库时启动失败。
 
 ## 使用说明
 
@@ -176,7 +193,7 @@ cmake --build build/windows-x64 -j
 2. 点击底部 `设置`。
 3. 填写服务器、初始数据库、用户名、密码。
 4. 可点击 `测试连接` 验证数据库连接。
-5. 点击 `保存` 后，配置会写入程序同目录 `result_search.ini`。
+5. 点击 `保存` 后，配置会写入程序同目录 `result_search.ini`。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
 6. 输入姓名、病人号、条码号、日期范围，或通过 `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 7. 点击 `查询`。
 8. 在中间报告列表选择一行，右侧显示该报告的项目结果。

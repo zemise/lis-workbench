@@ -31,7 +31,7 @@
 | `search_app.*` | `QueryInput` 结构、筛选器组装、状态文案映射 | 原样复用 |
 | `search_controller.*` | 测试连接、加载字典、执行查询 | 原样复用（ODBC 切换后） |
 | `search_text.*` | `trim`、UTF-8 ↔ 宽字符转换 | Qt 下替换为 `QString`，过渡期保持兼容 |
-| `app_settings.*` | `result_search.ini` 读写、连接串生成 | 切换到 `QSettings`，接口保留 |
+| `app_settings.*` | `result_search.ini` 读写、连接串生成、LIS 摘要项目代码默认配置 | 切换到 `QSettings`，接口保留 |
 | `search_view_state.*` | `ViewState` 聚合运行时状态 | 原样复用 |
 | `version.h` | 版本号与标题 | 原样复用 |
 | `search_ui_columns.h` | 列号常量 | Qt 中列语义由 model 管理，参考此文件 |
@@ -56,10 +56,11 @@
 | `main.cpp` | Win32 入口、消息循环、窗口过程、全局状态（独立查询工具） |
 | `main_frame.cpp` | 主程序入口、g_modules[] 注册表、自动菜单/分发 |
 | `main_app.h` | 主程序全局上下文 |
-| `module_registry.h` | ModuleContext + ModuleDef 统一模块接口 |
+| `module_registry.h` | ModuleContext + ModuleDef 统一模块接口；MDI 子窗口按标题激活的单实例 helper |
 | `menu_toolbar.cpp/h` | 自绘菜单风格工具栏组件 |
-| `query_module.cpp/h` | 检验结果查询 MDI 子窗口 |
-| `settings_module.cpp/h` | 系统设置 MDI 子窗口 |
+| `query_module.cpp/h` | 检验结果查询单实例 MDI 子窗口 |
+| `blood_module.cpp/h` | 输血结果查询单实例 MDI 子窗口，按 `LS_XK_BloodRequestApply` 只读检索；LIS 结果弹窗列表与摘要分离后台查询 |
+| `settings_module.cpp/h` | 系统设置单实例 MDI 子窗口 |
 | `search_ui_context.h` | Win32 句柄集合、字体上下文 |
 
 ## 代码分层约定
@@ -86,9 +87,8 @@
 - ~~主程序阶段 1：MDI 窗口壳~~ ✅
 - ~~主程序阶段 2.3：系统设置接入~~ ✅
 - ~~主程序阶段 2.1：检验结果查询接入~~ ✅
+- ~~主程序阶段 2.2：输血结果查询接入~~ ✅
 - ~~模块系统改造（5.1~5.7）~~ ✅
-- **当前**：主程序阶段 2.2 — 输血结果查询接入
-- **中期**：Qt 版本功能对齐 Win32 版
-- **长期**：Qt 版本稳定后，Win32 入口降级为可选回退构建
+- **当前**：主程序模块细节打磨与现场验证
 - **中期**：Qt 版本功能对齐 Win32 版
 - **长期**：Qt 版本稳定后，Win32 入口降级为可选回退构建

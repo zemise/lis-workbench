@@ -30,6 +30,19 @@ COLORREF mtBlend(COLORREF c1, COLORREF c2, double t) {
         (BYTE)(GetBValue(c1) * (1 - t) + GetBValue(c2) * t));
 }
 
+void mtUpdateMetrics(HWND hwnd, MTState* s) {
+    if (!s) return;
+    s->btnH = 24;
+    if (!s->font) return;
+    HDC dc = GetDC(hwnd);
+    HFONT old = (HFONT)SelectObject(dc, s->font);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(hwnd, dc);
+    s->btnH = tm.tmHeight + 8;
+}
+
 LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
@@ -40,14 +53,7 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             s->font = reinterpret_cast<HFONT>(cs->lpCreateParams);
-            if (s->font) {
-                HDC dc = GetDC(hwnd);
-                HFONT old = (HFONT)SelectObject(dc, s->font);
-                TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
-                SelectObject(dc, old);
-                ReleaseDC(hwnd, dc);
-                s->btnH = tm.tmHeight + 8;
-            }
+            mtUpdateMetrics(hwnd, s);
             return 0;
         }
         case WM_NCDESTROY:
@@ -245,6 +251,14 @@ HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, 0, 0, 28, parent,
         reinterpret_cast<HMENU>(static_cast<intptr_t>(ctrlId)), inst, font);
+}
+
+void mtSetFont(HWND hwnd, HFONT font) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!s) return;
+    s->font = font;
+    mtUpdateMetrics(hwnd, s);
+    InvalidateRect(hwnd, nullptr, TRUE);
 }
 
 void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, bool enabled) {

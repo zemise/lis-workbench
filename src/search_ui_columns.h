@@ -29,4 +29,18 @@ constexpr int Unit = 4;
 constexpr int EnglishName = 5;
 }  // namespace result_columns
 
+namespace blood_request_columns {
+constexpr int TranProperty = 0;
+constexpr int PatientName = 1;
+constexpr int ApplyDept = 2;
+constexpr int ApplyBedNo = 3;
+constexpr int ApplyAbo = 4;
+constexpr int ApplyRhd = 5;
+constexpr int ApplyComposition = 6;
+constexpr int PatientNo = 7;
+constexpr int ApplyFormNo = 8;
+constexpr int CheckDoctor = 9;
+constexpr int CheckDate = 10;
+}  // namespace blood_request_columns
+
 }  // namespace search

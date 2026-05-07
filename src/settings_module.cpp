@@ -20,9 +20,14 @@ constexpr int IDC_SET_SAVE     = 5107;
 constexpr int IDC_SET_CANCEL   = 5108;
 constexpr int IDC_SET_INITIAL_DATABASE = 5109;
 constexpr int IDC_SET_FONT_SIZE = 5110;
+constexpr int IDC_SET_LIS_ABO_CODES = 5111;
+constexpr int IDC_SET_LIS_RHD_CODES = 5112;
+constexpr int IDC_SET_LIS_HGB_CODES = 5113;
+constexpr int IDC_SET_LIS_PLT_CODES = 5114;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
+constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
 
 struct SettingsState {
     ModuleContext ctx;
@@ -36,8 +41,9 @@ int clampFontSize(int v) { return v < 8 ? 8 : (v > 24 ? 24 : v); }
 std::wstring readEdit(HWND hwnd, int id) {
     HWND ctrl = GetDlgItem(hwnd, id);
     int len = GetWindowTextLengthW(ctrl);
-    std::wstring text(static_cast<size_t>(len), L'\0');
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
     GetWindowTextW(ctrl, text.data(), len + 1);
+    text.resize(static_cast<size_t>(len));
     return text;
 }
 
@@ -77,9 +83,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::create_label(hwnd, L"字号", S(20), S(158), S(86), S(22));
             search::create_edit(hwnd, IDC_SET_FONT_SIZE, S(116), S(158), S(80), S(24));
 
-            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(200), S(92), S(30));
-            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(200), S(84), S(30));
-            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(200), S(84), S(30));
+            search::create_label(hwnd, L"LIS ABO代码", S(20), S(200), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_LIS_ABO_CODES, S(116), S(200), S(520), S(24));
+
+            search::create_label(hwnd, L"LIS RhD代码", S(20), S(234), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_LIS_RHD_CODES, S(116), S(234), S(520), S(24));
+
+            search::create_label(hwnd, L"LIS Hb代码", S(20), S(268), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_LIS_HGB_CODES, S(116), S(268), S(520), S(24));
+
+            search::create_label(hwnd, L"LIS PLT代码", S(20), S(302), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_LIS_PLT_CODES, S(116), S(302), S(520), S(24));
+
+            CreateWindowExW(0, L"STATIC", L"多个项目代码用分号分隔；",
+                            WS_CHILD | WS_VISIBLE | SS_LEFT,
+                            S(116), S(336), S(620), S(22), hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(374), S(92), S(30));
+            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(374), S(84), S(30));
+            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(374), S(84), S(30));
 
             auto& app = st->app;
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
@@ -87,6 +109,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_USER), app.db.user.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_PASSWORD), app.db.password.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_FONT_SIZE), std::to_wstring(app.ui.font_size).c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_ABO_CODES), app.lis.abo_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_RHD_CODES), app.lis.rhd_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_HGB_CODES), app.lis.hgb_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_PLT_CODES), app.lis.plt_codes.c_str());
 
             EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
                 SendMessageW(child, WM_SETFONT, param, TRUE);
@@ -115,13 +141,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (id == IDC_SET_SAVE) {
                 st->app.db = collectForm(hwnd);
                 st->app.ui.font_size = clampFontSize(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
+                st->app.lis.abo_codes = readEdit(hwnd, IDC_SET_LIS_ABO_CODES);
+                st->app.lis.rhd_codes = readEdit(hwnd, IDC_SET_LIS_RHD_CODES);
+                st->app.lis.hgb_codes = readEdit(hwnd, IDC_SET_LIS_HGB_CODES);
+                st->app.lis.plt_codes = readEdit(hwnd, IDC_SET_LIS_PLT_CODES);
                 search::save_settings(search::default_ini_path(), st->app);
                 if (st->ctx.appContext) {
                     auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
                     gctx->dbSettings = st->app.db;
                     gctx->fontSize = st->app.ui.font_size;
+                    if (gctx->mainWindow) {
+                        SendMessageW(gctx->mainWindow, app::WM_APP_SETTINGS_CHANGED, 0, 0);
+                    }
                 }
-                MessageBoxW(hwnd, L"数据库设置已保存。", L"保存", MB_ICONINFORMATION);
+                MessageBoxW(hwnd, L"系统设置已保存。", L"保存", MB_ICONINFORMATION);
                 DestroyWindow(hwnd);
                 return 0;
             }
@@ -138,15 +171,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 HWND create_settings_module(const ModuleContext& ctx) {
-    // Single-instance: if already open, just activate
-    HWND existing = GetWindow(ctx.mdiClient, GW_CHILD);
-    while (existing) {
-        wchar_t title[256];
-        if (GetWindowTextW(existing, title, 256) && wcscmp(title, L"系统设置") == 0) {
-            SendMessageW(ctx.mdiClient, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(existing), 0);
-            return existing;
-        }
-        existing = GetWindow(existing, GW_HWNDNEXT);
+    if (HWND existing = activate_existing_mdi_child_by_title(ctx.mdiClient, WINDOW_TITLE)) {
+        return existing;
     }
 
     static bool registered = false;
@@ -169,7 +195,7 @@ HWND create_settings_module(const ModuleContext& ctx) {
 
     MDICREATESTRUCTW mcs{};
     mcs.szClass = WND_CLASS;
-    mcs.szTitle = L"系统设置";
+    mcs.szTitle = WINDOW_TITLE;
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 

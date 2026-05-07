@@ -43,6 +43,19 @@ AppSettings load_settings(const std::filesystem::path& ini_path) {
     s.db.password = read_str(L"Password");
     s.ui.font_size = clamp_font_size(read_int(L"UI", L"FontSize", s.ui.font_size));
     s.ui.splitter_x = read_int(L"UI", L"SplitterX", s.ui.splitter_x);
+
+    auto read_lis_str = [&](const wchar_t* key, const std::wstring& fallback) {
+        wchar_t buf[1024] = {};
+        GetPrivateProfileStringW(L"LisSummary", key, fallback.c_str(), buf, 1024, ini_path.c_str());
+        if (buf[0] == L'\0') {
+            return fallback;
+        }
+        return std::wstring(buf);
+    };
+    s.lis.abo_codes = read_lis_str(L"AboCodes", s.lis.abo_codes);
+    s.lis.rhd_codes = read_lis_str(L"RhdCodes", s.lis.rhd_codes);
+    s.lis.hgb_codes = read_lis_str(L"HgbCodes", s.lis.hgb_codes);
+    s.lis.plt_codes = read_lis_str(L"PltCodes", s.lis.plt_codes);
     return s;
 }
 
@@ -59,6 +72,10 @@ bool save_settings(const std::filesystem::path& ini_path, const AppSettings& s) 
     ok &= WritePrivateProfileStringW(L"Database", L"Driver", nullptr, ini_path.c_str()) != FALSE;
     ok &= WritePrivateProfileStringW(L"UI", L"FontSize", std::to_wstring(clamp_font_size(s.ui.font_size)).c_str(), ini_path.c_str()) != FALSE;
     ok &= WritePrivateProfileStringW(L"UI", L"SplitterX", std::to_wstring(s.ui.splitter_x).c_str(), ini_path.c_str()) != FALSE;
+    ok &= WritePrivateProfileStringW(L"LisSummary", L"AboCodes", s.lis.abo_codes.c_str(), ini_path.c_str()) != FALSE;
+    ok &= WritePrivateProfileStringW(L"LisSummary", L"RhdCodes", s.lis.rhd_codes.c_str(), ini_path.c_str()) != FALSE;
+    ok &= WritePrivateProfileStringW(L"LisSummary", L"HgbCodes", s.lis.hgb_codes.c_str(), ini_path.c_str()) != FALSE;
+    ok &= WritePrivateProfileStringW(L"LisSummary", L"PltCodes", s.lis.plt_codes.c_str(), ini_path.c_str()) != FALSE;
     return ok;
 }
 

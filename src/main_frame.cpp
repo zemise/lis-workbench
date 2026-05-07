@@ -4,6 +4,9 @@
 #include "resource.h"
 #include "search_text.h"
 
+#include <algorithm>
+#include <memory>
+#include <string>
 #include <vector>
 #include <windows.h>
 #include <iphlpapi.h>
@@ -44,6 +47,96 @@ constexpr int ID_TIMER         = 5001;
 constexpr const wchar_t* MDI_CHILD_CLASS = L"MdiPlaceholderChild";
 
 app::Context g_ctx;
+
+struct MenuDrawText {
+    std::wstring text;
+    bool topLevel = false;
+};
+
+std::vector<std::unique_ptr<MenuDrawText>> g_menuDrawTexts;
+
+MenuDrawText* addMenuDrawText(const wchar_t* text, bool topLevel) {
+    g_menuDrawTexts.push_back(std::make_unique<MenuDrawText>(MenuDrawText{text ? text : L"", topLevel}));
+    return g_menuDrawTexts.back().get();
+}
+
+int clampFontSize(int value) {
+    return value < 8 ? 8 : (value > 24 ? 24 : value);
+}
+
+HFONT createUiFont(int pointSize) {
+    NONCLIENTMETRICSW nm{};
+    nm.cbSize = sizeof(nm);
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
+    LOGFONTW lf = nm.lfMessageFont;
+    HDC screen = GetDC(nullptr);
+    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
+    ReleaseDC(nullptr, screen);
+    return CreateFontIndirectW(&lf);
+}
+
+HFONT createMenuFont(int pointSize) {
+    NONCLIENTMETRICSW nm{};
+    nm.cbSize = sizeof(nm);
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
+    LOGFONTW lf = nm.lfMenuFont;
+    HDC screen = GetDC(nullptr);
+    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
+    ReleaseDC(nullptr, screen);
+    return CreateFontIndirectW(&lf);
+}
+
+void applyFontToChildren(HWND root, HFONT font) {
+    if (!root || !font) return;
+    EnumChildWindows(root, [](HWND child, LPARAM p) -> BOOL {
+        if (GetDlgCtrlID(child) == ID_STATUS) return TRUE;
+        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(font));
+    InvalidateRect(root, nullptr, TRUE);
+}
+
+void broadcastFontChanged() {
+    const LPARAM fontParam = reinterpret_cast<LPARAM>(g_ctx.uiFont);
+    if (g_ctx.mdiClient) {
+        HWND child = GetWindow(g_ctx.mdiClient, GW_CHILD);
+        while (child) {
+            SendMessageW(child, app::WM_APP_FONT_CHANGED, 0, fontParam);
+            child = GetWindow(child, GW_HWNDNEXT);
+        }
+    }
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND hwnd, LPARAM p) -> BOOL {
+        SendMessageW(hwnd, app::WM_APP_FONT_CHANGED, 0, p);
+        return TRUE;
+    }, fontParam);
+}
+
+void rebuildUiFont(int fontSize) {
+    g_ctx.fontSize = clampFontSize(fontSize);
+    HFONT newFont = createUiFont(g_ctx.fontSize);
+    HFONT newMenuFont = createMenuFont(g_ctx.fontSize);
+    if (!newFont || !newMenuFont) {
+        if (newFont) DeleteObject(newFont);
+        if (newMenuFont) DeleteObject(newMenuFont);
+        return;
+    }
+    HFONT oldFont = g_ctx.uiFont;
+    HFONT oldMenuFont = g_ctx.menuFont;
+    g_ctx.uiFont = newFont;
+    g_ctx.menuFont = newMenuFont;
+    applyFontToChildren(g_ctx.mainWindow, g_ctx.uiFont);
+    HWND tb = GetDlgItem(g_ctx.mainWindow, ID_TOOLBAR);
+    if (tb) {
+        mtSetFont(tb, g_ctx.menuFont);
+        RECT rc{};
+        GetClientRect(g_ctx.mainWindow, &rc);
+        SendMessageW(g_ctx.mainWindow, WM_SIZE, 0, MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
+    }
+    if (g_ctx.mainWindow) DrawMenuBar(g_ctx.mainWindow);
+    broadcastFontChanged();
+    if (oldFont) DeleteObject(oldFont);
+    if (oldMenuFont) DeleteObject(oldMenuFont);
+}
 
 LRESULT CALLBACK mdiChildProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -125,6 +218,11 @@ ModuleContext makeCtx() {
              g_ctx.dbSettings, g_ctx.fontSize, &g_ctx };
 }
 
+void appendOwnerDrawItem(HMENU menu, UINT_PTR id, const wchar_t* text, bool enabled = true) {
+    UINT flags = MF_OWNERDRAW | (enabled ? MF_ENABLED : MF_GRAYED);
+    AppendMenuW(menu, flags, id, reinterpret_cast<LPCWSTR>(addMenuDrawText(text, false)));
+}
+
 // ── menu setup ──────────────────────────────────────────────────
 
 HMENU setupMenus(HWND hwnd) {
@@ -143,29 +241,31 @@ HMENU setupMenus(HWND hwnd) {
         if (idx < 0) {
             subMenus[subCount] = CreatePopupMenu();
             subNames[subCount] = m.menuParent;
-            AppendMenuW(bar, MF_POPUP, (UINT_PTR)subMenus[subCount], m.menuParent);
+            AppendMenuW(bar, MF_POPUP | MF_OWNERDRAW, (UINT_PTR)subMenus[subCount],
+                        reinterpret_cast<LPCWSTR>(addMenuDrawText(m.menuParent, true)));
             idx = subCount++;
         }
-        AppendMenuW(subMenus[idx], MF_STRING, m.menuId, m.menuLabel);
+        appendOwnerDrawItem(subMenus[idx], static_cast<UINT_PTR>(m.menuId), m.menuLabel);
     }
 
     // Fixed: window menu
     HMENU windowMenu = CreatePopupMenu();
-    AppendMenuW(windowMenu, MF_STRING, IDM_CASCADE, L"层叠(&C)");
-    AppendMenuW(windowMenu, MF_STRING, IDM_TILE_H, L"水平平铺(&H)");
-    AppendMenuW(windowMenu, MF_STRING, IDM_TILE_V, L"垂直平铺(&V)");
+    appendOwnerDrawItem(windowMenu, IDM_CASCADE, L"层叠(&C)");
+    appendOwnerDrawItem(windowMenu, IDM_TILE_H, L"水平平铺(&H)");
+    appendOwnerDrawItem(windowMenu, IDM_TILE_V, L"垂直平铺(&V)");
     AppendMenuW(windowMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(windowMenu, MF_STRING, IDM_ARRANGE, L"排列图标(&A)");
+    appendOwnerDrawItem(windowMenu, IDM_ARRANGE, L"排列图标(&A)");
     AppendMenuW(windowMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(windowMenu, MF_STRING, IDM_CLOSE_ACTIVE, L"关闭当前(&L)");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)windowMenu, L"窗口(&W)");
+    appendOwnerDrawItem(windowMenu, IDM_CLOSE_ACTIVE, L"关闭当前(&L)");
+    AppendMenuW(bar, MF_POPUP | MF_OWNERDRAW, (UINT_PTR)windowMenu,
+                reinterpret_cast<LPCWSTR>(addMenuDrawText(L"窗口(&W)", true)));
 
     // Fixed items appended to last menu (L"系统")
     for (int j = 0; j < subCount; j++) {
         if (wcscmp(subNames[j], L"系统") == 0) {
             AppendMenuW(subMenus[j], MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(subMenus[j], MF_STRING, IDM_ABOUT, L"关于(&A)...");
-            AppendMenuW(subMenus[j], MF_STRING, IDM_EXIT, L"退出(&X)");
+            appendOwnerDrawItem(subMenus[j], IDM_ABOUT, L"关于(&A)...");
+            appendOwnerDrawItem(subMenus[j], IDM_EXIT, L"退出(&X)");
             break;
         }
     }
@@ -212,6 +312,43 @@ void setupStatusBar(HWND hwnd) {
     SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
     std::wstring ip = L"本机：" + getLocalIp();
     SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS), (LPARAM)ip.c_str());
+}
+
+bool measureMenuItem(LPMEASUREITEMSTRUCT mi) {
+    if (!mi || mi->CtlType != ODT_MENU || !mi->itemData) return false;
+    auto* data = reinterpret_cast<MenuDrawText*>(mi->itemData);
+    HDC dc = GetDC(g_ctx.mainWindow);
+    HFONT old = g_ctx.menuFont ? static_cast<HFONT>(SelectObject(dc, g_ctx.menuFont)) : nullptr;
+    RECT textRc{0, 0, 0, 0};
+    DrawTextW(dc, data->text.c_str(), -1, &textRc, DT_SINGLELINE | DT_CALCRECT);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(dc, &tm);
+    if (old) SelectObject(dc, old);
+    ReleaseDC(g_ctx.mainWindow, dc);
+    const int horizontalPad = data->topLevel ? 22 : 42;
+    mi->itemWidth = (std::max)(textRc.right - textRc.left + horizontalPad, tm.tmAveCharWidth * 4);
+    mi->itemHeight = tm.tmHeight + 8;
+    return true;
+}
+
+bool drawMenuItem(LPDRAWITEMSTRUCT di) {
+    if (!di || di->CtlType != ODT_MENU || !di->itemData) return false;
+    auto* data = reinterpret_cast<MenuDrawText*>(di->itemData);
+    const bool selected = (di->itemState & ODS_SELECTED) != 0;
+    HBRUSH bg = GetSysColorBrush(selected ? COLOR_HIGHLIGHT : COLOR_MENU);
+    FillRect(di->hDC, &di->rcItem, bg);
+
+    HFONT old = g_ctx.menuFont ? static_cast<HFONT>(SelectObject(di->hDC, g_ctx.menuFont)) : nullptr;
+    SetBkMode(di->hDC, TRANSPARENT);
+    const bool disabled = (di->itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
+    SetTextColor(di->hDC, GetSysColor(selected ? COLOR_HIGHLIGHTTEXT : (disabled ? COLOR_GRAYTEXT : COLOR_MENUTEXT)));
+    RECT textRc = di->rcItem;
+    textRc.left += data->topLevel ? 10 : 24;
+    textRc.right -= data->topLevel ? 10 : 16;
+    DrawTextW(di->hDC, data->text.c_str(), -1, &textRc,
+              DT_SINGLELINE | DT_VCENTER | (data->topLevel ? DT_CENTER : DT_LEFT));
+    if (old) SelectObject(di->hDC, old);
+    return true;
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -265,6 +402,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (sb) updateStatusBarParts(sb, LOWORD(lp));
             return 0;
         }
+        case WM_MEASUREITEM:
+            if (measureMenuItem(reinterpret_cast<LPMEASUREITEMSTRUCT>(lp))) return TRUE;
+            break;
+        case WM_DRAWITEM:
+            if (drawMenuItem(reinterpret_cast<LPDRAWITEMSTRUCT>(lp))) return TRUE;
+            break;
         case WM_COMMAND: {
             int id = LOWORD(wp);
 
@@ -291,8 +434,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_ARRANGE:        SendMessageW(g_ctx.mdiClient, WM_MDIICONARRANGE, 0, 0); return 0;
                 case IDM_CLOSE_ACTIVE:   closeActiveMdiChild(); return 0;
             }
-            return 0;
+            break;
         }
+        case app::WM_APP_SETTINGS_CHANGED:
+            rebuildUiFont(g_ctx.fontSize);
+            return 0;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
@@ -310,12 +456,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_ctx.instance = instance;
     auto iniSettings = search::load_settings(search::default_ini_path());
     g_ctx.dbSettings = iniSettings.db;
-    g_ctx.fontSize = iniSettings.ui.font_size;
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    g_ctx.uiFont = CreateFontIndirectW(&nm.lfMessageFont);
-    g_ctx.menuFont = CreateFontIndirectW(&nm.lfMenuFont);
+    g_ctx.fontSize = clampFontSize(iniSettings.ui.font_size);
+    g_ctx.uiFont = createUiFont(g_ctx.fontSize);
+    g_ctx.menuFont = createMenuFont(g_ctx.fontSize);
 
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);

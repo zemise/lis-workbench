@@ -23,4 +23,18 @@ struct ModuleDef {
     HWND (*create)(const ModuleContext& ctx);
 };
 
+inline HWND activate_existing_mdi_child_by_title(HWND mdiClient, const wchar_t* title) {
+    if (!mdiClient || !title) return nullptr;
+    HWND existing = GetWindow(mdiClient, GW_CHILD);
+    while (existing) {
+        wchar_t existingTitle[256]{};
+        if (GetWindowTextW(existing, existingTitle, 256) && lstrcmpW(existingTitle, title) == 0) {
+            SendMessageW(mdiClient, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(existing), 0);
+            return existing;
+        }
+        existing = GetWindow(existing, GW_HWNDNEXT);
+    }
+    return nullptr;
+}
+
 #endif

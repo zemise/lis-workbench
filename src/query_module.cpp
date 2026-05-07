@@ -17,6 +17,9 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <memory>
+#include <thread>
+
 #pragma comment(lib, "comctl32.lib")
 
 namespace {
@@ -49,6 +52,9 @@ constexpr int IDC_STATUS = 4001;
 constexpr const wchar_t* WND_CLASS   = L"QueryModuleChild";
 constexpr const wchar_t* SPLITTER_CLASS = L"ResultSearchSplitter";
 constexpr const wchar_t* PROP_STATE  = L"QuerySt";
+constexpr const wchar_t* WINDOW_TITLE = L"检验结果查询";
+constexpr UINT WM_QUERY_LOADED = WM_APP + 71;
+constexpr UINT WM_QUERY_RESULT_LOADED = WM_APP + 72;
 
 int clampFontSize(int value) { return value < 8 ? 8 : (value > 24 ? 24 : value); }
 
@@ -76,6 +82,25 @@ struct QueryState {
     bool hasLastQueryInput = false;
     bool draggingSplitter = false;
     int pendingSplitterX = 0;
+    int queryGeneration = 0;
+    int resultGeneration = 0;
+    bool queryLoading = false;
+};
+
+struct QueryLoadResult {
+    int generation = 0;
+    bool ok = false;
+    search::QueryInput input;
+    std::vector<search::ReportRow> rows;
+    std::string connection_string;
+    std::string error;
+};
+
+struct ResultLoadResult {
+    int generation = 0;
+    bool ok = false;
+    std::vector<search::ResultRow> rows;
+    std::string error;
 };
 
 QueryState* g_pending = nullptr;
@@ -154,14 +179,35 @@ void runQuery(QueryState* q) {
     resultRows(q).clear();
     setStatus(q, L"正在查询...");
 
-    std::string error;
-    if (!search::run_report_query(db(q), input, reportRows(q), connStr(q), error)) {
+    q->queryLoading = true;
+    const int generation = ++q->queryGeneration;
+    const search::DbSettings settings = db(q);
+    const HWND hwnd = GetParent(q->ui.reports);
+    EnableWindow(q->ui.query_button, FALSE);
+    std::thread([hwnd, settings, input, generation]() {
+        auto* result = new QueryLoadResult;
+        result->generation = generation;
+        result->input = input;
+        result->ok = search::run_report_query(settings, input, result->rows, result->connection_string, result->error);
+        if (!PostMessageW(hwnd, WM_QUERY_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
+}
+
+void finishRunQuery(QueryState* q, HWND hwnd, std::unique_ptr<QueryLoadResult> result) {
+    if (result->generation != q->queryGeneration) return;
+    q->queryLoading = false;
+    EnableWindow(q->ui.query_button, TRUE);
+    if (!result->ok) {
         setStatus(q, L"查询失败");
-        MessageBoxW(nullptr, search::utf8_to_wide(error).c_str(), L"查询失败", MB_ICONERROR);
+        MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
-    q->lastQueryInput = input;
+    q->lastQueryInput = result->input;
     q->hasLastQueryInput = true;
+    reportRows(q) = std::move(result->rows);
+    connStr(q) = std::move(result->connection_string);
     search::present_report_rows(q->ui, reportRows(q));
     setStatus(q, search::utf8_to_wide(search::make_query_count_status(reportRows(q).size())));
 }
@@ -172,12 +218,31 @@ void querySelectedResults(QueryState* q, int selected) {
         ListView_DeleteAllItems(q->ui.results);
         return;
     }
-    std::string error;
-    if (!search::load_result_rows(connStr(q), reportRows(q)[static_cast<size_t>(selected)].rep_no, resultRows(q), error)) {
-        MessageBoxW(nullptr, search::utf8_to_wide(error).c_str(), L"查询项目明细失败", MB_ICONERROR);
+    ListView_DeleteAllItems(q->ui.results);
+    setStatus(q, L"正在查询项目明细...");
+    const int generation = ++q->resultGeneration;
+    const std::string connection = connStr(q);
+    const std::string repNo = reportRows(q)[static_cast<size_t>(selected)].rep_no;
+    const HWND hwnd = GetParent(q->ui.results);
+    std::thread([hwnd, connection, repNo, generation]() {
+        auto* result = new ResultLoadResult;
+        result->generation = generation;
+        result->ok = search::load_result_rows(connection, repNo, result->rows, result->error);
+        if (!PostMessageW(hwnd, WM_QUERY_RESULT_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
+}
+
+void finishQuerySelectedResults(QueryState* q, HWND hwnd, std::unique_ptr<ResultLoadResult> result) {
+    if (result->generation != q->resultGeneration) return;
+    if (!result->ok) {
+        MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询项目明细失败", MB_ICONERROR);
         return;
     }
+    resultRows(q) = std::move(result->rows);
     search::present_result_rows(q->ui, resultRows(q));
+    setStatus(q, search::utf8_to_wide(search::make_query_count_status(reportRows(q).size())));
 }
 
 void showTrend(HWND owner, QueryState* q) {
@@ -282,6 +347,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (search::handle_command(hwnd, wp, q->ids, handlers)) return 0;
             break;
         }
+        case WM_QUERY_LOADED:
+            if (q) {
+                std::unique_ptr<QueryLoadResult> result(reinterpret_cast<QueryLoadResult*>(lp));
+                finishRunQuery(q, hwnd, std::move(result));
+            } else {
+                delete reinterpret_cast<QueryLoadResult*>(lp);
+            }
+            return 0;
+        case WM_QUERY_RESULT_LOADED:
+            if (q) {
+                std::unique_ptr<ResultLoadResult> result(reinterpret_cast<ResultLoadResult*>(lp));
+                finishQuerySelectedResults(q, hwnd, std::move(result));
+            } else {
+                delete reinterpret_cast<ResultLoadResult*>(lp);
+            }
+            return 0;
         case WM_NOTIFY: {
             if (!q) break;
             search::NotifyEventHandlers handlers;
@@ -306,6 +387,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 HWND create_query_module(const ModuleContext& ctx) {
+    if (HWND existing = activate_existing_mdi_child_by_title(ctx.mdiClient, WINDOW_TITLE)) {
+        return existing;
+    }
+
     static bool classesRegistered = false;
     if (!classesRegistered) {
         WNDCLASSEXW wc{};
@@ -336,7 +421,7 @@ HWND create_query_module(const ModuleContext& ctx) {
 
     MDICREATESTRUCTW mcs{};
     mcs.szClass = WND_CLASS;
-    mcs.szTitle = L"检验结果查询";
+    mcs.szTitle = WINDOW_TITLE;
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
