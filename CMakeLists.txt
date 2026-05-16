@@ -9,11 +9,6 @@ project(lis_workbench LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_AUTOMOC ON)
-# Suppress AUTOMOC warnings for non-Qt targets
-if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.20")
-    set(CMAKE_AUTOMOC_MACRO_NAMES "Q_OBJECT" "Q_GADGET")
-endif()
 
 # MSVC defaults to system locale (e.g. GBK/936) for source encoding.
 # Force UTF-8 so Chinese string literals survive compilation.
@@ -106,6 +101,7 @@ if(BUILD_QT_GUI)
         src_qt/trend_window.cpp
         src_qt/resources.qrc
     )
+    set_target_properties(result_search_qt PROPERTIES AUTOMOC ON)
     target_include_directories(result_search_qt PRIVATE src src_qt)
     target_link_libraries(result_search_qt PRIVATE search_core Qt5::Widgets Qt5::WinMain Qt5::Concurrent)
 endif()

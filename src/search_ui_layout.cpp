@@ -1,5 +1,6 @@
 #include "search_ui_layout.h"
 #include "search_ui_columns.h"
+#include "win32_control_id.h"
 
 #ifdef _WIN32
 
@@ -27,29 +28,29 @@ HWND create_groupbox(HWND parent, const wchar_t* text, int x, int y, int w, int 
 
 HWND create_edit(HWND parent, int id, int x, int y, int w, int h) {
     return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND create_date_picker(HWND parent, int id, int x, int y, int w, int h) {
     return CreateWindowExW(0, DATETIMEPICK_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATEFORMAT,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND create_combo(HWND parent, int id, int x, int y, int w, int h, bool editable) {
     const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
                         (editable ? CBS_DROPDOWN : CBS_DROPDOWNLIST);
     return CreateWindowExW(0, L"COMBOBOX", L"", style,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND create_password_edit(HWND parent, int id, int x, int y, int w, int h) {
     return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND create_button(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 void add_list_column(HWND list, int index, const wchar_t* title, int width) {
@@ -95,7 +96,7 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
     ui.reports = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                  WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                  reports_x, list_top, reports_width, list_height,
-                                 hwnd, reinterpret_cast<HMENU>(ids.reports), GetModuleHandleW(nullptr), nullptr);
+                                 hwnd, win32_control_id(ids.reports), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(ui.reports, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     add_list_column(ui.reports, report_columns::SampleNo, L"样本号", S(70));
     add_list_column(ui.reports, report_columns::Name, L"姓名", S(80));
@@ -116,12 +117,12 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
     ui.splitter = CreateWindowExW(0, L"LISWorkbenchSplitter", L"",
                                   WS_CHILD | WS_VISIBLE,
                                   S(1040), list_top, S(8), list_height,
-                                  hwnd, reinterpret_cast<HMENU>(ids.splitter), GetModuleHandleW(nullptr), nullptr);
+                                  hwnd, win32_control_id(ids.splitter), GetModuleHandleW(nullptr), nullptr);
 
     ui.results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                  WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                  results_x, list_top, results_width, list_height,
-                                 hwnd, reinterpret_cast<HMENU>(ids.results), GetModuleHandleW(nullptr), nullptr);
+                                 hwnd, win32_control_id(ids.results), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(ui.results, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     add_list_column(ui.results, result_columns::ItemName, L"项目名称", S(150));
     add_list_column(ui.results, result_columns::Result, L"结果", S(80));
@@ -138,7 +139,7 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
     ui.print_button = create_button(hwnd, ids.print, L"打印(&P)", S(1120), buttons_y, S(92), S(32));
     ui.exit_button = create_button(hwnd, ids.exit, L"退出(&X)", S(1220), buttons_y, S(92), S(32));
     ui.status = CreateWindowExW(0, L"STATIC", L"请输入条件后查询。", WS_CHILD | WS_VISIBLE,
-                                S(8), buttons_y + S(2), S(600), S(28), hwnd, reinterpret_cast<HMENU>(ids.status), GetModuleHandleW(nullptr), nullptr);
+                                S(8), buttons_y + S(2), S(600), S(28), hwnd, win32_control_id(ids.status), GetModuleHandleW(nullptr), nullptr);
 
     EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
         SendMessageW(child, WM_SETFONT, param, TRUE);

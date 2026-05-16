@@ -1,4 +1,5 @@
 #include "search_splitter.h"
+#include "win32_control_id.h"
 
 #ifdef _WIN32
 
@@ -75,7 +76,7 @@ void register_splitter_class(HINSTANCE instance) {
 HWND create_splitter(HWND parent, int id, int x, int y, int w, int h, HINSTANCE instance) {
     register_splitter_class(instance);
     return CreateWindowExW(0, kSplitterClass, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), instance, nullptr);
+                           x, y, w, h, parent, win32_control_id(id), instance, nullptr);
 }
 
 }  // namespace search

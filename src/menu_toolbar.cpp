@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 
+#include "win32_control_id.h"
+
 #include <windowsx.h>
 
 namespace {
@@ -250,7 +252,7 @@ HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId) {
     return CreateWindowExW(0, L"MenuToolbar", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, 0, 0, 28, parent,
-        reinterpret_cast<HMENU>(static_cast<intptr_t>(ctrlId)), inst, font);
+        win32_control_id(ctrlId), inst, font);
 }
 
 void mtSetFont(HWND hwnd, HFONT font) {

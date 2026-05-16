@@ -7,6 +7,7 @@
 #include "search_core.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
+#include "win32_control_id.h"
 
 #include <commctrl.h>
 #include <windows.h>
@@ -178,7 +179,7 @@ HWND leftLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
 
 HWND button(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 void addColumn(HWND list, int index, const wchar_t* title, int width) {
@@ -203,9 +204,9 @@ void createControls(HWND hwnd, BarcodeState* st) {
     st->machineStatus = search::create_combo(hwnd, IDC_MACHINE_STATUS, S(1100), S(8), S(132), S(160), false);
 
     st->notCanceled = CreateWindowExW(0, L"BUTTON", L"未取消签收", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
-                                      S(10), S(42), S(98), S(24), hwnd, reinterpret_cast<HMENU>(IDC_NOT_CANCELED), GetModuleHandleW(nullptr), nullptr);
+                                      S(10), S(42), S(98), S(24), hwnd, win32_control_id(IDC_NOT_CANCELED), GetModuleHandleW(nullptr), nullptr);
     st->canceled = CreateWindowExW(0, L"BUTTON", L"取消签收", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON,
-                                   S(10), S(70), S(98), S(24), hwnd, reinterpret_cast<HMENU>(IDC_CANCELED), GetModuleHandleW(nullptr), nullptr);
+                                   S(10), S(70), S(98), S(24), hwnd, win32_control_id(IDC_CANCELED), GetModuleHandleW(nullptr), nullptr);
     Button_SetCheck(st->notCanceled, BST_CHECKED);
 
     st->query = button(hwnd, IDC_QUERY, L"查    询", S(116), S(50), S(76), S(32));
@@ -228,7 +229,7 @@ void createControls(HWND hwnd, BarcodeState* st) {
 
     st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL,
-                               S(4), S(120), S(1240), S(420), hwnd, reinterpret_cast<HMENU>(IDC_LIST), GetModuleHandleW(nullptr), nullptr);
+                               S(4), S(120), S(1240), S(420), hwnd, win32_control_id(IDC_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     const ListColumn columns[] = {
         {0, L"", 24},

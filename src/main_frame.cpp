@@ -1,4 +1,3 @@
-#define _WINSOCKAPI_    // prevent windows.h from including winsock.h
 #include <winsock2.h>   // must come before windows.h
 #include "main_app.h"
 #include "resource.h"
@@ -24,6 +23,7 @@
 #include "query_module.h"
 #include "regular_report_module.h"
 #include "settings_module.h"
+#include "win32_control_id.h"
 namespace {
 
 constexpr int IDM_QUERY        = 1001;
@@ -304,7 +304,7 @@ std::wstring getLocalIp() {
 
 void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
-                              0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
+                              0, 0, 0, 0, hwnd, win32_control_id(ID_STATUS),
                               g_ctx.instance, nullptr);
     RECT rc;
     GetClientRect(hwnd, &rc);

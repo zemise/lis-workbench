@@ -7,6 +7,7 @@
 #include "resource.h"
 #include "search_splitter.h"
 #include "search_ui_layout.h"
+#include "win32_control_id.h"
 
 #include <commctrl.h>
 #include <windows.h>
@@ -137,7 +138,7 @@ HWND makeEdit(HWND parent, const wchar_t* text, int x, int y, int w, int h, DWOR
 
 HWND makeButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND makeCheckBox(HWND parent, int x, int y, int w, int h) {
@@ -801,7 +802,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
     st->middleTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
                                     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                                     S(parent, PAD), S(parent, 0), S(parent, 304), S(parent, TAB_H),
-                                    p, reinterpret_cast<HMENU>(IDC_MIDDLE_TAB),
+                                    p, win32_control_id(IDC_MIDDLE_TAB),
                                     GetModuleHandleW(nullptr), nullptr);
     const wchar_t* tabs[] = {L"检验结果", L"图象", L"手工复查[无]"};
     insertTabs(st->middleTab, tabs, static_cast<int>(sizeof(tabs) / sizeof(tabs[0])));
@@ -816,7 +817,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
     st->resultList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                      WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                      S(parent, PAD), S(parent, MIDDLE_LIST_Y), S(parent, 520), S(parent, 350),
-                                     p, reinterpret_cast<HMENU>(IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
+                                     p, win32_control_id(IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->resultList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     st->status = makeStatic(p, L"结果列表右键功能：项目复制；参数设置。[项目总数：7]", S(parent, PAD), S(parent, 424), S(parent, 520), S(parent, MIDDLE_STATUS_H));
     addResult(st->resultList);
@@ -830,7 +831,7 @@ void createRightPanel(HWND parent, RegularReportState* st) {
     st->rightTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
                                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                                    S(parent, PAD), S(parent, RIGHT_TAB_Y), S(parent, 576), S(parent, TAB_H),
-                                   p, reinterpret_cast<HMENU>(IDC_RIGHT_TAB),
+                                   p, win32_control_id(IDC_RIGHT_TAB),
                                    GetModuleHandleW(nullptr), nullptr);
     const wchar_t* tabs[] = {L"信息列表", L"结果比较"};
     insertTabs(st->rightTab, tabs, static_cast<int>(sizeof(tabs) / sizeof(tabs[0])));
@@ -843,7 +844,7 @@ void createRightPanel(HWND parent, RegularReportState* st) {
     st->reportList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                      WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                      S(parent, PAD), S(parent, RIGHT_LIST_Y), S(parent, 576), S(parent, 588),
-                                     p, reinterpret_cast<HMENU>(IDC_REPORT_LIST), GetModuleHandleW(nullptr), nullptr);
+                                     p, win32_control_id(IDC_REPORT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->reportList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     showRightInfoPage(st);
 }
@@ -891,7 +892,7 @@ void createControls(HWND hwnd, RegularReportState* st) {
     st->leftScrollBar = CreateWindowExW(0, L"SCROLLBAR", L"",
                                         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SBS_VERT,
                                         0, 0, 0, 0, st->leftPanel,
-                                        reinterpret_cast<HMENU>(IDC_LEFT_SCROLL),
+                                        win32_control_id(IDC_LEFT_SCROLL),
                                         GetModuleHandleW(nullptr), nullptr);
     st->middlePanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
                                       WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
