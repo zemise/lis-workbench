@@ -17,10 +17,12 @@
 
 #include "app_settings.h"
 #include "app_settings_io.h"
+#include "barcode_module.h"
 #include "blood_module.h"
 #include "menu_toolbar.h"
 #include "module_registry.h"
 #include "query_module.h"
+#include "regular_report_module.h"
 #include "settings_module.h"
 namespace {
 
@@ -183,8 +185,6 @@ void closeActiveMdiChild() {
 
 // ── placeholder factories (to be replaced with real modules) ────
 
-HWND create_tool1_placeholder(const ModuleContext&) { return createMdiChild(L"工具1"); }
-HWND create_tool2_placeholder(const ModuleContext&) { return createMdiChild(L"工具2"); }
 HWND create_tool3_placeholder(const ModuleContext&) { return createMdiChild(L"工具3"); }
 HWND create_tool4_placeholder(const ModuleContext&) { return createMdiChild(L"工具4"); }
 HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"工具5"); }
@@ -194,8 +194,8 @@ HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"�
 const ModuleDef g_modules[] = {
     { L"Query",    L"检验管理", L"检验结果查询(&Q)...", IDM_QUERY,    create_query_module    },
     { L"Blood",    L"检验管理", L"输血结果查询(&B)...", IDM_BLOOD,    create_blood_module },
-    { L"Tool1",    L"工具",     L"工具1(&1)",           IDM_TOOL1,   create_tool1_placeholder },
-    { L"Tool2",    L"工具",     L"工具2(&2)",           IDM_TOOL2,   create_tool2_placeholder },
+    { L"Barcode",  L"工具",     L"已签收条码查询(&1)...", IDM_TOOL1,   create_barcode_module },
+    { L"RegularReport", L"工具", L"常规报告(&2)",       IDM_TOOL2,   create_regular_report_module },
     { L"Tool3",    L"工具",     L"工具3(&3)",           IDM_TOOL3,   create_tool3_placeholder },
     { L"Tool4",    L"工具",     L"工具4(&4)",           IDM_TOOL4,   create_tool4_placeholder },
     { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
@@ -423,7 +423,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch (id) {
                 case IDM_ABOUT:
                     MessageBoxW(hwnd,
-                        L"检验结果查询平台\n版本 v2026.05.07\n\n作者：Zhao Wang",
+                        L"LIS 工作台\n版本 v2026.05.07\n\n作者：Zhao Wang",
                         L"关于", MB_ICONINFORMATION);
                     return 0;
                 case ID_BTNCLOSE:        closeActiveMdiChild(); return 0;
@@ -472,11 +472,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_APPWORKSPACE + 1);
-    wc.lpszClassName = L"ResultSearchMainWindow";
+    wc.lpszClassName = L"LISWorkbenchMainWindow";
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName,
-        L"检验结果查询平台",
+        L"LIS 工作台",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800,
         nullptr, nullptr, instance, nullptr);

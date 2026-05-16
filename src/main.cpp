@@ -401,7 +401,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                                                 GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-    wc.lpszClassName = L"ResultSearchWindow";
+    wc.lpszClassName = L"LISWorkbenchQueryWindow";
     RegisterClassExW(&wc);
 
     WNDCLASSEXW splitter_wc{};
@@ -410,7 +410,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     splitter_wc.hInstance = instance;
     splitter_wc.hCursor = LoadCursor(nullptr, IDC_SIZEWE);
     splitter_wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DSHADOW + 1);
-    splitter_wc.lpszClassName = L"ResultSearchSplitter";
+    splitter_wc.lpszClassName = L"LISWorkbenchSplitter";
     RegisterClassExW(&splitter_wc);
 
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, search::kAppTitle,

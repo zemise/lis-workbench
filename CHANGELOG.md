@@ -2,11 +2,15 @@
 
 ## v2026.05.07
 
+- **项目改名**：对外项目名切换为 `lis-workbench`，用户可见程序名切换为 `LIS 工作台`；CMake project 改为 `lis_workbench`，主程序输出改为 `lis_workbench.exe`，NSIS 安装包脚本改为 `LISWorkbench.nsi`，默认安装目录和安装包名改为 `LISWorkbench` / `LISWorkbench-Setup.exe`。为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部命名暂时保留。
+- **配置文件改名**：主配置文件改为 `ClientConfig.ini`；Win32 和 Qt 入口都会在新文件不存在且旧 `result_search.ini` 存在时复制迁移，安装包也会优先从旧配置复制生成新配置。
 - **模块系统**：`ModuleContext` + `ModuleDef` 统一接口；`g_modules[]` 注册表自动菜单+自动分发；`save/load_module_int` 分区配置；设置表单提取为 `settings_module.cpp`；占位模块预留扩展点。新增模块只需写一个 `.cpp` + 注册一行。
 - **MDI 单实例窗口**：`module_registry.h` 提供 `activate_existing_mdi_child_by_title`，检验结果查询、输血结果查询、系统设置均复用该入口；重复点击菜单时激活已打开窗口。
-- **检验结果查询接入**：`query_module.cpp` — 每实例独立 `QueryState`，复用全部查询/趋势逻辑，分割器位置 INI 持久化。
+- **检验结果查询接入**：`query_module.cpp` — 每实例独立 `QueryState`，复用全部查询/趋势逻辑，复用通用拖条控件并持久化分割器位置到 INI。
 - **输血结果查询接入**：`blood_module.cpp` 接入 `LS_XK_BloodRequestApply` / `LS_XK_BloodRequestApplySon` 只读查询；支持默认最近 7 天自动查询、病人编号/姓名/申请单号/申请状态/申请日期筛选，`申请状态` 按 `ApplyForm_Statue` 中文值过滤。
-- **LIS 摘要项目代码配置化**：系统设置新增 ABO、RhD、Hb、PLT 项目代码配置，保存到 `result_search.ini` 的 `[LisSummary]`，输血检验结果窗口据此显示最近血型鉴定和血常规摘要。
+- **已签收条码查询接入**：工具菜单 `已签收条码查询` 替换原工具占位页，新增 `barcode_module.cpp` 和 `query_barcodes` 只读查询，按 `LS_AS_BARCODE` 支持日期、条形码、姓名、病人号、上机状态、专业组和取消签收状态筛选；上机状态筛选和列表展示均基于 `OPER_STATE`。
+- **常规报告界面接入**：工具菜单 `常规报告` 替换原 `工具2` 占位页，新增 `regular_report_module.cpp`，按 `temp/模版2.png` 基本完成左侧标本/病人/验单信息、中间检验结果列表、右侧信息列表和底部功能按钮区；中间/右侧拖条复用 `search_splitter` 并保存到 `[RegularReport] SplitterX`；左侧滚动区域用自绘分组边框/标题替代真实 `GROUPBOX`，内部控件启用 `WS_CLIPSIBLINGS`；右侧顶部摘要改为父面板自绘并按宽度换行，以减少快速拖动和滚动时的残影；当前暂不接数据库查询。
+- **LIS 摘要项目代码配置化**：系统设置新增 ABO、RhD、Hb、PLT 项目代码配置，保存到 `ClientConfig.ini` 的 `[LisSummary]`，输血检验结果窗口据此显示最近血型鉴定和血常规摘要。
 - **LIS 查询体验优化**：输血检验结果窗口中，组合项目列表查询和最近血型/血常规摘要查询拆分为两个独立后台任务；列表先返回先展示，摘要完成后再单独刷新，避免慢摘要阻塞列表显示。
 - **字体设置联动**：主程序按系统设置字号创建模块字体；菜单栏及子菜单、输血结果查询窗口和 LIS 检验信息弹窗会随设置页字号保存后同步刷新，底部状态栏保持系统默认字体。
 - **安装包运行库补齐**：NSIS 脚本支持通过 `VC_REDIST_DIR` 把 MSVC x64 CRT DLL 一起打入安装包，避免目标电脑缺少 `MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`。
@@ -14,7 +18,7 @@
 
 ## v2026.05.06
 
-- **主程序壳**：新建 `main_app.exe`（Win32），全屏平台窗口。
+- **主程序壳**：新建 `lis_workbench.exe`（Win32），全屏平台窗口。
 - 菜单栏：检验管理 + 工具 + 系统（含关于对话框）。
 - **MenuToolbar 组件**：自绘菜单风格工具栏，键盘导航、分隔线、禁用态、拉伸占位、图标支持。
 - 状态栏：系统字体 + 百分比宽度，本机 IP + 实时时钟。
@@ -45,7 +49,7 @@
 
 - CI 双绿通过、Qt 编译链路验证、UTF-8 编译选项、一键构建脚本。
 - 设置对话框 + 主窗口三栏布局 + 查询流程 + 趋势窗口（四组件全部实现）。
-- QSettings 使用绝对 exe 目录路径，与 Win32 版共享 `result_search.ini`。
+- QSettings 使用绝对 exe 目录路径，与 Win32 版共享 `ClientConfig.ini`。
 
 ## v2026.05.03
 

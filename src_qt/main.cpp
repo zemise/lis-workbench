@@ -5,13 +5,18 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QFile>
 #include <QProcessEnvironment>
 #include <QScreen>
 #include <QSettings>
 
 static void applyEnvOverrides() {
     auto env = QProcessEnvironment::systemEnvironment();
-    QString iniPath = QCoreApplication::applicationDirPath() + "/result_search.ini";
+    QString iniPath = QCoreApplication::applicationDirPath() + "/ClientConfig.ini";
+    QString legacyIniPath = QCoreApplication::applicationDirPath() + "/result_search.ini";
+    if (!QFile::exists(iniPath) && QFile::exists(legacyIniPath)) {
+        QFile::copy(legacyIniPath, iniPath);
+    }
     QSettings ini(iniPath, QSettings::IniFormat);
 
     auto setIf = [&](const char* envKey, const char* iniKey) {
@@ -64,8 +69,8 @@ static std::vector<search::TrendPoint> buildMockData() {
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("ResultSearch");
-    app.setApplicationDisplayName(QString::fromWCharArray(L"检验结果查询"));
+    app.setApplicationName("LISWorkbench");
+    app.setApplicationDisplayName(QString::fromWCharArray(L"LIS 工作台 - 检验结果查询"));
     app.setWindowIcon(QIcon(":/app.ico"));
     applyEnvOverrides();
 

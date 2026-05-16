@@ -113,7 +113,7 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
     add_list_column(ui.reports, report_columns::PrintStatus, L"打印", S(60));
     add_list_column(ui.reports, report_columns::SelfServicePrintStatus, L"自助机", S(60));
 
-    ui.splitter = CreateWindowExW(0, L"ResultSearchSplitter", L"",
+    ui.splitter = CreateWindowExW(0, L"LISWorkbenchSplitter", L"",
                                   WS_CHILD | WS_VISIBLE,
                                   S(1040), list_top, S(8), list_height,
                                   hwnd, reinterpret_cast<HMENU>(ids.splitter), GetModuleHandleW(nullptr), nullptr);

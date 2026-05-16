@@ -307,6 +307,34 @@ void add_blood_apply_status(std::ostringstream& sql, const std::string& value) {
 
     sql << " AND LTRIM(RTRIM(a.ApplyForm_Statue))='" << sql_escape(status) << "'";
 }
+
+void add_barcode_machine_status(std::ostringstream& sql, const std::string& value) {
+    const auto status = trim(value);
+    if (status.empty() || status == "全部") {
+        return;
+    }
+    if (status == "已签收未上机") {
+        sql << " AND b.OPER_STATE=0";
+    } else if (status == "已上机未审核") {
+        sql << " AND b.OPER_STATE=1";
+    } else if (status == "审核完成") {
+        sql << " AND b.OPER_STATE=2";
+    } else if (status == "已审核未发送") {
+        sql << " AND 1=0";
+    } else if (status == "发送完成") {
+        sql << " AND b.OPER_STATE=3";
+    }
+}
+
+const char* barcode_machine_status_sql() {
+    return "CASE b.OPER_STATE"
+           " WHEN 0 THEN '未上机'"
+           " WHEN 1 THEN '已上机'"
+           " WHEN 2 THEN '审核完成'"
+           " WHEN 3 THEN '发送完成'"
+           " ELSE '' END";
+}
+
 #endif
 
 }  // namespace
@@ -767,6 +795,127 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
         row.patient_sex       = fetch_column(stmt, 17);
         row.patient_age       = fetch_column(stmt, 18);
         row.reaction_history  = fetch_column(stmt, 19);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)filters; (void)log;
+    error = "query_barcodes is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(filters.connection_string, db, error, log)) return false;
+
+    const std::string date_col =
+        trim(filters.date_field) == "Receive" ? "b.IN_DATE" :
+        trim(filters.date_field) == "Machine" ? "b.IN_DATE" :
+        "b.REQ_TIME";
+
+    std::ostringstream where;
+    where << " WHERE b.CANCEL_DATE IS " << (filters.canceled ? "NOT NULL" : "NULL");
+
+    if (!trim(filters.start_date).empty()) {
+        where << " AND " << date_col << " >= '" << sql_escape(trim(filters.start_date)) << "'";
+    }
+    if (!trim(filters.end_date).empty()) {
+        where << " AND " << date_col << " < DATEADD(day,1,'" << sql_escape(trim(filters.end_date)) << "')";
+    }
+    add_like(where, "b.BARCODE", filters.barcode);
+    add_like(where, "b.NAME", filters.patient_name);
+    add_like(where, "b.REG_NO", filters.reg_no);
+    add_eq(where, "CONVERT(varchar(20),b.ROOM_CODE)", filters.room_code);
+
+    add_barcode_machine_status(where, filters.machine_status);
+
+    const auto sort = trim(filters.sort_order);
+    std::string order_expr;
+    if (sort == "request") {
+        order_expr = "b.REQ_TIME DESC,b.ID DESC";
+    } else if (sort == "barcode") {
+        order_expr = "b.BARCODE DESC,b.ID DESC";
+    } else if (sort == "receive_desc") {
+        order_expr = "b.IN_DATE DESC,b.ID DESC";
+    } else {
+        order_expr = "b.IN_DATE ASC,b.ID ASC";
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT "
+        << "isnull((SELECT TOP 1 LTRIM(RTRIM(r.OPER_NO))"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND r.TXM_NO=b.BARCODE"
+        << " AND nullif(LTRIM(RTRIM(r.OPER_NO)),'') IS NOT NULL"
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC),'')"
+        << ",isnull(CONVERT(varchar(10),b.JZ_FLAG),'') AS emergency,"
+        << "isnull(LTRIM(RTRIM(b.BARCODE)),'') AS barcode,"
+        << "isnull(LTRIM(RTRIM(b.REG_NO)),'') AS reg_no,"
+        << "isnull(LTRIM(RTRIM(b.TYPENAME)),'') AS type_name,"
+        << "isnull(LTRIM(RTRIM(b.NAME)),'') AS patient_name,"
+        << "isnull(LTRIM(RTRIM(b.SEX)),'') AS sex,"
+        << "isnull(LTRIM(RTRIM(b.DEPT_NAME)),'') AS dept_name,"
+        << "isnull(LTRIM(RTRIM(b.BEDNO)),'') AS bed_no,"
+        << "isnull(LTRIM(RTRIM(b.OPER_CODE)),'') AS receiver,"
+        << "isnull(CONVERT(varchar(19),b.IN_DATE,120),'') AS receive_time,"
+        << "isnull(LTRIM(RTRIM(b.ORDER_TEXT)),'') AS order_text,"
+        << "isnull(LTRIM(RTRIM(b.SAMP_NAME)),'') AS sample_name,"
+        << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),b.FY))),'') AS fee,"
+        << "isnull(LTRIM(RTRIM(b.REQ_DRN)),'') AS request_doctor,"
+        << "isnull(CONVERT(varchar(10),b.ZT_FLAG),'') AS status,"
+        << "isnull(LTRIM(RTRIM(b.NOTE)),'') AS note,"
+        << "isnull(LTRIM(RTRIM(b.REASON)),'') AS reason,"
+        << "isnull(LTRIM(RTRIM(b.sjyq_qsr)),'') AS submitter,"
+        << "isnull(nullif(LTRIM(RTRIM(b.COLLECTION_TIME)),''),isnull(CONVERT(varchar(19),b.SUB_DATE,120),'')) AS submit_time,"
+        << "isnull(CONVERT(varchar(19),b.REQ_TIME,120),'') AS request_time,"
+        << "isnull(CONVERT(varchar(19),b.CANCEL_DATE,120),'') AS cancel_time,"
+        << "isnull(LTRIM(RTRIM(b.CANCEL_OPER)),'') AS cancel_operator,"
+        << "isnull(CONVERT(varchar(30),b.HZID),'') AS hzid,"
+        << barcode_machine_status_sql() << " AS machine_status"
+        << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
+        << where.str()
+        << " ORDER BY " << order_expr;
+
+    if (log) log("exec sql: " + sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        BarcodeQueryRow row;
+        row.sample_no      = fetch_column(stmt, 1);
+        row.emergency      = fetch_column(stmt, 2);
+        row.barcode        = fetch_column(stmt, 3);
+        row.reg_no         = fetch_column(stmt, 4);
+        row.type_name      = fetch_column(stmt, 5);
+        row.name           = fetch_column(stmt, 6);
+        row.sex            = fetch_column(stmt, 7);
+        row.dept_name      = fetch_column(stmt, 8);
+        row.bed_no         = fetch_column(stmt, 9);
+        row.receiver       = fetch_column(stmt, 10);
+        row.receive_time   = fetch_column(stmt, 11);
+        row.order_text     = fetch_column(stmt, 12);
+        row.sample_name    = fetch_column(stmt, 13);
+        row.fee            = fetch_column(stmt, 14);
+        row.request_doctor = fetch_column(stmt, 15);
+        row.status         = fetch_column(stmt, 16);
+        row.note           = fetch_column(stmt, 17);
+        row.reason         = fetch_column(stmt, 18);
+        row.submitter      = fetch_column(stmt, 19);
+        row.submit_time    = fetch_column(stmt, 20);
+        row.request_time   = fetch_column(stmt, 21);
+        row.cancel_time    = fetch_column(stmt, 22);
+        row.cancel_operator = fetch_column(stmt, 23);
+        row.hzid           = fetch_column(stmt, 24);
+        row.machine_status = fetch_column(stmt, 25);
         rows.push_back(row);
     }
 

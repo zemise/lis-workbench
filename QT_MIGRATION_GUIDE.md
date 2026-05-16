@@ -16,7 +16,7 @@
 | `search_app.*` | 应用规则层 — `QueryInput` 结构、筛选器组装、状态文案映射 |
 | `search_controller.*` | 控制层 — 测试连接、加载字典、执行查询 |
 | `search_text.*` | 文本工具 — `trim`、UTF-8 ↔ 宽字符转换 |
-| `app_settings.*` | 配置读写 — `result_search.ini`、连接串生成 |
+| `app_settings.*` | 配置读写 — `ClientConfig.ini`、连接串生成 |
 | `search_view_state.h` | 状态聚合 — `ViewState` 纯数据结构，IO 逻辑已迁至 UI 层 |
 | `version.h` | 版本号与标题常量 |
 | `search_ui_columns.h` | 列号常量 — Qt 中列号由 model 管理，此文件仅保留语义参考 |

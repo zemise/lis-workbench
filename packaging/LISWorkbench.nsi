@@ -1,16 +1,16 @@
 Unicode false
 
 !ifndef APP_NAME
-!define APP_NAME "Result Search"
+!define APP_NAME "LIS Workbench"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.05.06"
+!define APP_VERSION "v2026.05.07"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
 !endif
 !ifndef APP_EXE
-!define APP_EXE "result_search.exe"
+!define APP_EXE "lis_workbench.exe"
 !endif
 !ifndef BUILD_DIR
 !define BUILD_DIR "..\build\windows-x64"
@@ -19,12 +19,12 @@ Unicode false
 !define OUTPUT_DIR "..\out\windows\package-work"
 !endif
 !ifndef OUTPUT_NAME
-!define OUTPUT_NAME "ResultSearch-Setup.exe"
+!define OUTPUT_NAME "LISWorkbench-Setup.exe"
 !endif
 
 Name "${APP_NAME}"
 OutFile "${OUTPUT_DIR}\${OUTPUT_NAME}"
-InstallDir "$PROGRAMFILES64\ResultSearch"
+InstallDir "$PROGRAMFILES64\LISWorkbench"
 RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
@@ -47,9 +47,15 @@ Section "Install"
   !endif
   SetOutPath "$INSTDIR"
   SetOverwrite off
-  IfFileExists "$INSTDIR\result_search.ini" +2 0
-    FileOpen $0 "$INSTDIR\result_search.ini" w
+  IfFileExists "$INSTDIR\ClientConfig.ini" config_done 0
+  IfFileExists "$INSTDIR\result_search.ini" copy_legacy_config create_config
+copy_legacy_config:
+    CopyFiles /SILENT "$INSTDIR\result_search.ini" "$INSTDIR\ClientConfig.ini"
+    Goto config_done
+create_config:
+    FileOpen $0 "$INSTDIR\ClientConfig.ini" w
     FileClose $0
+config_done:
   SetOverwrite on
 
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"

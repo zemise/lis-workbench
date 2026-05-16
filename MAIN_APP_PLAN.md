@@ -29,10 +29,14 @@
 ## 菜单结构
 
 ```
-检验结果查询平台
+LIS 工作台
 ├── 检验管理
-│   ├── 检验结果查询    → 打开当前 cpp_search 窗口
+│   ├── 检验结果查询    → 打开检验结果查询窗口
 │   └── 输血结果查询    → 打开输血申请查询窗口
+│
+├── 工具
+│   ├── 已签收条码查询  → 打开已签收条码查询窗口
+│   └── 常规报告        → 打开常规报告录入/查看界面
 │
 └── 系统
     └── 参数设置         → 打开数据库/系统配置窗口
@@ -47,7 +51,7 @@
 | 1.1 创建主窗口 | `main_frame.cpp` — 注册窗口类，全屏显示 | ✅ |
 | 1.2 菜单栏 | 检验管理 / 工具 / 系统，菜单项占位 | ✅ |
 | 1.3 状态栏 | 4 栏百分比宽度 + 系统字体 + IP + 时钟 | ✅ |
-| 1.4 图标+标题 | `resource/app.ico`，标题 "检验结果查询平台" | ✅ |
+| 1.4 图标+标题 | `resource/app.ico`，标题 "LIS 工作台" | ✅ |
 | 1.5 MDI 客户区 | `main_frame.cpp` — MDI 子窗口容器 + 窗口菜单 + 占位子窗口 | ✅ |
 | 1.6 构建脚本 | `scripts/build_main.ps1` | ✅ |
 
@@ -55,9 +59,11 @@
 
 | 任务 | 说明 | 状态 |
 |:-----|------|------|
-| 2.1 检验结果查询接入 | `search_child.cpp` — SearchQueryChild 类 + QueryState 每实例独立 + 分割器持久化 | ✅ |
+| 2.1 检验结果查询接入 | `query_module.cpp` — 检验结果查询单实例 MDI 子窗口 + QueryState 每实例独立 + 通用拖条控件 + 分割器持久化 | ✅ |
 | 2.2 输血结果查询模块 | `blood_module.cpp` — 独立 `BloodModuleChild` 类，接入 `LS_XK_BloodRequestApply` 只读查询；支持病人编号、病人姓名、申请单号、申请状态、申请日期过滤，其中申请状态按 `ApplyForm_Statue` 中文值匹配；LIS 结果弹窗中组合项目列表和摘要信息独立后台查询 | ✅ |
 | 2.3 系统设置接入 | `main_frame.cpp` — 复用 `MdiPlaceholderChild` 类 + 设置表单控件 + 单实例模式 | ✅ |
+| 2.4 已签收条码查询模块 | `barcode_module.cpp` — 接入 `LS_AS_BARCODE` 只读查询，支持日期、条形码、姓名、病人号、上机状态、专业组和取消签收状态过滤；业务修改按钮保持禁用 | ✅ |
+| 2.5 常规报告模块 | `regular_report_module.cpp` — 按 `temp/模版2.png` 基本完成三栏报告工作台静态界面；中间/右侧拖条可调整并持久化；左侧滚动表单采用自绘分组框 + 内部控件 `WS_CLIPSIBLINGS`，右侧顶部摘要采用父面板自绘并自动换行，减少拖动和滚动残影；暂不接数据库查询 | ✅ |
 
 ### 阶段 3：统一配置
 
@@ -116,6 +122,8 @@ src/
   module_registry.h       ← ModuleContext + ModuleDef 统一接口
   menu_toolbar.cpp/h      ← 自绘菜单风格工具栏组件
   query_module.cpp/h      ← 检验结果查询 MDI 子窗口
+  barcode_module.cpp/h    ← 已签收条码查询 MDI 子窗口
+  regular_report_module.cpp/h ← 常规报告 MDI 子窗口
   settings_module.cpp/h   ← 系统设置 MDI 子窗口
 
   main.cpp                ← 独立查询工具（不变）
@@ -136,7 +144,7 @@ src/
 主程序开发期间：
 - Win32 版查询仍可独立编译运行（`result_search.exe`）
 - Qt 版不受影响
-- 新增主程序入口编译为独立 exe（`main_app.exe`），链接 `search_core`
+- 新增主程序入口编译为独立 exe（`lis_workbench.exe`），链接 `search_core`
 
 ## 技术选型
 
@@ -144,7 +152,7 @@ src/
 |------|------|------|
 | 主窗口框架 | Win32 原生 | 与现有查询界面一致，零额外依赖 |
 | 子窗口模式 | MDI | 多文档接口，各模块作为独立子窗口 |
-| 配置共享 | `result_search.ini` | 延用现有格式 |
+| 配置共享 | `ClientConfig.ini` | 延用现有格式 |
 | 数据库连接 | 主窗口持有 `DbSettings` | 避免各模块重复配置 |
 
 ## 设计原则
@@ -176,7 +184,7 @@ ModuleDef g_queryModule = {
 ```
 CMake 目标：
   result_search.exe       ← 独立查询工具（现有，不受影响）
-  main_app.exe            ← 主程序
+  lis_workbench.exe            ← 主程序
     ├── main_frame.cpp        ← 主窗口 + g_modules[] 注册表
     ├── query_module.cpp      ← 查询 MDI 子窗口
     ├── settings_module.cpp   ← 设置 MDI 子窗口
@@ -226,7 +234,7 @@ struct AppContext {
 | 保证项 | 措施 |
 |--------|------|
 | 查询工具独立运行 | `result_search.exe` 目标不变，不引入主程序依赖 |
-| INI 格式扩展 | 主程序沿用 `result_search.ini`，新增可选 `[LisSummary]` 项目代码配置，缺失时使用内置默认值 |
+| INI 格式扩展 | 主程序沿用 `ClientConfig.ini`，新增可选 `[LisSummary]` 项目代码配置，缺失时使用内置默认值 |
 | 核心库不变 | `search_core` 只加功能不改接口 |
 | Qt 版不受影响 | 主程序只做 Win32 入口，Qt 版保持原样 |
 | CI 双版继续 | `build-win32` + `build-qt` job 不动，新加 `build-main-app` job |
@@ -242,7 +250,7 @@ struct AppContext {
   settings.exe        ← 参数设置独立运行
 
 集成模式：
-  main_app.exe        ← 所有模块在主窗口中运行
+  lis_workbench.exe        ← 所有模块在主窗口中运行
 ```
 
 - 每个模块保留独立的 `WinMain` + 独立窗口入口

@@ -4,7 +4,7 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(cpp_search LANGUAGES CXX)
+project(lis_workbench LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,18 +64,22 @@ add_executable(main_app WIN32
     src/main_frame.cpp
     src/menu_toolbar.cpp
     src/app_settings_io.cpp
+    src/barcode_module.cpp
     src/blood_module.cpp
     src/query_module.cpp
+    src/regular_report_module.cpp
     src/settings_module.cpp
     src/search_input_view_model.cpp
     src/search_ui_events.cpp
     src/search_ui_presenter.cpp
     src/search_settings_dialog.cpp
+    src/search_splitter.cpp
     src/search_ui_layout.cpp
     src/trend_window.cpp
     src/trend_chart_renderer.cpp
     resource/app.rc
 )
+set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX)
 target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32)

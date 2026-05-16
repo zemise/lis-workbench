@@ -27,6 +27,9 @@ SplitterX=500
 
 [Blood]             ← 输血模块私有
 SplitterX=300
+
+[RegularReport]     ← 常规报告模块私有
+SplitterX=900
 ```
 
 每个模块的 `ModuleDef.name` 即 section 名，私有 key 只在对应 section 下读写。
@@ -173,6 +176,15 @@ HWND create_xxx_module(const ModuleContext& ctx) {
 | 状态传递 | `g_pending` 临时指针 → `WM_CREATE` 取走 → `SetProp` 持久化 |
 | 类注册 | `static bool` 守卫，仅注册一次 |
 
+### 通用拖条控件
+
+MDI 模块需要左右拖动分割区时，优先复用 `search_splitter.*`：
+
+- `search::create_splitter(...)` 创建 `LISWorkbenchSplitter` 子控件。
+- 拖动中向父窗口发送 `search::WM_SPLITTER_DRAG`，`wParam` 为父窗口客户区内的分割器 X 坐标，`lParam` 为拖条 HWND。
+- 鼠标释放时发送 `search::WM_SPLITTER_RELEASED`，模块在释放消息中保存自己的 `SplitterX`。
+- 每个模块仍负责自己的布局约束和 INI section，例如 `Query/SplitterX`、`RegularReport/SplitterX`。
+
 ### 分割器位置持久化（重要）
 
 若模块包含可拖拽分割器，加载位置值后**不可在 `WM_CREATE` 的小窗口中传入 `layout_main_window`**（会被钳制）。应存入 `pendingSplitterX` 字段，在 `WM_SIZE` 中 `IsZoomed(hwnd)` 为真时才写入真值：
@@ -292,7 +304,7 @@ case WM_COMMAND: {
     // 2. 固定项
     switch (id) {
         case IDM_ABOUT:
-            MessageBoxW(hwnd, L"检验结果查询平台\n版本 v2026.05.06\n\n作者：Zhao Wang", L"关于", MB_ICONINFORMATION);
+            MessageBoxW(hwnd, L"LIS 工作台\n版本 v2026.05.07\n\n作者：Zhao Wang", L"关于", MB_ICONINFORMATION);
             return 0;
         case ID_BTNCLOSE:  closeActiveMdiChild(); return 0;
         case IDM_CASCADE:  SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); return 0;
@@ -332,6 +344,26 @@ case WM_COMMAND: {
 4. 在 `CMakeLists.txt` 的 `main_app` 源文件列表加 `src/xxx_module.cpp`
 5. 私有配置全部使用 `search::load_module_int(L"Xxx", ...)` / `search::save_module_int(L"Xxx", ...)`
 
+当前已接入的真实模块包括：
+
+- `Query`：检验结果查询
+- `Blood`：输血结果查询
+- `Barcode`：已签收条码查询
+- `RegularReport`：常规报告
+- `Settings`：系统设置
+
+### Win32 长表单滚动绘制经验
+
+`RegularReport` 左侧长表单曾出现拖动滚动条后组件残影停留。最终采用的方案是：
+
+- `leftPanel` / `leftContent` 保持容器级 `WS_CLIPCHILDREN | WS_CLIPSIBLINGS`。
+- 表单内部控件统一使用 `WS_CLIPSIBLINGS`，减少兄弟窗口互相覆盖绘制。
+- 不再创建真实 `GROUPBOX` 子窗口；真实 `GROUPBOX` 会覆盖整个分组区域，内部控件作为兄弟窗口启用 `WS_CLIPSIBLINGS` 后会被它裁剪掉。
+- 分组边框和标题改由内容容器在 `WM_PAINT` 中自绘，标题字体跟随模块字体重新生成。
+- 对会随拖条宽度变化而换行的装饰/摘要文字，优先由父面板在 `WM_PAINT` 中自绘并自行计算高度，避免透明 `STATIC` 控件在频繁 `MoveWindow` 时留下残影。
+
+后续遇到“滚动大量 Win32 子控件残影”时，优先避免让大面积装饰性控件参与子窗口裁剪；对仅用于视觉分组的边框/标题，优先考虑父窗口自绘，而不是创建真实子窗口。
+
 ---
 
 ## 5. 实施步骤
@@ -340,7 +372,7 @@ case WM_COMMAND: {
 |------|------|----------|
 | 5.1 | 新建 `module_registry.h` | 新增 |
 | 5.2 | `app_settings_io` 新增 `save/load_module_int/str` | 修改 |
-| 5.3 | 改造 `search_child.cpp` 为 `query_module.cpp`，遵循模板 + `ModuleContext` | 重写 |
+| 5.3 | 抽出 `query_module.cpp`，遵循模板 + `ModuleContext` | 重写 |
 | 5.4 | 提取设置子窗口为 `settings_module.cpp`，从 `main_frame.cpp` 移出 | 新增+清理 |
 | 5.5 | `main_frame.cpp` 引入 `g_modules[]`，自动菜单+自动分发 | 重构 |
 | 5.6 | 各模块 INI 读写切换到模块 API | 迁移 |

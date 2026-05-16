@@ -1,4 +1,4 @@
-# cpp_search Windows 打包说明
+# lis-workbench Windows 打包说明
 
 ## CI 自动构建
 
@@ -7,7 +7,7 @@
 | Job | Runner | 产物 |
 |-----|--------|------|
 | `build-win32` | ubuntu-24.04 (MinGW-w64) | `result_search.exe` |
-| `build-qt` | windows-2022 (MSVC + Qt 5.15) | `result_search_qt.exe` + `ResultSearch-Qt-Setup.exe` |
+| `build-qt` | windows-2022 (MSVC + Qt 5.15) | `result_search_qt.exe` |
 
 产物可从 Actions 页面下载（Artifacts）。
 
@@ -22,8 +22,8 @@ scripts/build_windows_package.sh
 输出：
 
 ```text
-out/windows/portable/ResultSearch/result_search.exe
-out/windows/installer/ResultSearch-Setup.exe
+out/windows/portable/LISWorkbench/result_search.exe
+out/windows/installer/LISWorkbench-Setup.exe
 ```
 
 ## 实机开发（Windows）
@@ -49,8 +49,8 @@ cmake --build build/windows-x64 --config Release -j
 .\scripts\build_qt.ps1
 
 # NSIS 安装包
-makensis /DAPP_VERSION=v2026.05.03 /DBUILD_DIR=build\windows-x64\Release ^
-  /DOUTPUT_DIR=..\out\windows\installer packaging\ResultSearch.nsi
+makensis /DAPP_VERSION=v2026.05.07 /DBUILD_DIR=build\windows-x64\Release ^
+  /DOUTPUT_DIR=..\out\windows\installer packaging\LISWorkbench.nsi
 ```
 
 如果安装到未安装 VC++ 运行库的电脑，需要把 MSVC x64 CRT 一起打进安装包：
@@ -61,7 +61,7 @@ $vcRedistDir = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse
   Sort-Object FullName -Descending |
   Select-Object -First 1 -ExpandProperty FullName
 
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.05.07 /DAPP_EXE=main_app.exe /DBUILD_DIR=..\build\main-app\Release /DVC_REDIST_DIR="$vcRedistDir" /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=ResultSearch-Setup.exe packaging\ResultSearch.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.05.07 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DVC_REDIST_DIR="$vcRedistDir" /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 ## Visual Studio 版本

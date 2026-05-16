@@ -5,13 +5,30 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <system_error>
 
 namespace search {
 
 namespace {
 
+constexpr const wchar_t* CONFIG_FILE_NAME = L"ClientConfig.ini";
+constexpr const wchar_t* LEGACY_CONFIG_FILE_NAME = L"result_search.ini";
+
 int clamp_font_size(int value) {
     return std::max(8, std::min(24, value));
+}
+
+void migrate_legacy_config_if_needed(const std::filesystem::path& dir) {
+    static bool checked = false;
+    if (checked) return;
+    checked = true;
+
+    const auto current = dir / CONFIG_FILE_NAME;
+    const auto legacy = dir / LEGACY_CONFIG_FILE_NAME;
+    std::error_code ec;
+    if (!std::filesystem::exists(current, ec) && std::filesystem::exists(legacy, ec)) {
+        std::filesystem::copy_file(legacy, current, std::filesystem::copy_options::none, ec);
+    }
 }
 
 }  // namespace
@@ -24,7 +41,9 @@ std::filesystem::path module_dir() {
 }
 
 std::filesystem::path default_ini_path() {
-    return module_dir() / L"result_search.ini";
+    const auto dir = module_dir();
+    migrate_legacy_config_if_needed(dir);
+    return dir / CONFIG_FILE_NAME;
 }
 
 AppSettings load_settings(const std::filesystem::path& ini_path) {

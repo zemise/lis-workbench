@@ -135,14 +135,14 @@ void show_settings_dialog(HWND owner,
                                                      GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = L"ResultSearchSettingsWindow";
+        wc.lpszClassName = L"LISWorkbenchSettingsWindow";
         RegisterClassExW(&wc);
         registered = true;
     }
 
     auto* state = new SettingsDialogState{font, settings, font_size, callbacks};
     const float s = search::dpi_scale_factor(owner);
-    HWND win = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ResultSearchSettingsWindow", L"数据库设置",
+    HWND win = CreateWindowExW(WS_EX_DLGMODALFRAME, L"LISWorkbenchSettingsWindow", L"数据库设置",
                                WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
                                CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(490 * s), static_cast<int>(286 * s),
                                owner, nullptr, GetModuleHandleW(nullptr), state);

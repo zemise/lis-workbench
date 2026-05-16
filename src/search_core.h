@@ -116,6 +116,48 @@ struct BloodQueryFilters {
     int limit = 500;
 };
 
+struct BarcodeQueryRow {
+    std::string sample_no;       // 样本号（OPER_NO）
+    std::string emergency;       // 急诊
+    std::string barcode;         // 条形码
+    std::string reg_no;          // 病人号
+    std::string type_name;       // 类型
+    std::string name;            // 姓名
+    std::string sex;             // 性别
+    std::string dept_name;       // 申请科室
+    std::string bed_no;          // 床号
+    std::string receiver;        // 签收人
+    std::string receive_time;    // 签收时间
+    std::string order_text;      // 医嘱内容
+    std::string sample_name;     // 标本
+    std::string fee;             // 费用
+    std::string request_doctor;  // 申请医生
+    std::string status;          // 状态
+    std::string note;            // 备注
+    std::string reason;          // 原因
+    std::string submitter;       // 送检
+    std::string submit_time;     // 送检时间
+    std::string request_time;    // 申请时间
+    std::string cancel_time;     // 取消时间
+    std::string cancel_operator; // 取消人
+    std::string hzid;            // HZID
+    std::string machine_status;  // 上机状态
+};
+
+struct BarcodeQueryFilters {
+    std::string connection_string;
+    std::string date_field;      // Apply/Receive/Machine
+    std::string start_date;
+    std::string end_date;
+    std::string barcode;
+    std::string patient_name;
+    std::string reg_no;
+    std::string machine_status;  // 全部/已签收未上机/已上机未审核/审核完成/发送完成/已审核未发送
+    std::string room_code;
+    bool canceled = false;       // true: CANCEL_DATE IS NOT NULL; false: CANCEL_DATE IS NULL
+    std::string sort_order;      // receive_asc/receive_desc/request/barcode
+};
+
 using LogFn = std::function<void(const std::string&)>;
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
@@ -125,5 +167,6 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});
+bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search

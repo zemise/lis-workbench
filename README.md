@@ -1,11 +1,19 @@
-# cpp_search
+# lis-workbench
 
-`cpp_search` 是按截图复刻的 LIS 检验结果查询工具起步项目。
+`lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.05.03`
+当前版本：`v2026.05.07`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
+
+命名说明：
+
+- 对外项目名和仓库名使用 `lis-workbench`。
+- 用户可见程序名使用 `LIS 工作台`。
+- 配置文件使用 `ClientConfig.ini`；升级时如果只存在旧 `result_search.ini`，程序会自动复制迁移。
+- 主程序输出文件名使用 `lis_workbench.exe`。
+- 为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部模块名暂时保留。
 
 ### 架构概要
 
@@ -29,7 +37,7 @@
 └─────────────────────┘
 ```
 
-- `build/`、`out/`、`result_search.ini` 视为本地产物，不纳入版本管理
+- `build/`、`out/`、`ClientConfig.ini` 视为本地产物，不纳入版本管理
 
 当前目标：
 
@@ -75,11 +83,17 @@
   - 右侧底部 `导出勾选图片` 可选择一个文件夹，并将勾选项目分别导出为多张 PNG。
   - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
-- 设置页面支持字号配置，保存后会持久化到 `result_search.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
-- 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `result_search.ini` 的 `[LisSummary]`。
-- 数据库配置持久化保存到程序同目录 `result_search.ini`。
+- 设置页面支持字号配置，保存后会持久化到 `ClientConfig.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
+- 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
+- 数据库配置持久化保存到程序同目录 `ClientConfig.ini`。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
+- 工具菜单中的 `已签收条码查询` 已接入 `LS_AS_BARCODE` 只读查询：
+  - 默认不自动查询，日期默认当天申请日期，支持切换签收日期、上机日期。
+  - 支持按条形码、姓名、病人号、上机状态、专业组、取消签收状态筛选；取消签收状态按 `CANCEL_DATE` 是否为空判断，上机状态直接对应 `LS_AS_BARCODE.OPER_STATE`，列表中 `0/1/2` 简化显示为 `未上机 / 已上机 / 审核完成`，下拉中的 `已审核未发送` 暂时不关联实际状态。
+  - 下方列表展示样本号、急诊、条形码、病人号、类型、姓名、性别、申请科室、床号、签收人、签收时间、医嘱内容、标本、费用、申请医生、状态、备注、原因、送检、送检时间、申请时间、取消时间、取消人、HZID、上机状态。
+  - 当前仅实现查询和刷新；取消签收、取消医嘱签收、取消原因限制、导出 Excel 保持禁用，不执行数据库修改。
+- 工具菜单中的 `常规报告` 已替换原 `工具2` 占位页，按 `temp/模版2.png` 基本完成三栏报告工作台静态界面；中间结果区与右侧信息区之间的拖条可调整宽度，位置保存到 `ClientConfig.ini` 的 `[RegularReport] SplitterX`；左侧滚动表单不再使用真实 `GROUPBOX` 子窗口，改由内容容器自绘分组边框和标题，并给内部控件启用兄弟裁剪以减少拖动残影；右侧顶部摘要文字改由父面板自绘并按宽度自动换行，避免拖条调整宽度时透明 `STATIC` 控件残影；当前暂不接数据库查询和业务动作。
 - 主程序 `输血结果查询` 模块：
   - 默认按最近 7 天申请日期自动查询。
   - 支持按病人编号、病人姓名、申请单号、申请状态、申请日期筛选。
@@ -185,15 +199,15 @@ cmake --build build/windows-x64 -j
 
 主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。
 
-VS 原生构建的 `main_app.exe` 依赖 MSVC x64 运行库。打包时可通过 `VC_REDIST_DIR` 把 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll` 等 CRT DLL 一起写入安装包，避免目标电脑未安装 VC++ 运行库时启动失败。
+VS 原生构建的 `lis_workbench.exe` 依赖 MSVC x64 运行库。打包时可通过 `VC_REDIST_DIR` 把 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll` 等 CRT DLL 一起写入安装包，避免目标电脑未安装 VC++ 运行库时启动失败。
 
 ## 使用说明
 
-1. 在 Windows 上运行 `result_search.exe`。
+1. 在 Windows 上运行主程序 `lis_workbench.exe`；独立检验查询工具仍可运行 `result_search.exe`。
 2. 点击底部 `设置`。
 3. 填写服务器、初始数据库、用户名、密码。
 4. 可点击 `测试连接` 验证数据库连接。
-5. 点击 `保存` 后，配置会写入程序同目录 `result_search.ini`。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
+5. 点击 `保存` 后，配置会写入程序同目录 `ClientConfig.ini`。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
 6. 输入姓名、病人号、条码号、日期范围，或通过 `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 7. 点击 `查询`。
 8. 在中间报告列表选择一行，右侧显示该报告的项目结果。
@@ -206,7 +220,7 @@ VS 原生构建的 `main_app.exe` 依赖 MSVC x64 运行库。打包时可通过
 Data Source=172.18.3.8\MSSQLSERVER1;Initial Catalog=trasen;User ID=sa;Password=your_password
 ```
 
-程序会先生成和 `cpp_rapidp` 一致的 SQL Server 连接串格式，再在底层自动尝试：
+程序会生成 SQL Server 连接串，并在底层自动尝试：
 
 - `ODBC Driver 18 for SQL Server`
 - `ODBC Driver 17 for SQL Server`
@@ -216,4 +230,4 @@ Data Source=172.18.3.8\MSSQLSERVER1;Initial Catalog=trasen;User ID=sa;Password=y
 
 - `初始数据库` 直接作为实际查询连接里的 `Initial Catalog`。
 - 前端不再手填 ODBC 驱动，驱动选择由底层自动尝试。
-- 该字段会保存到 `result_search.ini`。
+- 该字段会保存到 `ClientConfig.ini`。

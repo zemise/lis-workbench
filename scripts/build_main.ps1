@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $BuildDir = "build\main-app"
-$Exe = "$BuildDir\$Config\main_app.exe"
+$Exe = "$BuildDir\$Config\lis_workbench.exe"
 
 # Detect VS generator
 $vsGen = (cmake -G --help 2>&1 | Select-String "Visual Studio \d+ 20\d+" | Select-Object -First 1).ToString().TrimStart("* ").Split("=")[0].Trim()

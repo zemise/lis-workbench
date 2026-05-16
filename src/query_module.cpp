@@ -7,6 +7,7 @@
 #include "search_app.h"
 #include "search_controller.h"
 #include "search_input_view_model.h"
+#include "search_splitter.h"
 #include "search_text.h"
 #include "search_ui_context.h"
 #include "search_ui_events.h"
@@ -50,7 +51,6 @@ constexpr int IDC_TREND = 3007;
 constexpr int IDC_STATUS = 4001;
 
 constexpr const wchar_t* WND_CLASS   = L"QueryModuleChild";
-constexpr const wchar_t* SPLITTER_CLASS = L"ResultSearchSplitter";
 constexpr const wchar_t* PROP_STATE  = L"QuerySt";
 constexpr const wchar_t* WINDOW_TITLE = L"检验结果查询";
 constexpr UINT WM_QUERY_LOADED = WM_APP + 71;
@@ -80,7 +80,6 @@ struct QueryState {
     search::ViewState viewState;
     search::QueryInput lastQueryInput;
     bool hasLastQueryInput = false;
-    bool draggingSplitter = false;
     int pendingSplitterX = 0;
     int queryGeneration = 0;
     int resultGeneration = 0;
@@ -263,33 +262,6 @@ void showTrend(HWND owner, QueryState* q) {
                               db(q), input);
 }
 
-LRESULT CALLBACK splitterProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* q = reinterpret_cast<QueryState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-        case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
-            return TRUE;
-        case WM_LBUTTONDOWN:
-            if (q) { q->draggingSplitter = true; SetCapture(hwnd); }
-            return 0;
-        case WM_MOUSEMOVE:
-            if (q && q->draggingSplitter) {
-                POINT pt{}; GetCursorPos(&pt);
-                ScreenToClient(GetParent(hwnd), &pt);
-                splitterX(q) = pt.x - 4;
-                search::layout_main_window(GetParent(hwnd), q->ui, splitterX(q));
-            }
-            return 0;
-        case WM_LBUTTONUP:
-            if (q && q->draggingSplitter) {
-                q->draggingSplitter = false; ReleaseCapture();
-                search::save_module_int(L"Query", L"SplitterX", splitterX(q));
-            }
-            return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* q = reinterpret_cast<QueryState*>(GetPropW(hwnd, PROP_STATE));
 
@@ -301,10 +273,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             q->uiFont = createUiFont(fontSize(q));
             HFONT font = q->uiFont ? q->uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+            search::register_splitter_class(q->ctx.instance);
             search::create_main_controls(hwnd, font, q->ids, q->ui);
             DestroyWindow(q->ui.settings_button);
             q->ui.settings_button = nullptr;
-            SetWindowLongPtrW(q->ui.splitter, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(q));
             search::set_date_picker_today(q->ui.start);
             search::set_date_picker_today(q->ui.end);
             search::initialize_report_status_combo(q->ui.report_status);
@@ -327,6 +299,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             splitterX(q) = x;
             return 0;
         }
+        case search::WM_SPLITTER_DRAG:
+            if (q && reinterpret_cast<HWND>(lp) == q->ui.splitter) {
+                splitterX(q) = static_cast<int>(wp);
+                search::layout_main_window(hwnd, q->ui, splitterX(q));
+            }
+            return 0;
+        case search::WM_SPLITTER_RELEASED:
+            if (q && reinterpret_cast<HWND>(lp) == q->ui.splitter) {
+                splitterX(q) = static_cast<int>(wp);
+                search::layout_main_window(hwnd, q->ui, splitterX(q));
+                search::save_module_int(L"Query", L"SplitterX", splitterX(q));
+            }
+            return 0;
         case WM_DPICHANGED: {
             auto* rect = reinterpret_cast<RECT*>(lp);
             SetWindowPos(hwnd, nullptr, rect->left, rect->top,
@@ -402,15 +387,7 @@ HWND create_query_module(const ModuleContext& ctx) {
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
         wc.lpszClassName = WND_CLASS;
         RegisterClassExW(&wc);
-
-        WNDCLASSEXW swc{};
-        swc.cbSize = sizeof(swc);
-        swc.lpfnWndProc = splitterProc;
-        swc.hInstance = ctx.instance;
-        swc.hCursor = LoadCursor(nullptr, IDC_SIZEWE);
-        swc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_3DSHADOW + 1);
-        swc.lpszClassName = SPLITTER_CLASS;
-        RegisterClassExW(&swc);
+        search::register_splitter_class(ctx.instance);
         classesRegistered = true;
     }
 

@@ -5,6 +5,7 @@ Thumbs.db
 /out/
 /temp/
 
+/ClientConfig.ini
 /result_search.ini
 
 *.user

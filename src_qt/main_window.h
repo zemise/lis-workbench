@@ -71,6 +71,6 @@ private:
     search::QueryInput lastQuery_;
 
     static QString iniPath() {
-        return QCoreApplication::applicationDirPath() + "/result_search.ini";
+        return QCoreApplication::applicationDirPath() + "/ClientConfig.ini";
     }
 };
