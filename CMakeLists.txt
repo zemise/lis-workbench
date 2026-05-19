@@ -3,17 +3,33 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
 
 project(lis_workbench LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+option(LIS_STATIC_MSVC_RUNTIME "Link MSVC runtime statically for portable Win32 deployment" ON)
+
+if(MSVC AND LIS_STATIC_MSVC_RUNTIME)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # MSVC defaults to system locale (e.g. GBK/936) for source encoding.
 # Force UTF-8 so Chinese string literals survive compilation.
 if(MSVC)
     add_compile_options(/utf-8)
+endif()
+
+if(WIN32)
+    set(LIS_WIN7_COMPAT_DEFINITIONS
+        WINVER=0x0601
+        _WIN32_WINNT=0x0601
+        NTDDI_VERSION=0x06010000
+    )
 endif()
 
 # ── Core library ──────────────────────────────────────────────
@@ -27,10 +43,45 @@ add_library(search_core STATIC
     src/trend_core.cpp
 )
 target_include_directories(search_core PUBLIC src)
-target_compile_definitions(search_core PRIVATE UNICODE _UNICODE)
+target_compile_definitions(search_core PUBLIC UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
 
 if(WIN32)
     target_link_libraries(search_core PUBLIC odbc32)
+endif()
+
+set(LIS_LABELPRINT_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../020 LabelPrint/LabelPrint"
+    CACHE PATH "Fallback path to the LabelPrint source project")
+set(LIS_HAS_LABELPRINT OFF)
+set(LIS_LABELPRINT_TARGET "")
+
+find_package(LabelPrint 1.2 CONFIG QUIET)
+if(TARGET LabelPrint::labelprint)
+    set(LIS_HAS_LABELPRINT ON)
+    set(LIS_LABELPRINT_TARGET LabelPrint::labelprint)
+    message(STATUS "Using LabelPrint package")
+elseif(EXISTS "${LIS_LABELPRINT_DIR}/CMakeLists.txt")
+    set(LABELPRINT_BUILD_DEMO OFF CACHE BOOL "Build LabelPrint demo executable" FORCE)
+    set(LABELPRINT_BUILD_TESTS OFF CACHE BOOL "Build LabelPrint tests" FORCE)
+    if(WIN32)
+        set(LABELPRINT_WIN7_COMPAT ON CACHE BOOL "Build LabelPrint with Windows 7 compatibility" FORCE)
+    endif()
+    if(MSVC AND LIS_STATIC_MSVC_RUNTIME)
+        set(LABELPRINT_STATIC_MSVC_RUNTIME ON CACHE BOOL "Link LabelPrint static MSVC runtime" FORCE)
+    endif()
+    add_subdirectory("${LIS_LABELPRINT_DIR}" "${CMAKE_BINARY_DIR}/labelprint" EXCLUDE_FROM_ALL)
+    if(TARGET LabelPrint::labelprint)
+        set(LIS_HAS_LABELPRINT ON)
+        set(LIS_LABELPRINT_TARGET LabelPrint::labelprint)
+    elseif(TARGET labelprint)
+        set(LIS_HAS_LABELPRINT ON)
+        set(LIS_LABELPRINT_TARGET labelprint)
+    endif()
+    if(LIS_HAS_LABELPRINT)
+        message(STATUS "Using LabelPrint source from ${LIS_LABELPRINT_DIR}")
+    endif()
+else()
+    message(STATUS "LabelPrint package not found and fallback source not found at ${LIS_LABELPRINT_DIR}; barcode printing is disabled.")
 endif()
 
 # ── Win32 frontend ────────────────────────────────────────────
@@ -47,7 +98,7 @@ add_executable(result_search WIN32
     resource/app.rc
 )
 target_include_directories(result_search PRIVATE src resource)
-target_compile_definitions(result_search PRIVATE UNICODE _UNICODE)
+target_compile_definitions(result_search PRIVATE UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
 target_link_libraries(result_search PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32)
 
 if(MINGW)
@@ -76,8 +127,15 @@ add_executable(main_app WIN32
 )
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
-target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32)
+target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
+target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool)
+if(LIS_HAS_LABELPRINT)
+    target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
+    if(TARGET labelprint)
+        target_compile_definitions(labelprint PRIVATE ${LIS_WIN7_COMPAT_DEFINITIONS})
+    endif()
+    target_link_libraries(main_app PRIVATE ${LIS_LABELPRINT_TARGET})
+endif()
 
 # MSVC auto-generates manifest; conflict with app.rc. Disable.
 if(MSVC)

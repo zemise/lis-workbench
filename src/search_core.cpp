@@ -140,6 +140,8 @@ struct DbContext {
     SQLHDBC dbc = SQL_NULL_HDBC;
 };
 
+std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle);
+
 std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
     std::wstring buffer(2048, L'\0');
     SQLLEN indicator = 0;
@@ -150,6 +152,42 @@ std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
     }
     buffer.resize(wcslen(buffer.c_str()));
     return trim(wide_to_utf8(buffer));
+}
+
+bool fetch_binary_column(SQLHSTMT stmt, SQLUSMALLINT col, std::vector<unsigned char>& out, std::string& error) {
+    out.clear();
+    unsigned char buffer[8192]{};
+    while (true) {
+        SQLLEN indicator = 0;
+        const SQLRETURN rc = SQLGetData(stmt, col, SQL_C_BINARY, buffer, sizeof(buffer), &indicator);
+        if (rc == SQL_NO_DATA) {
+            return true;
+        }
+        if (indicator == SQL_NULL_DATA) {
+            out.clear();
+            return true;
+        }
+        if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
+            error = "SQLGetData binary failed: " + collect_diag(SQL_HANDLE_STMT, stmt);
+            out.clear();
+            return false;
+        }
+
+        SQLLEN bytes_read = 0;
+        if (indicator == SQL_NO_TOTAL) {
+            bytes_read = rc == SQL_SUCCESS_WITH_INFO ? static_cast<SQLLEN>(sizeof(buffer)) : 0;
+        } else if (rc == SQL_SUCCESS_WITH_INFO && indicator > static_cast<SQLLEN>(sizeof(buffer))) {
+            bytes_read = static_cast<SQLLEN>(sizeof(buffer));
+        } else {
+            bytes_read = std::min<SQLLEN>(indicator, static_cast<SQLLEN>(sizeof(buffer)));
+        }
+        if (bytes_read > 0) {
+            out.insert(out.end(), buffer, buffer + bytes_read);
+        }
+        if (rc == SQL_SUCCESS) {
+            return true;
+        }
+    }
 }
 
 std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle) {
@@ -480,18 +518,39 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
     if (filters.limit > 0) {
         sql << "TOP " << filters.limit << " ";
     }
-    sql << "CAST(r.REP_NO AS varchar(20)),"
+    sql << "CAST(r.ID AS varchar(20)),CAST(r.REP_NO AS varchar(20)),"
         << " isnull(r.OPER_NO,''),isnull(r.NAME,''),isnull(r.TXM_NO,''),"
         << " isnull(CONVERT(varchar(19),r.REP_DATE,120),''),isnull(RTRIM(sx.SEX_NAME),''),isnull(r.AGE,''),"
         << " isnull(r.BED_CODE,''),isnull(RTRIM(p.TYPE_NAME),''),isnull(RTRIM(emp_oper.NAME),''),"
         << " isnull(RTRIM(emp_rep.NAME),''),isnull(r.GROUP_NO,''),"
         << " isnull(r.CONF,''),isnull(r.CHK_FLAG,''),cast(isnull(r.ZYMZ_PRINT,0) as varchar(20)),"
-        << " cast(isnull(r.ZZJ_PRINT,0) as varchar(20)),isnull(r.REG_NO,'')"
+        << " cast(isnull(r.ZZJ_PRINT,0) as varchar(20)),isnull(r.REG_NO,''),"
+        << " isnull(LTRIM(RTRIM(bar.DEPT_NAME)),''),isnull(ord.ORDER_TEXT,''),"
+        << " isnull(LTRIM(RTRIM(samp.SAMP_NAME)),''),isnull(r.NOTE,''),"
+        << " isnull(cast(r.OPER_CODE as varchar(20)),''),isnull(CONVERT(varchar(19),bar.IN_DATE,120),''),"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),isnull(CONVERT(varchar(19),r.REP_TIME,120),''),"
+        << " isnull(cast(r.FY as varchar(32)),''),"
+        << " isnull(NULLIF(LTRIM(RTRIM(emp_dean.NAME)),''),isnull(cast(r.DEAN_OPER as varchar(20)),'')),"
+        << " isnull(LTRIM(RTRIM(emp_req.NAME)),''),"
+        << " isnull(r.DIAG_NAME,''),isnull(r.CREATE_TIME,''),isnull(r.PAT_PHONE,''),"
+        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
+        << " LEFT JOIN LS_AS_SAMPLE samp ON samp.SAMP_CODE=r.SAMP_CODE AND samp.DELETE_BIT=0"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper ON emp_oper.EMPLOYEE_ID = r.OPER_CODE"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_rep ON emp_rep.EMPLOYEE_ID = r.REP_OPER"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_dean ON emp_dean.EMPLOYEE_ID = r.DEAN_OPER"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_req ON emp_req.EMPLOYEE_ID = r.REQ_DR"
+        << " OUTER APPLY (SELECT TOP 1 b.DEPT_NAME,b.IN_DATE,b.JZ_FLAG FROM LS_AS_BARCODE b WITH (NOLOCK)"
+        << " WHERE isnull(b.DELETE_BIT,0)=0 AND b.BARCODE=r.TXM_NO ORDER BY b.ID DESC) bar"
+        << " OUTER APPLY (SELECT STUFF(("
+        << " SELECT '/' + LTRIM(RTRIM(b2.ORDER_TEXT))"
+        << " FROM LS_AS_BARCODE b2 WITH (NOLOCK)"
+        << " WHERE isnull(b2.DELETE_BIT,0)=0 AND b2.BARCODE=r.TXM_NO"
+        << " AND NULLIF(LTRIM(RTRIM(b2.ORDER_TEXT)),'') IS NOT NULL"
+        << " ORDER BY b2.ID"
+        << " FOR XML PATH(''),TYPE).value('.','varchar(max)'),1,1,'') AS ORDER_TEXT) ord"
         << " WHERE r.DELETE_BIT=0";
 
     add_eq(sql, "r.REG_NO", filters.patient_id);
@@ -533,23 +592,39 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         ReportRow row;
-        row.rep_no = fetch_column(stmt, 1);
-        row.oper_no = fetch_column(stmt, 2);
-        row.name = fetch_column(stmt, 3);
-        row.txm_no = fetch_column(stmt, 4);
-        row.chk_date = fetch_column(stmt, 5);
-        row.sex = fetch_column(stmt, 6);
-        row.age = fetch_column(stmt, 7);
-        row.bed_code = fetch_column(stmt, 8);
-        row.patient_type = fetch_column(stmt, 9);
-        row.requester = fetch_column(stmt, 10);
-        row.reviewer = fetch_column(stmt, 11);
-        row.group_name = fetch_column(stmt, 12);
-        row.conf = fetch_column(stmt, 13);
-        row.chk_flag = fetch_column(stmt, 14);
-        row.zymz_print = fetch_column(stmt, 15);
-        row.zzj_print = fetch_column(stmt, 16);
-        row.reg_no = fetch_column(stmt, 17);
+        row.id = fetch_column(stmt, 1);
+        row.rep_no = fetch_column(stmt, 2);
+        row.oper_no = fetch_column(stmt, 3);
+        row.name = fetch_column(stmt, 4);
+        row.txm_no = fetch_column(stmt, 5);
+        row.chk_date = fetch_column(stmt, 6);
+        row.sex = fetch_column(stmt, 7);
+        row.age = fetch_column(stmt, 8);
+        row.bed_code = fetch_column(stmt, 9);
+        row.patient_type = fetch_column(stmt, 10);
+        row.requester = fetch_column(stmt, 11);
+        row.reviewer = fetch_column(stmt, 12);
+        row.group_name = fetch_column(stmt, 13);
+        row.conf = fetch_column(stmt, 14);
+        row.chk_flag = fetch_column(stmt, 15);
+        row.zymz_print = fetch_column(stmt, 16);
+        row.zzj_print = fetch_column(stmt, 17);
+        row.reg_no = fetch_column(stmt, 18);
+        row.dept_name = fetch_column(stmt, 19);
+        row.order_text = fetch_column(stmt, 20);
+        row.sample_name = fetch_column(stmt, 21);
+        row.note = fetch_column(stmt, 22);
+        row.oper_code = fetch_column(stmt, 23);
+        row.collection_time = fetch_column(stmt, 24);
+        row.inspect_date = fetch_column(stmt, 25);
+        row.rep_time = fetch_column(stmt, 26);
+        row.fee = fetch_column(stmt, 27);
+        row.dean_oper = fetch_column(stmt, 28);
+        row.req_doctor = fetch_column(stmt, 29);
+        row.diag_name = fetch_column(stmt, 30);
+        row.create_time = fetch_column(stmt, 31);
+        row.patient_phone = fetch_column(stmt, 32);
+        row.emergency_flag = fetch_column(stmt, 33);
         rows.push_back(row);
     }
 
@@ -575,13 +650,20 @@ bool query_results(const std::string& connection_string, const std::string& rep_
     }
 
     std::ostringstream sql;
-    sql << "SELECT isnull(i.ITEM_NAME,e.ITEM_NAME),isnull(e.RESULT,''),isnull(e.UPBOUND,''),"
+    sql << "SELECT isnull(lm.GROUP_NAME,''),isnull(i.ITEM_NAME,e.ITEM_NAME),isnull(e.RESULT,''),isnull(e.UPBOUND,''),"
         << " isnull(e.DOWNBOUND,''),isnull(RTRIM(i.UNIT),''),isnull(i.ENG_NAME,''),"
         << " isnull(e.NORMAL,''),CAST(e.ITEM_CODE AS varchar(20))"
         << " FROM LS_AS_REPENTRY e"
         << " LEFT JOIN LS_AS_ITEM i ON e.ITEM_CODE = i.ITEM_CODE AND i.DELETE_BIT=0"
+        << " OUTER APPLY ("
+        << " SELECT TOP 1 m.GROUP_NAME"
+        << " FROM LS_AS_LABMATCH m"
+        << " WHERE m.GROUP_CODE=e.GROUP_CODE"
+        << " AND NULLIF(LTRIM(RTRIM(isnull(m.GROUP_NAME,''))),'') IS NOT NULL"
+        << " ORDER BY CASE WHEN isnull(m.DELETE_BIT,0)=0 AND isnull(m.USE_FLAG,0)=0 THEN 0 ELSE 1 END,m.ID"
+        << " ) lm"
         << " WHERE e.DELETE_BIT=0 AND e.REP_NO=" << sql_escape(rep_no)
-        << " ORDER BY e.ITEM_CODE ASC";
+        << " ORDER BY e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
 
     if (log) {
         log("exec sql: " + sql.str() + "\n");
@@ -595,15 +677,71 @@ bool query_results(const std::string& connection_string, const std::string& rep_
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         ResultRow row;
-        row.item_name = fetch_column(stmt, 1);
-        row.result = fetch_column(stmt, 2);
-        row.downbound = fetch_column(stmt, 3);
-        row.upbound = fetch_column(stmt, 4);
-        row.unit = fetch_column(stmt, 5);
-        row.item_eng = fetch_column(stmt, 6);
-        row.normal = fetch_column(stmt, 7);
-        row.item_code = fetch_column(stmt, 8);
+        row.group_name = fetch_column(stmt, 1);
+        row.item_name = fetch_column(stmt, 2);
+        row.result = fetch_column(stmt, 3);
+        row.downbound = fetch_column(stmt, 4);
+        row.upbound = fetch_column(stmt, 5);
+        row.unit = fetch_column(stmt, 6);
+        row.item_eng = fetch_column(stmt, 7);
+        row.normal = fetch_column(stmt, 8);
+        row.item_code = fetch_column(stmt, 9);
         rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_report_picture(const std::string& connection_string, const std::string& rep_no,
+                          std::vector<unsigned char>& picture, std::string& error, LogFn log) {
+    picture.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = "query_report_picture is only available on Windows";
+    return false;
+#else
+    const std::string trimmed_rep_no = trim(rep_no);
+    if (trimmed_rep_no.empty()) {
+        error.clear();
+        return true;
+    }
+
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT TOP 1 PICTURE"
+        << " FROM LS_AS_ITEMPICTURE WITH (NOLOCK)"
+        << " WHERE isnull(DELETE_BIT,0)=0"
+        << " AND REP_NO='" << sql_escape(trimmed_rep_no) << "'"
+        << " AND PICTURE IS NOT NULL"
+        << " AND DATALENGTH(PICTURE)>0"
+        << " ORDER BY PIC_NO,ID";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        disconnect(db);
+        return false;
+    }
+
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        if (!fetch_binary_column(stmt, 1, picture, error)) {
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            disconnect(db);
+            return false;
+        }
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);

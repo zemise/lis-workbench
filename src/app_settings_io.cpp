@@ -5,7 +5,6 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <system_error>
 
 namespace search {
 
@@ -18,35 +17,50 @@ int clamp_font_size(int value) {
     return std::max(8, std::min(24, value));
 }
 
-void migrate_legacy_config_if_needed(const std::filesystem::path& dir) {
+std::wstring join_path(const std::wstring& dir, const wchar_t* file) {
+    if (dir.empty()) return file;
+    const wchar_t last = dir.back();
+    if (last == L'\\' || last == L'/') {
+        return dir + file;
+    }
+    return dir + L"\\" + file;
+}
+
+bool file_exists(const std::wstring& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+void migrate_legacy_config_if_needed(const std::wstring& dir) {
     static bool checked = false;
     if (checked) return;
     checked = true;
 
-    const auto current = dir / CONFIG_FILE_NAME;
-    const auto legacy = dir / LEGACY_CONFIG_FILE_NAME;
-    std::error_code ec;
-    if (!std::filesystem::exists(current, ec) && std::filesystem::exists(legacy, ec)) {
-        std::filesystem::copy_file(legacy, current, std::filesystem::copy_options::none, ec);
+    const auto current = join_path(dir, CONFIG_FILE_NAME);
+    const auto legacy = join_path(dir, LEGACY_CONFIG_FILE_NAME);
+    if (!file_exists(current) && file_exists(legacy)) {
+        CopyFileW(legacy.c_str(), current.c_str(), TRUE);
     }
 }
 
 }  // namespace
 
-std::filesystem::path module_dir() {
+std::wstring module_dir() {
     std::wstring buffer(MAX_PATH, L'\0');
     DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     buffer.resize(len);
-    return std::filesystem::path(buffer).parent_path();
+    const auto pos = buffer.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) return L".";
+    return buffer.substr(0, pos);
 }
 
-std::filesystem::path default_ini_path() {
+std::wstring default_ini_path() {
     const auto dir = module_dir();
     migrate_legacy_config_if_needed(dir);
-    return dir / CONFIG_FILE_NAME;
+    return join_path(dir, CONFIG_FILE_NAME);
 }
 
-AppSettings load_settings(const std::filesystem::path& ini_path) {
+AppSettings load_settings(const std::wstring& ini_path) {
     AppSettings s;
     auto read_str = [&](const wchar_t* key, const wchar_t* fallback = L"") {
         wchar_t buf[1024] = {};
@@ -78,7 +92,7 @@ AppSettings load_settings(const std::filesystem::path& ini_path) {
     return s;
 }
 
-bool save_settings(const std::filesystem::path& ini_path, const AppSettings& s) {
+bool save_settings(const std::wstring& ini_path, const AppSettings& s) {
     auto write_str = [&](const wchar_t* key, const std::wstring& value) {
         return WritePrivateProfileStringW(L"Database", key, value.c_str(), ini_path.c_str()) != FALSE;
     };

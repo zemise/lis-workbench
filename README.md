@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.05.07`
+当前版本：`v2026.05.19`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -85,15 +85,36 @@
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
 - 设置页面支持字号配置，保存后会持久化到 `ClientConfig.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
 - 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
+- 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
+- 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
+- 主程序工具栏提供 `常规报告` 快捷入口，复用菜单栏 `工具 -> 常规报告` 的打开逻辑；右侧 `关闭` 按钮仍用于关闭当前 MDI 子窗口。
 - 工具菜单中的 `已签收条码查询` 已接入 `LS_AS_BARCODE` 只读查询：
   - 默认不自动查询，日期默认当天申请日期，支持切换签收日期、上机日期。
   - 支持按条形码、姓名、病人号、上机状态、专业组、取消签收状态筛选；取消签收状态按 `CANCEL_DATE` 是否为空判断，上机状态直接对应 `LS_AS_BARCODE.OPER_STATE`，列表中 `0/1/2` 简化显示为 `未上机 / 已上机 / 审核完成`，下拉中的 `已审核未发送` 暂时不关联实际状态。
   - 下方列表展示样本号、急诊、条形码、病人号、类型、姓名、性别、申请科室、床号、签收人、签收时间、医嘱内容、标本、费用、申请医生、状态、备注、原因、送检、送检时间、申请时间、取消时间、取消人、HZID、上机状态。
   - 当前仅实现查询和刷新；取消签收、取消医嘱签收、取消原因限制、导出 Excel 保持禁用，不执行数据库修改。
-- 工具菜单中的 `常规报告` 已替换原 `工具2` 占位页，按 `temp/模版2.png` 基本完成三栏报告工作台静态界面；中间结果区与右侧信息区之间的拖条可调整宽度，位置保存到 `ClientConfig.ini` 的 `[RegularReport] SplitterX`；左侧滚动表单不再使用真实 `GROUPBOX` 子窗口，改由内容容器自绘分组边框和标题，并给内部控件启用兄弟裁剪以减少拖动残影；右侧顶部摘要文字改由父面板自绘并按宽度自动换行，避免拖条调整宽度时透明 `STATIC` 控件残影；当前暂不接数据库查询和业务动作。
+- 工具菜单中的 `常规报告` 已替换原 `工具2` 占位页，按 `temp/模版2.png` 基本完成三栏报告工作台界面：
+  - 构建时优先通过 `find_package(LabelPrint 1.2 CONFIG QUIET)` 链接外部 `LabelPrint` package；正式打包建议用 `scripts/build_main.ps1 -LabelPrintPackagePath` 指向 LabelPrint release zip 解压目录。找不到符合版本的 package 时，再按 `LIS_LABELPRINT_DIR` 回退到源码 `add_subdirectory`，默认路径为 `../../020 LabelPrint/LabelPrint`。两者都找不到时仍可构建，但条码打印不可用。
+  - 通过左侧 `检验日期` 和 `检验仪器` 查询 `LS_AS_REPORT`，右侧信息列表按样本号升序展示报告主记录。
+  - 右侧选中行会回填左侧标本、病人和验单信息，并通过 `REP_NO` 查询中间检验结果列表。
+  - 左侧 `申请日期 / 签收时间 / 上机时间 / 报告时间` 为只读展示控件，不允许用户手动修改。
+  - 右侧信息列表新增 `标签` 列，按 `LS_AS_BARCODE.JZ_FLAG` 显示急诊标记：`1` 显示 `急` 且整行文字为红色，`0` 不显示；行背景按 `CONF`、`CHK_FLAG` 着色，`CONF='S'` 优先显示深绿色，`CHK_FLAG='T'` 显示蓝色。
+  - 右侧顶部 `样本数 / 上机数 / 审核数 / 发送数` 按当前列表内存数据动态统计，分别对应 `REP_NO` 非空、`NAME` 非空、`CHK_FLAG='T'`、`CONF='S'`。
+  - 右侧信息列表支持点击表头进行本地内存排序；排序不会重新查询数据库，并会保留当前选中行和勾选状态。
+  - 右侧信息列表上方的上下箭头用于在当前列表内快速选中第一行和最后一行；底部 `刷新(F5)` 会按当前 `检验仪器` 和 `检验日期` 重新查询右侧信息列表。
+  - 右侧信息列表下方提供 `今天 / 前一天 / 后一天` 快捷按钮，用于切换左侧 `检验日期` 并按当前检验仪器刷新列表；其后 `自动刷新` 默认未启用，勾选后按秒数输入定时刷新，默认 10 秒，最小 5 秒，且不会在上一次查询未完成时叠加发起。
+  - 页面底部 `1 / 2 / 3` 按钮会读取系统设置中的快捷检验仪器，快速切换左侧 `检验仪器` 并按当前 `检验日期` 刷新右侧列表。
+  - 左侧 `样本号` 输入框支持输入样本号后按回车，在当前右侧信息列表中定位并选中对应行，同时触发左侧信息和中间结果列表联动更新。
+  - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码` 和 `打印勾选条码`，会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该报告 `REP_NO` 对应的中间项目明细 `组合项目` 列，而不是右侧列表的项目名称。
+  - 条码打印机名读取 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`，默认 `Xprinter XP-360B #2`；打印机型号和 TSPL/ZPL 后端由 LabelPrint 根据 Windows 打印机元数据自动选择，识别不出时按 XP-360B 兼容路径兜底。如果打印机名失效，需要在系统设置页重新选择条码打印机。
+  - 中间结果列表复用检验结果查询的项目明细查询和 `NORMAL` 偏差展示逻辑；其中 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先取未删除启用记录，缺失时取同组任意非空名称兜底；连续相同组合项目只在第一行显示。
+  - 中间 `图象` 页签打开时，才按当前选中报告的 `REP_NO` 查询 `LS_AS_ITEMPICTURE.PICTURE`；无图像时保持空白，有图像时在左上角固定大图层内按比例绘制，并通过外层滚动视口查看超出窗口的部分。
+  - 中间结果区与右侧信息区之间的拖条可调整宽度，位置保存到 `ClientConfig.ini` 的 `[RegularReport] SplitterX`。
+  - 左侧滚动表单不再使用真实 `GROUPBOX` 子窗口，改由内容容器自绘分组边框和标题，并给内部控件启用兄弟裁剪以减少拖动残影。
+  - 右侧顶部摘要文字改由父面板自绘并按宽度自动换行，避免拖条调整宽度时透明 `STATIC` 控件残影。
 - 主程序 `输血结果查询` 模块：
   - 默认按最近 7 天申请日期自动查询。
   - 支持按病人编号、病人姓名、申请单号、申请状态、申请日期筛选。
@@ -199,7 +220,11 @@ cmake --build build/windows-x64 -j
 
 主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。
 
-VS 原生构建的 `lis_workbench.exe` 依赖 MSVC x64 运行库。打包时可通过 `VC_REDIST_DIR` 把 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll` 等 CRT DLL 一起写入安装包，避免目标电脑未安装 VC++ 运行库时启动失败。
+VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
+
+项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
+
+面向 Windows 7 打包时需要安装 VS 2022 Build Tools，并优先使用 LabelPrint 的 `windows-x64-vs2022-win7` release 包，例如 `.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.0-windows-x64-vs2022-win7"`。不要把 VS 2026 的 CRT DLL 打入安装目录，否则可能出现 `GetSystemTimePreciseAsFileTime` 等 Win8+ 入口点缺失。只面向 Windows 10/11 时可以显式使用 `-Generator "Visual Studio 18 2026"` 和对应的 LabelPrint VS2026 release 包。
 
 ## 使用说明
 

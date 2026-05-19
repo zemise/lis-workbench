@@ -12,8 +12,19 @@
 namespace search {
 
 float dpi_scale_factor(HWND hwnd) {
-    UINT dpi = GetDpiForWindow(hwnd);
-    return dpi / 96.0f;
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+    static auto get_dpi_for_window = reinterpret_cast<GetDpiForWindowFn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    if (get_dpi_for_window) {
+        return get_dpi_for_window(hwnd) / 96.0f;
+    }
+
+    HDC dc = GetDC(hwnd);
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    if (dc) {
+        ReleaseDC(hwnd, dc);
+    }
+    return std::max(1, dpi) / 96.0f;
 }
 
 HWND create_label(HWND parent, const wchar_t* text, int x, int y, int w, int h) {

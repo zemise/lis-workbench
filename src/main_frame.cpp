@@ -23,6 +23,7 @@
 #include "query_module.h"
 #include "regular_report_module.h"
 #include "settings_module.h"
+#include "version.h"
 #include "win32_control_id.h"
 namespace {
 
@@ -374,6 +375,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, &ccs);
 
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
+            mtAddButton(tb, L"常规报告", IDM_TOOL2);
             mtAddStretch(tb);
             HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
             mtAddButton(tb, L"关闭", ID_BTNCLOSE, closeIcon);
@@ -422,10 +424,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Fixed items
             switch (id) {
                 case IDM_ABOUT:
+                {
+                    const std::wstring aboutText =
+                        L"LIS 工作台\n版本 " + search::utf8_to_wide(search::kVersion) +
+                        L"\n\n作者：Zhao Wang";
                     MessageBoxW(hwnd,
-                        L"LIS 工作台\n版本 v2026.05.07\n\n作者：Zhao Wang",
+                        aboutText.c_str(),
                         L"关于", MB_ICONINFORMATION);
                     return 0;
+                }
                 case ID_BTNCLOSE:        closeActiveMdiChild(); return 0;
                 case IDM_EXIT:           DestroyWindow(hwnd); return 0;
                 case IDM_CASCADE:        SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); return 0;

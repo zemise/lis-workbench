@@ -29,6 +29,7 @@ struct QueryFilters {
 };
 
 struct ReportRow {
+    std::string id;
     std::string rep_no;
     std::string oper_no;
     std::string name;
@@ -46,6 +47,21 @@ struct ReportRow {
     std::string zymz_print;
     std::string zzj_print;
     std::string reg_no;
+    std::string dept_name;
+    std::string order_text;
+    std::string sample_name;
+    std::string note;
+    std::string oper_code;
+    std::string collection_time;
+    std::string inspect_date;
+    std::string rep_time;
+    std::string fee;
+    std::string dean_oper;
+    std::string req_doctor;
+    std::string diag_name;
+    std::string create_time;
+    std::string patient_phone;
+    std::string emergency_flag;
 };
 
 struct RoomOption {
@@ -64,6 +80,7 @@ struct MachineOption {
 };
 
 struct ResultRow {
+    std::string group_name;
     std::string item_name;
     std::string result;
     std::string downbound;
@@ -165,6 +182,7 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
 bool query_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
+bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
