@@ -14,6 +14,7 @@
 - **LIS 查询体验优化**：输血检验结果窗口中，组合项目列表查询和最近血型/血常规摘要查询拆分为两个独立后台任务；列表先返回先展示，摘要完成后再单独刷新，避免慢摘要阻塞列表显示。
 - **字体设置联动**：主程序按系统设置字号创建模块字体；菜单栏及子菜单、输血结果查询窗口和 LIS 检验信息弹窗会随设置页字号保存后同步刷新，底部状态栏保持系统默认字体。
 - **安装包运行库与 Win7 兼容**：Win32 目标固定 `WINVER/_WIN32_WINNT=0x0601`，Win10 DPI API 改为动态探测并回退；配置文件迁移改用 Win32 文件 API，减少 `std::filesystem` 带来的新系统入口依赖。`scripts/build_main.ps1` 默认优先已安装的 VS 2022，未安装时自动退到 VS 2026，并开启 `LIS_STATIC_MSVC_RUNTIME=ON`；NSIS 安装时会清理旧包残留的 CRT/UCRT DLL。面向 Windows 7 打包时仍需安装 VS 2022 Build Tools，且不建议携带 VS 2026 CRT DLL，避免 `CreateFile2` / `GetSystemTimePreciseAsFileTime` 等入口点缺失。
+- **GitHub Actions 安装包**：CI 改为当前 `LISWorkbench` 主程序专用构建，下载 LabelPrint `v1.2.0` Win7 兼容 release 包，使用 VS2022 构建并通过 NSIS 输出 `LISWorkbench-Setup-<version>-win7-win11.exe`，弥补本地缺少完整 Windows 7-11 打包环境的问题。
 - 版本号 v2026.05.19。
 
 ## v2026.05.06

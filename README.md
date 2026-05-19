@@ -122,6 +122,7 @@
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
   - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果，并根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
   - `查询检验结果` 窗口的组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
+- GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.0` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
 
 暂未实现：
 

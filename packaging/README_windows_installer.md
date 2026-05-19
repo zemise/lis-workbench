@@ -1,15 +1,18 @@
 # lis-workbench Windows 打包说明
 
-## CI 自动构建
+## GitHub Actions 自动打包
 
-每次 push 到 `main` 或 `feat/*` 分支，GitHub Actions 自动执行：
+每次 push 到 `main` 或 `feat/*` 分支，或手动执行 `workflow_dispatch`，GitHub Actions 会在 `windows-2022` runner 上构建 Win32 主程序并生成 NSIS 安装包。
 
-| Job | Runner | 产物 |
-|-----|--------|------|
-| `build-win32` | ubuntu-24.04 (MinGW-w64) | `result_search.exe` |
-| `build-qt` | windows-2022 (MSVC + Qt 5.15) | `result_search_qt.exe` |
+当前 CI 产物面向 Windows 7 到 Windows 11 的兼容安装包：
 
-产物可从 Actions 页面下载（Artifacts）。
+| Job | Runner | Toolchain | LabelPrint | 产物 |
+|-----|--------|-----------|------------|------|
+| `windows-installer` | `windows-2022` | Visual Studio 2022 x64 | `labelprint-v1.2.0-windows-x64-vs2022-win7.zip` | `LISWorkbench-Setup-<version>-win7-win11.exe` |
+
+CI 会从 LabelPrint GitHub Release 下载 `v1.2.0` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。
+
+说明：GitHub Actions 不能真正提供 Windows 7 runner 做运行验证；这里的 “Win7-Win11” 表示使用 VS2022、静态 MSVC runtime、Win7 兼容宏和 LabelPrint Win7 兼容包构建出的安装包，目标是覆盖 Windows 7 到 Windows 11。
 
 ## 本地打包（macOS）
 
@@ -28,14 +31,14 @@ out/windows/installer/LISWorkbench-Setup.exe
 
 ## 实机开发（Windows）
 
-前提：安装 Qt 5.15.2、CMake、Visual Studio 2022/2026。
+前提：安装 CMake、Visual Studio 2022/2026。
 
 ```powershell
-# 一键构建 Qt 版（自动检测 VS 版本）
-.\scripts\build_qt.ps1 -Run
+# 一键构建主程序（自动检测 VS 版本，默认优先 VS 2022）
+.\scripts\build_main.ps1 -Run
 
 # 全新构建
-.\scripts\build_qt.ps1 -Clean -Run
+.\scripts\build_main.ps1 -Clean -Run
 ```
 
 ## 实机打包（Windows）
@@ -44,9 +47,6 @@ out/windows/installer/LISWorkbench-Setup.exe
 # Win32 主程序。默认优先使用 VS 2022，并静态链接 MSVC runtime，便于兼容 Windows 7。
 # 正式打包建议使用 LabelPrint release zip 解压目录，而不是依赖相邻源码目录。
 .\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.0-windows-x64-vs2022-win7"
-
-# Qt 版
-.\scripts\build_qt.ps1
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
