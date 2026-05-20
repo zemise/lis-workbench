@@ -87,7 +87,7 @@
 - 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
-- 数据库配置持久化保存到程序同目录 `ClientConfig.ini`。
+- 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
 - 主程序工具栏提供 `常规报告` 快捷入口，复用菜单栏 `工具 -> 常规报告` 的打开逻辑；右侧 `关闭` 按钮仍用于关闭当前 MDI 子窗口。
@@ -100,7 +100,8 @@
   - 构建时优先通过 `find_package(LabelPrint 1.2 CONFIG QUIET)` 链接外部 `LabelPrint` package；正式打包建议用 `scripts/build_main.ps1 -LabelPrintPackagePath` 指向 LabelPrint release zip 解压目录。找不到符合版本的 package 时，再按 `LIS_LABELPRINT_DIR` 回退到源码 `add_subdirectory`，默认路径为 `../../020 LabelPrint/LabelPrint`。两者都找不到时仍可构建，但条码打印不可用。
   - 通过左侧 `检验日期` 和 `检验仪器` 查询 `LS_AS_REPORT`，右侧信息列表按样本号升序展示报告主记录。
   - 右侧选中行会回填左侧标本、病人和验单信息，并通过 `REP_NO` 查询中间检验结果列表。
-  - 左侧 `申请日期 / 签收时间 / 上机时间 / 报告时间` 为只读展示控件，不允许用户手动修改。
+  - 左侧 `检验者 / 审核 / 申请日期 / 签收时间 / 上机时间 / 报告时间` 为只读展示控件，不允许用户手动修改。
+  - 左侧可输入控件使用独立 Tab 顺序，按页面视觉从上到下跳转焦点，Shift+Tab 反向跳转。
   - 右侧信息列表新增 `标签` 列，按 `LS_AS_BARCODE.JZ_FLAG` 显示急诊标记：`1` 显示 `急` 且整行文字为红色，`0` 不显示；行背景按 `CONF`、`CHK_FLAG` 着色，`CONF='S'` 优先显示深绿色，`CHK_FLAG='T'` 显示蓝色。
   - 中间和右侧 ListView 失去焦点时仍保持选中行高亮；自绘时清理 `CDIS_SELECTED/CDIS_FOCUS` 并重绘当前选中行，避免系统非活动选中态覆盖业务行色。
   - 右侧顶部 `样本数 / 上机数 / 审核数 / 发送数` 按当前列表内存数据动态统计，分别对应 `REP_NO` 非空、`NAME` 非空、`CHK_FLAG='T'`、`CONF='S'`。
@@ -113,7 +114,8 @@
   - 左侧 `样本号` 输入框支持输入样本号后按回车，在当前右侧信息列表中定位并选中对应行，同时触发左侧信息和中间结果列表联动更新。
   - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码` 和 `打印勾选条码`，会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该报告 `REP_NO` 对应的中间项目明细 `组合项目` 列，而不是右侧列表的项目名称。
   - 条码打印机名读取 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`，默认 `Xprinter XP-360B #2`；打印机型号和 TSPL/ZPL 后端由 LabelPrint 根据 Windows 打印机元数据自动选择，识别不出时按 XP-360B 兼容路径兜底。如果打印机名失效，需要在系统设置页重新选择条码打印机。
-  - 中间结果列表复用检验结果查询的项目明细查询和 `NORMAL` 偏差展示逻辑；其中 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先取未删除启用记录，缺失时取同组任意非空名称兜底；连续相同组合项目只在第一行显示。
+  - 中间结果列表复用检验结果查询的项目明细查询和 `NORMAL` 偏差展示逻辑；其中 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先取未删除启用记录，缺失时取同组任意非空名称兜底；连续相同组合项目只在第一行显示；`结果` 列保持白底，其他列使用浅灰底以突出结果值。
+  - 中间结果列表的 `结果` 单元格支持界面内临时编辑：单击结果单元格开始编辑，回车提交到当前内存行并跳到下一行继续编辑，失焦或 Esc 取消且不抢回焦点；当前不执行数据库写入。
   - 中间 `图象` 页签打开时，才按当前选中报告的 `REP_NO` 查询 `LS_AS_ITEMPICTURE.PICTURE`；无图像时保持空白，有图像时在左上角固定大图层内按比例绘制，并通过外层滚动视口查看超出窗口的部分。
   - 底部 `图形(T)` 按钮会按当前选中报告打开独立结果图窗口，复用同一张 `LS_AS_ITEMPICTURE.PICTURE` 图片；若中间 `图象` 页签已经加载同一报告，则直接复用已加载图像，否则在弹窗内后台加载后显示。弹窗打开后会跟随右侧信息列表当前选中报告自动刷新，图片采用离屏双缓冲绘制，减少窗口缩放时的图片残影；窗口使用项目图标，关闭或完成拖拽缩放时保存尺寸，下次打开沿用。
   - 中间结果区与右侧信息区之间的拖条可调整宽度，位置保存到 `ClientConfig.ini` 的 `[RegularReport] SplitterX`。

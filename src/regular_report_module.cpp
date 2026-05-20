@@ -76,6 +76,7 @@ constexpr int IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
 constexpr int IDM_REPORT_TODO = 5222;
 constexpr int REPORT_COLUMN_COUNT = 30;
+constexpr int RESULT_VALUE_COL = 5;
 constexpr int RIGHT_REPORT_PRINT_COL = 8;
 constexpr UINT_PTR LEFT_PANEL_SUBCLASS = 6205;
 constexpr UINT_PTR LEFT_CONTENT_SUBCLASS = 6206;
@@ -85,6 +86,9 @@ constexpr UINT_PTR BOTTOM_PANEL_SUBCLASS = 6209;
 constexpr UINT_PTR SAMPLE_INPUT_SUBCLASS = 6210;
 constexpr UINT_PTR PICTURE_VIEW_SUBCLASS = 6211;
 constexpr UINT_PTR PICTURE_VIEWPORT_SUBCLASS = 6212;
+constexpr UINT_PTR RESULT_EDIT_SUBCLASS = 6213;
+constexpr UINT_PTR RESULT_LIST_SUBCLASS = 6214;
+constexpr UINT_PTR LEFT_TAB_SUBCLASS = 6215;
 constexpr int LEFT_CONTENT_HEIGHT = 875;
 constexpr int LEFT_SCROLL_STEP = 36;
 constexpr int PAD = 8;
@@ -220,6 +224,7 @@ struct RegularReportState {
     HWND inspectDatePicker = nullptr;
     HWND collectDateEdit = nullptr;
     HWND resultList = nullptr;
+    HWND resultEdit = nullptr;
     HWND pictureViewport = nullptr;
     HWND pictureView = nullptr;
     HWND pictureHScroll = nullptr;
@@ -232,6 +237,7 @@ struct RegularReportState {
     int leftScrollY = 0;
     int pictureScrollX = 0;
     int pictureScrollY = 0;
+    int resultEditRow = -1;
     int leftContentHeight = LEFT_CONTENT_HEIGHT;
     bool splitterUserSet = false;
     int reportQueryGeneration = 0;
@@ -247,6 +253,7 @@ struct RegularReportState {
     int reportSortColumn = -1;
     bool reportSortAscending = true;
     std::vector<HWND> leftControls;
+    std::vector<HWND> leftTabControls;
     std::vector<GroupFrame> leftGroupFrames;
     std::vector<HWND> middleResultControls;
     std::vector<HWND> middlePictureControls;
@@ -1078,6 +1085,7 @@ void clearLeftPanel(RegularReportState* st) {
         if (IsWindow(child)) DestroyWindow(child);
     }
     st->leftControls.clear();
+    st->leftTabControls.clear();
     st->leftGroupFrames.clear();
     st->machineEdit = nullptr;
     st->machinePickerButton = nullptr;
@@ -1797,6 +1805,175 @@ LRESULT CALLBACK sampleInputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
+bool focusLeftTabControl(RegularReportState* st, HWND current, bool reverse) {
+    if (!st || st->leftTabControls.empty()) return false;
+    auto it = std::find(st->leftTabControls.begin(), st->leftTabControls.end(), current);
+    if (it == st->leftTabControls.end()) return false;
+
+    const int count = static_cast<int>(st->leftTabControls.size());
+    int index = static_cast<int>(std::distance(st->leftTabControls.begin(), it));
+    for (int step = 0; step < count; ++step) {
+        index = reverse ? (index - 1 + count) % count : (index + 1) % count;
+        HWND target = st->leftTabControls[static_cast<size_t>(index)];
+        if (!IsWindow(target) || !IsWindowVisible(target) || !IsWindowEnabled(target)) continue;
+        SetFocus(target);
+        SendMessageW(target, EM_SETSEL, 0, -1);
+        return true;
+    }
+    return false;
+}
+
+LRESULT CALLBACK leftTabControlProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                    UINT_PTR subclassId, DWORD_PTR data) {
+    auto* st = reinterpret_cast<RegularReportState*>(data);
+    switch (msg) {
+        case WM_GETDLGCODE:
+            return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTTAB;
+        case WM_KEYDOWN:
+            if (wp == VK_TAB && focusLeftTabControl(st, hwnd, (GetKeyState(VK_SHIFT) & 0x8000) != 0)) {
+                return 0;
+            }
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, leftTabControlProc, subclassId);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void registerLeftTabControls(RegularReportState* st, std::initializer_list<HWND> controls) {
+    if (!st) return;
+    for (HWND hwnd : controls) {
+        if (!hwnd) continue;
+        st->leftTabControls.push_back(hwnd);
+        SetWindowSubclass(hwnd, leftTabControlProc, LEFT_TAB_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
+    }
+}
+
+void beginResultEdit(RegularReportState* st, int row);
+
+void finishResultEdit(RegularReportState* st, bool commit, bool moveNext = false,
+                      bool restoreListFocus = true) {
+    if (!st || !st->resultEdit) return;
+    const HWND edit = st->resultEdit;
+    const int row = st->resultEditRow;
+    st->resultEdit = nullptr;
+    st->resultEditRow = -1;
+
+    if (commit && row >= 0 && row < static_cast<int>(st->resultRows.size())) {
+        wchar_t buffer[512]{};
+        GetWindowTextW(edit, buffer, static_cast<int>(std::size(buffer)));
+        st->resultRows[static_cast<size_t>(row)].result = search::wide_to_utf8(buffer);
+        ListView_SetItemText(st->resultList, row, RESULT_VALUE_COL, buffer);
+        ListView_RedrawItems(st->resultList, row, row);
+    }
+
+    DestroyWindow(edit);
+    if (restoreListFocus && st->resultList) SetFocus(st->resultList);
+    if (commit && moveNext && row + 1 < static_cast<int>(st->resultRows.size())) {
+        ListView_SetItemState(st->resultList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->resultList, row + 1, LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->resultList, row + 1, FALSE);
+        beginResultEdit(st, row + 1);
+    }
+}
+
+LRESULT CALLBACK resultEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                UINT_PTR subclassId, DWORD_PTR data) {
+    auto* st = reinterpret_cast<RegularReportState*>(data);
+    switch (msg) {
+        case WM_GETDLGCODE:
+            return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTALLKEYS;
+        case WM_KEYDOWN:
+            if (wp == VK_RETURN) {
+                finishResultEdit(st, true, true);
+                return 0;
+            }
+            if (wp == VK_ESCAPE) {
+                finishResultEdit(st, false);
+                return 0;
+            }
+            break;
+        case WM_KILLFOCUS:
+            finishResultEdit(st, false, false, false);
+            return 0;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, resultEditProc, subclassId);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void beginResultEdit(RegularReportState* st, int row) {
+    if (!st || !st->resultList || row < 0 || row >= static_cast<int>(st->resultRows.size())) return;
+    finishResultEdit(st, false);
+
+    RECT rc{};
+    if (!ListView_GetSubItemRect(st->resultList, row, RESULT_VALUE_COL, LVIR_BOUNDS, &rc)) return;
+    RECT client{};
+    GetClientRect(st->resultList, &client);
+    if (rc.right <= client.left || rc.left >= client.right || rc.bottom <= client.top || rc.top >= client.bottom) {
+        return;
+    }
+    rc.left = std::max(rc.left, client.left);
+    rc.right = std::min(rc.right, client.right);
+    InflateRect(&rc, -1, -1);
+
+    const std::wstring text = search::utf8_to_wide(st->resultRows[static_cast<size_t>(row)].result);
+    st->resultEdit = CreateWindowExW(0, L"EDIT", text.c_str(),
+                                     WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                                     rc.left, rc.top, std::max(24, static_cast<int>(rc.right - rc.left)),
+                                     std::max(20, static_cast<int>(rc.bottom - rc.top)),
+                                     st->resultList, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!st->resultEdit) return;
+    st->resultEditRow = row;
+    SendMessageW(st->resultEdit, WM_SETFONT, reinterpret_cast<WPARAM>(st->ctx.uiFont), TRUE);
+    SetWindowSubclass(st->resultEdit, resultEditProc, RESULT_EDIT_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
+    SendMessageW(st->resultEdit, EM_SETSEL, 0, -1);
+    SetFocus(st->resultEdit);
+}
+
+bool beginResultEditFromPoint(RegularReportState* st, POINT pt) {
+    if (!st || !st->resultList) return false;
+    LVHITTESTINFO hit{};
+    hit.pt = pt;
+    const int row = ListView_SubItemHitTest(st->resultList, &hit);
+    if (row >= 0 && hit.iSubItem == RESULT_VALUE_COL) {
+        ListView_SetItemState(st->resultList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->resultList, row, LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        beginResultEdit(st, row);
+        return true;
+    } else {
+        finishResultEdit(st, false);
+    }
+    return false;
+}
+
+LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                UINT_PTR subclassId, DWORD_PTR data) {
+    auto* st = reinterpret_cast<RegularReportState*>(data);
+    switch (msg) {
+        case WM_LBUTTONDOWN: {
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (beginResultEditFromPoint(st, pt)) {
+                return 0;
+            }
+            break;
+        }
+        case WM_HSCROLL:
+        case WM_VSCROLL:
+        case WM_MOUSEWHEEL:
+            finishResultEdit(st, false);
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, resultListProc, subclassId);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
 void updatePictureViewport(RegularReportState* st);
 void scrollPictureViewport(RegularReportState* st, int targetX, int targetY);
 
@@ -2384,6 +2561,7 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm->idFrom == IDC_MIDDLE_TAB && nm->code == TCN_SELCHANGE) {
+                finishResultEdit(st, false);
                 showMiddleResultPage(st);
                 return 0;
             }
@@ -2393,8 +2571,17 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
                     if (customDrawListSelection(cd, st ? st->resultList : nullptr, row)) {
+                        return CDRF_NOTIFYSUBITEMDRAW;
+                    }
+                    return CDRF_NOTIFYSUBITEMDRAW;
+                }
+                if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (customDrawListSelection(cd, st ? st->resultList : nullptr, row)) {
                         return CDRF_NEWFONT;
                     }
+                    cd->clrTextBk = cd->iSubItem == RESULT_VALUE_COL ? RGB(0xFF, 0xFF, 0xFF)
+                                                                      : RGB(0xF0, 0xF0, 0xF0);
                     const auto index = static_cast<size_t>(cd->nmcd.dwItemSpec);
                     if (st && index < st->resultRows.size()) {
                         const COLORREF color = resultTextColor(st->resultRows[index]);
@@ -2402,7 +2589,7 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                             cd->clrText = color;
                         }
                     }
-                    return CDRF_DODEFAULT;
+                    return CDRF_NEWFONT;
                 }
             }
             if (st && nm->idFrom == IDC_RESULT_LIST && nm->code == NM_KILLFOCUS) {
@@ -2995,6 +3182,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected) {
 
 void presentResultRows(RegularReportState* st) {
     if (!st || !st->resultList) return;
+    finishResultEdit(st, false);
     ListView_DeleteAllItems(st->resultList);
     std::string previousGroupName;
     for (size_t i = 0; i < st->resultRows.size(); ++i) {
@@ -3053,6 +3241,7 @@ void querySelectedPicture(RegularReportState* st, int selected) {
 
 void querySelectedResults(RegularReportState* st, int selected) {
     if (!st || selected < 0 || selected >= static_cast<int>(st->reportRows.size())) {
+        if (st) finishResultEdit(st, false);
         if (st && st->resultList) ListView_DeleteAllItems(st->resultList);
         if (st) {
             populateLeftPanelFromReport(st, -1);
@@ -3076,6 +3265,7 @@ void querySelectedResults(RegularReportState* st, int selected) {
     querySelectedPicture(st, selected);
     refreshPicturePopupForSelection(st, selected);
     if (st->resultQueryLoading && st->selectedReportIndex == selected) return;
+    finishResultEdit(st, false);
     ListView_DeleteAllItems(st->resultList);
     st->resultRows.clear();
     st->selectedReportIndex = selected;
@@ -3116,6 +3306,7 @@ void finishResultQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Result
         MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询项目明细失败", MB_ICONERROR);
         return;
     }
+    finishResultEdit(st, false);
     st->resultRows = std::move(result->rows);
     presentResultRows(st);
     const auto status = search::utf8_to_wide(search::make_query_count_status(st->reportRows.size()));
@@ -3181,18 +3372,10 @@ void finishReportQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Report
 
     if (preserveState) {
         if (restoredSelected >= 0) {
-            const int oldIndex = findReportIndexById(previousRows, selectedId);
-            const auto& row = st->reportRows[static_cast<size_t>(restoredSelected)];
-            const bool rowChanged = oldIndex < 0 ||
-                                    !reportDisplayEqual(previousRows[static_cast<size_t>(oldIndex)], row);
             st->selectedReportIndex = restoredSelected;
             populateLeftPanelFromReport(st, restoredSelected);
             refreshPicturePopupForSelection(st, restoredSelected);
-            if (search::trim(row.rep_no) != selectedRepNo) {
-                querySelectedResults(st, restoredSelected);
-            } else if (rowChanged) {
-                InvalidateRect(st->reportList, nullptr, FALSE);
-            }
+            querySelectedResults(st, restoredSelected);
         } else if (!selectedId.empty()) {
             querySelectedResults(st, -1);
         }
@@ -3207,7 +3390,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Report
 void seedLists(RegularReportState* st) {
     const ColumnDef resultColumns[] = {
         {0, L"", 32}, {1, L"", 44}, {2, L"组合项目", 82}, {3, L"英文", 72},
-        {4, L"项目名称", 132}, {5, L"@结  果", 96}, {6, L"偏", 36},
+        {4, L"项目名称", 132}, {5, L"结果", 96}, {6, L"偏", 36},
         {7, L"参考区间", 112}, {8, L"单位", 76}, {9, L"说明", 96},
     };
     addColumns(st->resultList, resultColumns, static_cast<int>(sizeof(resultColumns) / sizeof(resultColumns[0])), st->resultList);
@@ -3348,8 +3531,8 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     const int orderRows = 8;
     const int orderH = groupHeight(orderRows);
     group(L"验单信息", groupX, groupY, groupW, orderH);
-    label(L"检验者", labelX, rowY(0), labelW); st->testerEdit = edit(L"", inputX, rowY(0) - 2, leftShortW + 6, editH);
-    label(L"审核", rightLabelX, rowY(0), rightLabelW); st->auditEdit = edit(L"", rightEditX, rowY(0) - 2, rightEditW, editH);
+    label(L"检验者", labelX, rowY(0), labelW); st->testerEdit = edit(L"", inputX, rowY(0) - 2, leftShortW + 6, editH, ES_CENTER | ES_READONLY);
+    label(L"审核", rightLabelX, rowY(0), rightLabelW); st->auditEdit = edit(L"", rightEditX, rowY(0) - 2, rightEditW, editH, ES_CENTER | ES_READONLY);
     label(L"备注", labelX, rowY(1), labelW); st->noteCodeEdit = edit(L"", inputX, rowY(1) - 2, 42, editH); st->noteEdit = edit(L"", inputX + 48, rowY(1) - 2, std::max(80, groupRight - inputX - 48), editH);
     SYSTEMTIME inspectDate = todayDate();
     label(L"申请日期", labelX, rowY(2), labelW); st->applyDatePicker = datePicker(inputX, rowY(2) - 2, fullInputW, editH, L"yyyy-MM-dd HH:mm", nullptr);
@@ -3367,6 +3550,27 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     label(L"采集日期", labelX, rowY(7), labelW); st->collectDateEdit = edit(L"", inputX, rowY(7) - 2, fullInputW, editH);
 
     st->leftContentHeight = std::max(LEFT_CONTENT_HEIGHT, groupY + orderH + groupGap);
+    registerLeftTabControls(st, {
+        st->operNoEdit,
+        st->patientTypeCombo,
+        st->urgentEdit,
+        st->barcodeEdit,
+        st->regNoEdit,
+        st->patientNameEdit,
+        st->sexEdit,
+        st->ageEdit,
+        st->ageUnitCombo,
+        st->bedEdit,
+        st->phoneEdit,
+        st->deptEdit,
+        st->diagEdit,
+        st->reqDoctorEdit,
+        st->feeEdit,
+        st->noteCodeEdit,
+        st->noteEdit,
+        st->inspectDatePicker,
+        st->collectDateEdit,
+    });
 }
 
 void createMiddlePanel(HWND parent, RegularReportState* st) {
@@ -3393,6 +3597,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
                                      S(parent, PAD), S(parent, MIDDLE_LIST_Y), S(parent, 520), S(parent, 350),
                                      p, win32_control_id(IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->resultList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    SetWindowSubclass(st->resultList, resultListProc, RESULT_LIST_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
     st->status = makeStatic(p, L"结果列表右键功能：项目复制；参数设置。[项目总数：7]", S(parent, PAD), S(parent, 424), S(parent, 520), S(parent, MIDDLE_STATUS_H));
     addResult(st->resultList);
     addResult(st->status);
@@ -3752,6 +3957,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RemovePropW(hwnd, PROP_STATE);
             if (st) {
                 stopAutoRefreshTimer(st);
+                finishResultEdit(st, false);
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
                 if (IsWindow(st->picturePopup)) DestroyWindow(st->picturePopup);
                 releasePictureImage(st);
