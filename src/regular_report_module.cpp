@@ -72,6 +72,8 @@ constexpr int IDC_BOTTOM_REFRESH = 5402;
 constexpr int IDC_BOTTOM_MACHINE_2 = 5411;
 constexpr int IDC_BOTTOM_MACHINE_3 = 5420;
 constexpr int IDC_BOTTOM_GRAPH = 5424;
+constexpr int IDC_BOTTOM_PREV_REPORT = 5408;
+constexpr int IDC_BOTTOM_NEXT_REPORT = 5409;
 constexpr int IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
 constexpr int IDM_REPORT_TODO = 5222;
@@ -109,6 +111,8 @@ constexpr int PICTURE_POPUP_DEFAULT_H = 700;
 constexpr int PICTURE_POPUP_MIN_W = 360;
 constexpr int PICTURE_POPUP_MIN_H = 260;
 constexpr int QUICK_MACHINE_COUNT = 3;
+constexpr std::array<int, QUICK_MACHINE_COUNT> QUICK_MACHINE_BUTTON_IDS = {
+    IDC_BOTTOM_MACHINE_1, IDC_BOTTOM_MACHINE_2, IDC_BOTTOM_MACHINE_3};
 constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_CODE_KEYS = {
     L"QuickMachine1Code", L"QuickMachine2Code", L"QuickMachine3Code"};
 constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_NAME_KEYS = {
@@ -283,6 +287,7 @@ struct MachinePickerState {
     HWND machineList = nullptr;
     std::vector<search::RoomOption> rooms;
     std::vector<search::MachineOption> machines;
+    bool closePosted = false;
 };
 
 struct ReportLoadResult {
@@ -362,6 +367,31 @@ const wchar_t* quickMachineNameKey(int slot) {
 
 const wchar_t* quickMachineRoomKey(int slot) {
     return QUICK_MACHINE_ROOM_KEYS[static_cast<size_t>(std::clamp(slot, 0, QUICK_MACHINE_COUNT - 1))];
+}
+
+bool quickMachineMatchesCurrent(const RegularReportState* st, int slot) {
+    if (!st || slot < 0 || slot >= QUICK_MACHINE_COUNT) return false;
+    const std::string code = search::wide_to_utf8(
+        search::load_module_str(L"RegularReport", quickMachineCodeKey(slot), L""));
+    const std::string room = search::wide_to_utf8(
+        search::load_module_str(L"RegularReport", quickMachineRoomKey(slot), L""));
+    const std::string currentCode = search::trim(st->selectedMachineCode);
+    const std::string currentRoom = search::trim(st->selectedRoomCode);
+    return !currentCode.empty() && currentCode == search::trim(code) &&
+           currentRoom == search::trim(room);
+}
+
+void updateQuickMachineButtonLabels(RegularReportState* st) {
+    if (!st || !st->bottomPanel) return;
+    for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+        const bool active = quickMachineMatchesCurrent(st, i);
+        const std::wstring text = active ? L"[" + std::to_wstring(i + 1) + L"]"
+                                         : std::to_wstring(i + 1);
+        HWND button = GetDlgItem(st->bottomPanel, QUICK_MACHINE_BUTTON_IDS[static_cast<size_t>(i)]);
+        if (button) {
+            SetWindowTextW(button, text.c_str());
+        }
+    }
 }
 
 int S(HWND hwnd, int value) {
@@ -694,10 +724,19 @@ void comboSelectFirst(HWND combo) {
 void populateMachinePickerRooms(MachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return;
     comboReset(ps->roomCombo);
+    const std::string currentRoom = ps->report ? search::trim(ps->report->selectedRoomCode) : "";
+    int selected = -1;
     for (const auto& row : ps->rooms) {
         comboAdd(ps->roomCombo, search::utf8_to_wide(row.room_name));
+        if (selected < 0 && !currentRoom.empty() && search::trim(row.room_code) == currentRoom) {
+            selected = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCOUNT, 0, 0)) - 1;
+        }
     }
-    comboSelectFirst(ps->roomCombo);
+    if (selected >= 0) {
+        SendMessageW(ps->roomCombo, CB_SETCURSEL, selected, 0);
+    } else {
+        comboSelectFirst(ps->roomCombo);
+    }
 }
 
 std::string selectedMachinePickerRoomCode(MachinePickerState* ps) {
@@ -734,9 +773,10 @@ void layoutMachinePicker(HWND hwnd, MachinePickerState* ps) {
 void populateMachinePickerMachines(MachinePickerState* ps) {
     if (!ps || !ps->machineList) return;
     ListView_DeleteAllItems(ps->machineList);
-    wchar_t current[256]{};
+    const std::string currentCode = ps->report ? search::trim(ps->report->selectedMachineCode) : "";
+    wchar_t currentName[256]{};
     if (ps->report && ps->report->machineEdit) {
-        GetWindowTextW(ps->report->machineEdit, current, 256);
+        GetWindowTextW(ps->report->machineEdit, currentName, 256);
     }
 
     int selected = -1;
@@ -750,7 +790,10 @@ void populateMachinePickerMachines(MachinePickerState* ps) {
         item.pszText = const_cast<wchar_t*>(code.c_str());
         ListView_InsertItem(ps->machineList, &item);
         ListView_SetItemText(ps->machineList, i, 1, const_cast<wchar_t*>(name.c_str()));
-        if (selected < 0 && current[0] && lstrcmpW(current, name.c_str()) == 0) {
+        if (selected < 0 && !currentCode.empty() &&
+            search::trim(ps->machines[static_cast<size_t>(i)].mach_code) == currentCode) {
+            selected = i;
+        } else if (selected < 0 && currentName[0] && lstrcmpW(currentName, name.c_str()) == 0) {
             selected = i;
         }
     }
@@ -902,7 +945,7 @@ void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preser
 }
 
 void applyQuickMachine(RegularReportState* st, int slot) {
-    if (!st || slot < 0 || slot > 2) return;
+    if (!st || slot < 0 || slot >= QUICK_MACHINE_COUNT) return;
     const std::wstring name = search::load_module_str(L"RegularReport", quickMachineNameKey(slot), L"");
     const std::wstring code = search::load_module_str(L"RegularReport", quickMachineCodeKey(slot), L"");
     const std::wstring room = search::load_module_str(L"RegularReport", quickMachineRoomKey(slot), L"");
@@ -917,6 +960,7 @@ void applyQuickMachine(RegularReportState* st, int slot) {
     SetWindowTextW(st->machineEdit, name.empty() ? code.c_str() : name.c_str());
     st->selectedMachineCode = nextCode;
     st->selectedRoomCode = nextRoom;
+    updateQuickMachineButtonLabels(st);
     runReportQuery(st, sameMachine && hasSelectedReportRow(st));
 }
 
@@ -928,6 +972,7 @@ void acceptMachinePicker(MachinePickerState* ps) {
         SetWindowTextW(ps->report->machineEdit, search::utf8_to_wide(machine.mach_name).c_str());
         ps->report->selectedMachineCode = machine.mach_code;
         ps->report->selectedRoomCode = selectedMachinePickerRoomCode(ps);
+        updateQuickMachineButtonLabels(ps->report);
     }
 }
 
@@ -936,6 +981,12 @@ void acceptAndCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
     acceptMachinePicker(ps);
     DestroyWindow(hwnd);
     runReportQuery(report);
+}
+
+void postCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
+    if (!ps || ps->closePosted) return;
+    ps->closePosted = true;
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
 }
 
 LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -984,7 +1035,7 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
-                DestroyWindow(hwnd);
+                postCloseMachinePicker(hwnd, ps);
                 return 0;
             }
             break;
@@ -1733,6 +1784,22 @@ void selectReportRow(RegularReportState* st, int index) {
     ListView_SetItemState(st->reportList, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(st->reportList, index, FALSE);
     SetFocus(st->reportList);
+}
+
+void selectAdjacentReportRow(RegularReportState* st, int delta) {
+    if (!st || !st->reportList || st->reportRows.empty()) return;
+    int current = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
+    if (current < 0) {
+        current = st->selectedReportIndex;
+    }
+    if (current < 0 || current >= static_cast<int>(st->reportRows.size())) {
+        current = delta > 0 ? -1 : static_cast<int>(st->reportRows.size());
+    }
+    const int next = std::max(0, std::min(static_cast<int>(st->reportRows.size()) - 1,
+                                          current + delta));
+    if (next != current) {
+        selectReportRow(st, next);
+    }
 }
 
 void querySelectedResults(RegularReportState* st, int selected);
@@ -2777,6 +2844,14 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 }
                 return 0;
             }
+            if (st && LOWORD(wp) == IDC_BOTTOM_PREV_REPORT) {
+                selectAdjacentReportRow(st, -1);
+                return 0;
+            }
+            if (st && LOWORD(wp) == IDC_BOTTOM_NEXT_REPORT) {
+                selectAdjacentReportRow(st, 1);
+                return 0;
+            }
             if (st && LOWORD(wp) == IDC_BOTTOM_GRAPH) {
                 openPicturePopupForSelection(st);
                 return 0;
@@ -3324,11 +3399,9 @@ void finishReportQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Report
     const bool preserveState = result->preserveState;
     const std::vector<search::ReportRow> previousRows = st->reportRows;
     std::string selectedId;
-    std::string selectedRepNo;
     const int selected = st->reportList ? ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED) : -1;
     if (selected >= 0 && selected < static_cast<int>(previousRows.size())) {
         selectedId = search::trim(previousRows[static_cast<size_t>(selected)].id);
-        selectedRepNo = search::trim(previousRows[static_cast<size_t>(selected)].rep_no);
     }
 
     std::vector<std::string> checkedIds;
@@ -3376,12 +3449,14 @@ void finishReportQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Report
             populateLeftPanelFromReport(st, restoredSelected);
             refreshPicturePopupForSelection(st, restoredSelected);
             querySelectedResults(st, restoredSelected);
-        } else if (!selectedId.empty()) {
+        } else {
             querySelectedResults(st, -1);
         }
     } else if (!st->reportRows.empty()) {
         ListView_SetItemState(st->reportList, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         querySelectedResults(st, 0);
+    } else {
+        querySelectedResults(st, -1);
     }
     const auto status = search::utf8_to_wide(search::make_query_count_status(st->reportRows.size()));
     SetWindowTextW(st->status, status.c_str());
@@ -3686,17 +3761,17 @@ void createRightPanel(HWND parent, RegularReportState* st) {
 void createBottomPanel(HWND parent, RegularReportState* st) {
     HWND p = st->bottomPanel;
     const ButtonDef row1[] = {
-        {5401, L"1"}, {5402, L"⟳ 刷新(F5)"}, {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"},
+        {IDC_BOTTOM_MACHINE_1, L"1"}, {IDC_BOTTOM_REFRESH, L"⟳ 刷新(F5)"}, {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"},
         {5405, L"预览(V)"}, {5406, L"打印(F4)"}, {5407, L"✕ 删除(D)"},
-        {5408, L"⇧ 上一个"}, {5409, L"⇩ 下一个"}, {5410, L"审核打印"},
+        {IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"}, {IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印"},
     };
     const ButtonDef row2[] = {
-        {5411, L"2"}, {5412, L"批审核"}, {5413, L"批取消"}, {5414, L"批录入"},
+        {IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"}, {5414, L"批录入"},
         {5415, L"批调整"}, {5416, L"批打印"}, {5417, L"批删除"},
         {5418, L"医嘱"}, {5419, L"汇总(F6)"},
     };
     const ButtonDef row3[] = {
-        {5420, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"}, {5423, L"合并(U)"},
+        {IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"}, {5423, L"合并(U)"},
         {5424, L"图形(T)"}, {5425, L"项目分析"}, {5426, L"日统计"},
         {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
     };
@@ -3711,6 +3786,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
     createRow(row1, static_cast<int>(sizeof(row1) / sizeof(row1[0])), 4);
     createRow(row2, static_cast<int>(sizeof(row2) / sizeof(row2[0])), 36);
     createRow(row3, static_cast<int>(sizeof(row3) / sizeof(row3[0])), 68);
+    updateQuickMachineButtonLabels(st);
 }
 
 void createControls(HWND hwnd, RegularReportState* st) {
@@ -3937,6 +4013,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 applyFont(hwnd, st->ctx.uiFont);
                 refreshLeftGroupTitleFont(st);
                 layout(hwnd, st);
+            }
+            return 0;
+        case app::WM_APP_SETTINGS_CHANGED:
+            if (st) {
+                updateQuickMachineButtonLabels(st);
             }
             return 0;
         case WM_CTLCOLORSTATIC: {

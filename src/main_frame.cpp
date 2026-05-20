@@ -114,6 +114,15 @@ void broadcastFontChanged() {
     }, fontParam);
 }
 
+void broadcastSettingsChangedToMdiChildren() {
+    if (!g_ctx.mdiClient) return;
+    HWND child = GetWindow(g_ctx.mdiClient, GW_CHILD);
+    while (child) {
+        SendMessageW(child, app::WM_APP_SETTINGS_CHANGED, 0, 0);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
 void rebuildUiFont(int fontSize) {
     g_ctx.fontSize = clampFontSize(fontSize);
     HFONT newFont = createUiFont(g_ctx.fontSize);
@@ -445,6 +454,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case app::WM_APP_SETTINGS_CHANGED:
             rebuildUiFont(g_ctx.fontSize);
+            broadcastSettingsChangedToMdiChildren();
             return 0;
         case WM_CLOSE:
             DestroyWindow(hwnd);
