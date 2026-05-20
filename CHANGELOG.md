@@ -1,6 +1,6 @@
 # Changelog
 
-## v2026.05.19
+## v2026.05.20
 
 - **项目改名**：对外项目名切换为 `lis-workbench`，用户可见程序名切换为 `LIS 工作台`；CMake project 改为 `lis_workbench`，主程序输出改为 `lis_workbench.exe`，NSIS 安装包脚本改为 `LISWorkbench.nsi`，默认安装目录和安装包名改为 `LISWorkbench` / `LISWorkbench-Setup.exe`。为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部命名暂时保留。
 - **配置文件改名**：主配置文件改为 `ClientConfig.ini`；Win32 和 Qt 入口都会在新文件不存在且旧 `result_search.ini` 存在时复制迁移，安装包也会优先从旧配置复制生成新配置。
@@ -9,13 +9,13 @@
 - **检验结果查询接入**：`query_module.cpp` — 每实例独立 `QueryState`，复用全部查询/趋势逻辑，复用通用拖条控件并持久化分割器位置到 INI。
 - **输血结果查询接入**：`blood_module.cpp` 接入 `LS_XK_BloodRequestApply` / `LS_XK_BloodRequestApplySon` 只读查询；支持默认最近 7 天自动查询、病人编号/姓名/申请单号/申请状态/申请日期筛选，`申请状态` 按 `ApplyForm_Statue` 中文值过滤。
 - **已签收条码查询接入**：工具菜单 `已签收条码查询` 替换原工具占位页，新增 `barcode_module.cpp` 和 `query_barcodes` 只读查询，按 `LS_AS_BARCODE` 支持日期、条形码、姓名、病人号、上机状态、专业组和取消签收状态筛选；上机状态筛选和列表展示均基于 `OPER_STATE`。
-- **常规报告接入**：工具菜单 `常规报告` 替换原 `工具2` 占位页，新增 `regular_report_module.cpp`，按 `temp/模版2.png` 基本完成左侧标本/病人/验单信息、中间检验结果列表、右侧信息列表和底部功能按钮区；支持按检验日期和检验仪器查询 `LS_AS_REPORT`，右侧选中报告后回填左侧信息并通过 `REP_NO` 查询中间项目明细，中间 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先未删除启用名称并用同组非空名称兜底，连续相同组合项目只显示首行，中间 `图象` 页签按 `REP_NO` 显示 `LS_AS_ITEMPICTURE.PICTURE`；右侧信息列表新增 `标签` 列并按 `LS_AS_BARCODE.JZ_FLAG` 显示急诊红字，支持表头本地排序并保留选中/勾选状态，上方箭头可快速选中第一行/最后一行，下方 `今天 / 前一天 / 后一天` 可快捷切换检验日期，`自动刷新` 可按默认 10 秒间隔定时刷新且避免查询叠加，左侧样本号回车可定位右侧对应报告行，底部 `1/2/3` 可按系统设置快速切换检验仪器，底部 `刷新(F5)` 可按当前检验仪器和检验日期重新查询，右侧顶部样本数/上机数/审核数/发送数按当前列表动态统计；主工具栏新增 `常规报告` 快捷入口；右侧报告行新增右键菜单，`打印条码` / `打印勾选条码` 对接外部 `LabelPrint` 项目，使用中间项目明细的组合项目内容填充条码标签，并通过 LabelPrint `printMedicalLabel` 统一入口自动选择 XP-360B TSPL 位图或 Zebra ZD888 ZPL 路径；构建时优先 `find_package(LabelPrint 1.2)`，找不到再回退 `LIS_LABELPRINT_DIR` 源码接入；系统设置页新增常规报告条码打印机和快捷检验仪器选择入口；中间/右侧拖条复用 `search_splitter` 并保存到 `[RegularReport] SplitterX`；左侧滚动区域用自绘分组边框/标题替代真实 `GROUPBOX`，内部控件启用 `WS_CLIPSIBLINGS`；右侧顶部摘要改为父面板自绘并按宽度换行，以减少快速拖动和滚动时的残影。
+- **常规报告接入**：工具菜单 `常规报告` 替换原 `工具2` 占位页，新增 `regular_report_module.cpp`，按 `temp/模版2.png` 基本完成左侧标本/病人/验单信息、中间检验结果列表、右侧信息列表和底部功能按钮区；支持按检验日期和检验仪器查询 `LS_AS_REPORT`，右侧选中报告后回填左侧信息并通过 `REP_NO` 查询中间项目明细，中间 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先未删除启用名称并用同组非空名称兜底，连续相同组合项目只显示首行，中间 `图象` 页签按 `REP_NO` 显示 `LS_AS_ITEMPICTURE.PICTURE`；底部 `图形(T)` 可打开独立结果图窗口，跟随右侧选中报告刷新，使用项目图标、双缓冲绘制并保存窗口尺寸；右侧信息列表新增 `标签` 列并按 `LS_AS_BARCODE.JZ_FLAG` 显示急诊红字，支持表头本地排序并保留选中/勾选状态，上方箭头可快速选中第一行/最后一行，下方 `今天 / 前一天 / 后一天` 可快捷切换检验日期，`自动刷新` 可按默认 10 秒间隔定时刷新且避免查询叠加，左侧样本号回车可定位右侧对应报告行，中间/右侧列表失焦后仍保持当前选中行高亮；底部 `1/2/3` 可按系统设置快速切换检验仪器，底部 `刷新(F5)`、自动刷新、重复选择当前检验日期、点击 `今天` 和重复点击当前快捷仪器会保留现有列表、选中行、勾选行和滚动位置，行顺序未变时只更新变化单元格；右侧顶部样本数/上机数/审核数/发送数按当前列表动态统计；主工具栏新增 `常规报告` 快捷入口；右侧报告行新增右键菜单，`打印条码` / `打印勾选条码` 对接外部 `LabelPrint` 项目，使用中间项目明细的组合项目内容填充条码标签，并通过 LabelPrint `printMedicalLabel` 统一入口自动选择 XP-360B TSPL 位图或 Zebra ZD888 ZPL 路径；构建时优先 `find_package(LabelPrint 1.2)`，找不到再回退 `LIS_LABELPRINT_DIR` 源码接入；系统设置页新增常规报告条码打印机和快捷检验仪器选择入口；中间/右侧拖条复用 `search_splitter` 并保存到 `[RegularReport] SplitterX`；左侧滚动区域用自绘分组边框/标题替代真实 `GROUPBOX`，内部控件启用 `WS_CLIPSIBLINGS`；右侧顶部摘要改为父面板自绘并按宽度换行，以减少快速拖动和滚动时的残影。
 - **LIS 摘要项目代码配置化**：系统设置新增 ABO、RhD、Hb、PLT 项目代码配置，保存到 `ClientConfig.ini` 的 `[LisSummary]`，输血检验结果窗口据此显示最近血型鉴定和血常规摘要。
 - **LIS 查询体验优化**：输血检验结果窗口中，组合项目列表查询和最近血型/血常规摘要查询拆分为两个独立后台任务；列表先返回先展示，摘要完成后再单独刷新，避免慢摘要阻塞列表显示。
 - **字体设置联动**：主程序按系统设置字号创建模块字体；菜单栏及子菜单、输血结果查询窗口和 LIS 检验信息弹窗会随设置页字号保存后同步刷新，底部状态栏保持系统默认字体。
 - **安装包运行库与 Win7 兼容**：Win32 目标固定 `WINVER/_WIN32_WINNT=0x0601`，Win10 DPI API 改为动态探测并回退；配置文件迁移改用 Win32 文件 API，减少 `std::filesystem` 带来的新系统入口依赖。`scripts/build_main.ps1` 默认优先已安装的 VS 2022，未安装时自动退到 VS 2026，并开启 `LIS_STATIC_MSVC_RUNTIME=ON`；NSIS 安装时会清理旧包残留的 CRT/UCRT DLL。面向 Windows 7 打包时仍需安装 VS 2022 Build Tools，且不建议携带 VS 2026 CRT DLL，避免 `CreateFile2` / `GetSystemTimePreciseAsFileTime` 等入口点缺失。
 - **GitHub Actions 安装包**：CI 改为当前 `LISWorkbench` 主程序专用构建，下载 LabelPrint `v1.2.0` Win7 兼容 release 包，使用 VS2022 构建并通过 NSIS 输出 `LISWorkbench-Setup-<version>-win7-win11.exe`，弥补本地缺少完整 Windows 7-11 打包环境的问题。
-- 版本号 v2026.05.19。
+- 版本号 v2026.05.20。
 
 ## v2026.05.06
 

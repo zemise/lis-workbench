@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <exception>
 #include <initializer_list>
 #include <memory>
@@ -37,6 +38,7 @@
 namespace {
 
 constexpr const wchar_t* WND_CLASS = L"RegularReportChild";
+constexpr const wchar_t* PICTURE_POPUP_CLASS = L"RegularReportPicturePopup";
 constexpr const wchar_t* WINDOW_TITLE = L"常规报告";
 constexpr const wchar_t* PROP_STATE = L"RegularReportSt";
 constexpr const wchar_t* PROP_DATE_FORMAT = L"RegularReportDateFormat";
@@ -45,6 +47,7 @@ constexpr const wchar_t* DEFAULT_BARCODE_PRINTER_NAME = L"Xprinter XP-360B #2";
 constexpr UINT WM_REGULAR_REPORTS_LOADED = WM_APP + 171;
 constexpr UINT WM_REGULAR_RESULTS_LOADED = WM_APP + 172;
 constexpr UINT WM_REGULAR_PICTURE_LOADED = WM_APP + 173;
+constexpr UINT WM_POPUP_PICTURE_LOADED = WM_APP + 174;
 constexpr UINT_PTR IDT_REPORT_AUTO_REFRESH = 6310;
 
 constexpr int IDC_RESULT_LIST = 5201;
@@ -68,9 +71,11 @@ constexpr int IDC_BOTTOM_MACHINE_1 = 5401;
 constexpr int IDC_BOTTOM_REFRESH = 5402;
 constexpr int IDC_BOTTOM_MACHINE_2 = 5411;
 constexpr int IDC_BOTTOM_MACHINE_3 = 5420;
+constexpr int IDC_BOTTOM_GRAPH = 5424;
 constexpr int IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
 constexpr int IDM_REPORT_TODO = 5222;
+constexpr int REPORT_COLUMN_COUNT = 30;
 constexpr int RIGHT_REPORT_PRINT_COL = 8;
 constexpr UINT_PTR LEFT_PANEL_SUBCLASS = 6205;
 constexpr UINT_PTR LEFT_CONTENT_SUBCLASS = 6206;
@@ -95,6 +100,10 @@ constexpr int MIDDLE_STATUS_BOTTOM = 22;
 constexpr int MIDDLE_STATUS_H = 18;
 constexpr int PICTURE_FIXED_W = 1560;
 constexpr int PICTURE_FIXED_H = 1050;
+constexpr int PICTURE_POPUP_DEFAULT_W = 980;
+constexpr int PICTURE_POPUP_DEFAULT_H = 700;
+constexpr int PICTURE_POPUP_MIN_W = 360;
+constexpr int PICTURE_POPUP_MIN_H = 260;
 constexpr int QUICK_MACHINE_COUNT = 3;
 constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_CODE_KEYS = {
     L"QuickMachine1Code", L"QuickMachine2Code", L"QuickMachine3Code"};
@@ -215,6 +224,7 @@ struct RegularReportState {
     HWND pictureView = nullptr;
     HWND pictureHScroll = nullptr;
     HWND pictureVScroll = nullptr;
+    HWND picturePopup = nullptr;
     HWND reportList = nullptr;
     HWND status = nullptr;
     int splitterX = 0;
@@ -248,6 +258,7 @@ struct RegularReportState {
     std::string selectedMachineCode;
     std::string selectedRoomCode;
     std::string reportConnectionString;
+    std::string reportQueryDate;
     std::vector<search::ReportRow> reportRows;
     std::vector<search::ResultRow> resultRows;
     std::wstring pictureStatus;
@@ -270,8 +281,10 @@ struct MachinePickerState {
 struct ReportLoadResult {
     int generation = 0;
     bool ok = false;
+    bool preserveState = false;
     std::vector<search::ReportRow> rows;
     std::string connectionString;
+    std::string queryDate;
     std::string error;
 };
 
@@ -287,6 +300,27 @@ struct PictureLoadResult {
     bool ok = false;
     std::vector<unsigned char> picture;
     std::string error;
+};
+
+struct PicturePopupLoadResult {
+    int generation = 0;
+    bool ok = false;
+    std::vector<unsigned char> picture;
+    std::string error;
+};
+
+struct PicturePopupState {
+    RegularReportState* owner = nullptr;
+    HWND hwnd = nullptr;
+    HFONT font = nullptr;
+    IStream* stream = nullptr;
+    Gdiplus::Image* image = nullptr;
+    ULONG_PTR gdiplusToken = 0;
+    bool gdiplusReady = false;
+    bool loading = false;
+    int generation = 0;
+    std::string repNo;
+    std::wstring status;
 };
 
 void clearPictureView(RegularReportState* st, const std::wstring& status);
@@ -792,34 +826,39 @@ search::QueryInput buildReportQueryInput(RegularReportState* st) {
     return input;
 }
 
-void runReportQuery(RegularReportState* st) {
+void runReportQuery(RegularReportState* st, bool preserveState = false) {
     if (!st || search::trim(st->selectedMachineCode).empty()) return;
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
         MessageBoxW(st->hwnd, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return;
     }
 
-    ListView_DeleteAllItems(st->reportList);
-    ListView_DeleteAllItems(st->resultList);
-    st->reportRows.clear();
-    st->resultRows.clear();
-    InvalidateRect(st->rightPanel, nullptr, TRUE);
-    st->pictureQueryLoading = false;
-    st->pictureRepNo.clear();
-    ++st->pictureQueryGeneration;
-    clearPictureView(st, L"");
-    st->selectedReportIndex = -1;
-    st->contextReportIndex = -1;
-    SetWindowTextW(st->status, L"正在查询样本列表...");
+    if (!preserveState) {
+        ListView_DeleteAllItems(st->reportList);
+        ListView_DeleteAllItems(st->resultList);
+        st->reportRows.clear();
+        st->resultRows.clear();
+        InvalidateRect(st->rightPanel, nullptr, TRUE);
+        st->pictureQueryLoading = false;
+        st->pictureRepNo.clear();
+        ++st->pictureQueryGeneration;
+        clearPictureView(st, L"");
+        st->selectedReportIndex = -1;
+        st->contextReportIndex = -1;
+    }
+    SetWindowTextW(st->status, preserveState ? L"正在刷新样本列表..." : L"正在查询样本列表...");
     st->reportQueryLoading = true;
     const int generation = ++st->reportQueryGeneration;
     const search::DbSettings settings = st->ctx.dbSettings;
     const search::QueryInput input = buildReportQueryInput(st);
+    const std::string queryDate = input.start_date;
     const HWND hwnd = st->hwnd;
 
-    std::thread([hwnd, settings, input, generation]() {
+    std::thread([hwnd, settings, input, generation, preserveState, queryDate]() {
         auto* result = new ReportLoadResult;
         result->generation = generation;
+        result->preserveState = preserveState;
+        result->queryDate = queryDate;
         result->ok = search::run_report_query(settings, input, result->rows, result->connectionString, result->error);
         if (!PostMessageW(hwnd, WM_REGULAR_REPORTS_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
             delete result;
@@ -831,17 +870,27 @@ void runAutoRefreshQuery(RegularReportState* st) {
     if (!st || st->reportQueryLoading) return;
     if (search::trim(st->selectedMachineCode).empty()) return;
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) return;
-    runReportQuery(st);
+    runReportQuery(st, true);
 }
 
-void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date) {
+bool hasSelectedReportRow(const RegularReportState* st) {
+    return st && st->reportList && ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED) >= 0;
+}
+
+bool inspectDateMatchesCurrentQuery(const RegularReportState* st) {
+    if (!st) return false;
+    const std::string inspectDate = datePickerValue(st->inspectDatePicker);
+    return !inspectDate.empty() && inspectDate == st->reportQueryDate;
+}
+
+void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preserveWhenPossible = false) {
     if (!st || !st->inspectDatePicker) return;
     date = normalizeDate(date);
     st->suppressInspectDateQuery = true;
     DateTime_SetSystemtime(st->inspectDatePicker, GDT_VALID, &date);
     st->suppressInspectDateQuery = false;
     if (!search::trim(st->selectedMachineCode).empty()) {
-        runReportQuery(st);
+        runReportQuery(st, preserveWhenPossible && hasSelectedReportRow(st));
     }
 }
 
@@ -854,10 +903,14 @@ void applyQuickMachine(RegularReportState* st, int slot) {
         MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
         return;
     }
+    const std::string nextCode = search::wide_to_utf8(code);
+    const std::string nextRoom = search::wide_to_utf8(room);
+    const bool sameMachine = search::trim(st->selectedMachineCode) == search::trim(nextCode) &&
+                             search::trim(st->selectedRoomCode) == search::trim(nextRoom);
     SetWindowTextW(st->machineEdit, name.empty() ? code.c_str() : name.c_str());
-    st->selectedMachineCode = search::wide_to_utf8(code);
-    st->selectedRoomCode = search::wide_to_utf8(room);
-    runReportQuery(st);
+    st->selectedMachineCode = nextCode;
+    st->selectedRoomCode = nextRoom;
+    runReportQuery(st, sameMachine && hasSelectedReportRow(st));
 }
 
 void acceptMachinePicker(MachinePickerState* ps) {
@@ -1200,7 +1253,7 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm && nm->idFrom == IDC_INSPECT_DATE && nm->code == DTN_DATETIMECHANGE &&
                 !st->suppressInspectDateQuery && !search::trim(st->selectedMachineCode).empty()) {
-                runReportQuery(st);
+                runReportQuery(st, hasSelectedReportRow(st) && inspectDateMatchesCurrentQuery(st));
                 return 0;
             }
             break;
@@ -1259,6 +1312,26 @@ COLORREF resultTextColor(const search::ResultRow& row) {
         case search::ResultRowTone::Low:  return RGB(0, 0, 220);
         default:                          return CLR_INVALID;
     }
+}
+
+bool listViewRowSelected(HWND list, int row) {
+    return list && row >= 0 && (ListView_GetItemState(list, row, LVIS_SELECTED) & LVIS_SELECTED);
+}
+
+bool customDrawListSelection(NMLVCUSTOMDRAW* cd, HWND list, int row) {
+    if (!cd || !listViewRowSelected(list, row)) return false;
+    cd->nmcd.uItemState &= ~(CDIS_SELECTED | CDIS_FOCUS);
+    cd->clrTextBk = GetSysColor(COLOR_HIGHLIGHT);
+    cd->clrText = GetSysColor(COLOR_HIGHLIGHTTEXT);
+    return true;
+}
+
+void redrawSelectedListRow(HWND list) {
+    if (!list) return;
+    const int selected = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+    if (selected < 0) return;
+    ListView_RedrawItems(list, selected, selected);
+    UpdateWindow(list);
 }
 
 std::vector<int> checkedReportIndexes(const RegularReportState* st);
@@ -1527,6 +1600,48 @@ bool ensureGdiplus(RegularReportState* st) {
     return st->gdiplusReady;
 }
 
+bool createImageFromBytes(const std::vector<unsigned char>& bytes,
+                          IStream*& stream,
+                          Gdiplus::Image*& image,
+                          std::wstring& error) {
+    stream = nullptr;
+    image = nullptr;
+    if (bytes.empty()) {
+        return true;
+    }
+
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+    if (!memory) {
+        error = L"图像内存分配失败";
+        return false;
+    }
+    void* data = GlobalLock(memory);
+    if (!data) {
+        GlobalFree(memory);
+        error = L"图像内存锁定失败";
+        return false;
+    }
+    std::memcpy(data, bytes.data(), bytes.size());
+    GlobalUnlock(memory);
+
+    if (CreateStreamOnHGlobal(memory, TRUE, &stream) != S_OK || !stream) {
+        GlobalFree(memory);
+        error = L"图像流创建失败";
+        return false;
+    }
+
+    image = Gdiplus::Image::FromStream(stream, FALSE);
+    if (!image || image->GetLastStatus() != Gdiplus::Ok || image->GetWidth() == 0 || image->GetHeight() == 0) {
+        delete image;
+        image = nullptr;
+        stream->Release();
+        stream = nullptr;
+        error = L"图像解码失败";
+        return false;
+    }
+    return true;
+}
+
 void clearPictureView(RegularReportState* st, const std::wstring& status) {
     if (!st) return;
     releasePictureImage(st);
@@ -1551,32 +1666,9 @@ bool loadPictureView(RegularReportState* st, const std::vector<unsigned char>& b
         return false;
     }
 
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
-    if (!memory) {
-        error = L"图像内存分配失败";
-        return false;
-    }
-    void* data = GlobalLock(memory);
-    if (!data) {
-        GlobalFree(memory);
-        error = L"图像内存锁定失败";
-        return false;
-    }
-    std::memcpy(data, bytes.data(), bytes.size());
-    GlobalUnlock(memory);
-
     IStream* stream = nullptr;
-    if (CreateStreamOnHGlobal(memory, TRUE, &stream) != S_OK || !stream) {
-        GlobalFree(memory);
-        error = L"图像流创建失败";
-        return false;
-    }
-
-    Gdiplus::Image* image = Gdiplus::Image::FromStream(stream, FALSE);
-    if (!image || image->GetLastStatus() != Gdiplus::Ok || image->GetWidth() == 0 || image->GetHeight() == 0) {
-        delete image;
-        stream->Release();
-        error = L"图像解码失败";
+    Gdiplus::Image* image = nullptr;
+    if (!createImageFromBytes(bytes, stream, image, error)) {
         st->pictureStatus = error;
         if (IsWindow(st->pictureView)) InvalidateRect(st->pictureView, nullptr, TRUE);
         return false;
@@ -1593,6 +1685,7 @@ bool loadPictureView(RegularReportState* st, const std::vector<unsigned char>& b
 
 void querySelectedPicture(RegularReportState* st, int selected);
 void updatePictureViewport(RegularReportState* st);
+void openPicturePopupForSelection(RegularReportState* st);
 
 void showRightInfoPage(RegularReportState* st) {
     if (!st || !st->rightTab) return;
@@ -1637,7 +1730,7 @@ void selectReportRow(RegularReportState* st, int index) {
 void querySelectedResults(RegularReportState* st, int selected);
 void sortReportRowsByColumn(RegularReportState* st, int column);
 void populateLeftPanelFromReport(RegularReportState* st, int selected);
-void runReportQuery(RegularReportState* st);
+void runReportQuery(RegularReportState* st, bool preserveState);
 
 std::string normalizeSampleNo(std::string value) {
     value = search::trim(std::move(value));
@@ -1760,6 +1853,401 @@ LRESULT CALLBACK pictureViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             break;
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void releasePicturePopupImage(PicturePopupState* popup) {
+    if (!popup) return;
+    delete popup->image;
+    popup->image = nullptr;
+    if (popup->stream) {
+        popup->stream->Release();
+        popup->stream = nullptr;
+    }
+}
+
+bool ensurePopupGdiplus(PicturePopupState* popup) {
+    if (!popup) return false;
+    if (popup->gdiplusReady) return true;
+    Gdiplus::GdiplusStartupInput input;
+    popup->gdiplusReady = Gdiplus::GdiplusStartup(&popup->gdiplusToken, &input, nullptr) == Gdiplus::Ok;
+    return popup->gdiplusReady;
+}
+
+bool loadPicturePopupImage(PicturePopupState* popup, const std::vector<unsigned char>& bytes,
+                           std::wstring& error) {
+    if (!popup) return false;
+    releasePicturePopupImage(popup);
+    if (bytes.empty()) {
+        popup->status.clear();
+        return true;
+    }
+    if (!ensurePopupGdiplus(popup)) {
+        error = L"GDI+ 初始化失败";
+        popup->status = error;
+        return false;
+    }
+    if (!createImageFromBytes(bytes, popup->stream, popup->image, error)) {
+        popup->status = error;
+        return false;
+    }
+    popup->status.clear();
+    return true;
+}
+
+bool clonePicturePopupImage(PicturePopupState* popup, const RegularReportState* st,
+                            std::wstring& error) {
+    if (!popup || !st || !st->pictureImage) return false;
+    if (!ensurePopupGdiplus(popup)) {
+        error = L"GDI+ 初始化失败";
+        return false;
+    }
+    Gdiplus::Image* cloned = st->pictureImage->Clone();
+    if (!cloned || cloned->GetLastStatus() != Gdiplus::Ok) {
+        delete cloned;
+        error = L"图像复制失败";
+        return false;
+    }
+    releasePicturePopupImage(popup);
+    popup->image = cloned;
+    popup->status.clear();
+    return true;
+}
+
+void paintPicturePopup(HWND hwnd, PicturePopupState* popup, HDC dc) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    FillRect(dc, &rc, GetSysColorBrush(COLOR_WINDOW));
+    if (!popup) return;
+
+    if (popup->image) {
+        const double imageW = static_cast<double>(popup->image->GetWidth());
+        const double imageH = static_cast<double>(popup->image->GetHeight());
+        const int clientW = std::max(1, static_cast<int>(rc.right - rc.left));
+        const int clientH = std::max(1, static_cast<int>(rc.bottom - rc.top));
+        const double scale = std::min(clientW / imageW, clientH / imageH);
+        const int drawW = std::max(1, static_cast<int>(imageW * scale));
+        const int drawH = std::max(1, static_cast<int>(imageH * scale));
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.DrawImage(popup->image, rc.left, rc.top, drawW, drawH);
+        return;
+    }
+
+    if (!popup->status.empty() || popup->loading) {
+        const std::wstring text = popup->status.empty() ? L"正在加载图像..." : popup->status;
+        HGDIOBJ oldFont = popup->font ? SelectObject(dc, popup->font) : nullptr;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(80, 80, 80));
+        RECT textRc = rc;
+        InflateRect(&textRc, -12, -12);
+        DrawTextW(dc, text.c_str(), -1, &textRc, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+        if (oldFont) SelectObject(dc, oldFont);
+    }
+}
+
+void savePicturePopupSize(HWND hwnd) {
+    if (!hwnd || IsIconic(hwnd)) return;
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc)) return;
+    const int w = static_cast<int>(rc.right - rc.left);
+    const int h = static_cast<int>(rc.bottom - rc.top);
+    if (w >= PICTURE_POPUP_MIN_W && h >= PICTURE_POPUP_MIN_H) {
+        search::save_module_int(L"RegularReport", L"PicturePopupWidth", w);
+        search::save_module_int(L"RegularReport", L"PicturePopupHeight", h);
+    }
+}
+
+LRESULT CALLBACK picturePopupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* popup = reinterpret_cast<PicturePopupState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            popup = reinterpret_cast<PicturePopupState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(popup));
+            if (popup) popup->hwnd = hwnd;
+            return TRUE;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            const int w = std::max(1, static_cast<int>(rc.right - rc.left));
+            const int h = std::max(1, static_cast<int>(rc.bottom - rc.top));
+            HDC memDc = CreateCompatibleDC(dc);
+            HBITMAP memBmp = memDc ? CreateCompatibleBitmap(dc, w, h) : nullptr;
+            if (memDc && memBmp) {
+                HGDIOBJ oldBmp = SelectObject(memDc, memBmp);
+                paintPicturePopup(hwnd, popup, memDc);
+                BitBlt(dc, 0, 0, w, h, memDc, 0, 0, SRCCOPY);
+                SelectObject(memDc, oldBmp);
+                DeleteObject(memBmp);
+                DeleteDC(memDc);
+            } else {
+                paintPicturePopup(hwnd, popup, dc);
+                if (memBmp) DeleteObject(memBmp);
+                if (memDc) DeleteDC(memDc);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_SIZE:
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_EXITSIZEMOVE:
+            savePicturePopupSize(hwnd);
+            return 0;
+        case WM_POPUP_PICTURE_LOADED: {
+            std::unique_ptr<PicturePopupLoadResult> result(reinterpret_cast<PicturePopupLoadResult*>(lp));
+            if (!popup || !result || result->generation != popup->generation) return 0;
+            popup->loading = false;
+            if (!result->ok) {
+                releasePicturePopupImage(popup);
+                popup->status = L"图像查询失败：" + search::utf8_to_wide(result->error);
+            } else {
+                std::wstring error;
+                if (!loadPicturePopupImage(popup, result->picture, error) && !error.empty()) {
+                    popup->status = error;
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_CLOSE:
+            savePicturePopupSize(hwnd);
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_NCDESTROY:
+            if (popup) {
+                if (popup->owner && popup->owner->picturePopup == hwnd) {
+                    popup->owner->picturePopup = nullptr;
+                }
+                ++popup->generation;
+                releasePicturePopupImage(popup);
+                if (popup->gdiplusReady) {
+                    Gdiplus::GdiplusShutdown(popup->gdiplusToken);
+                    popup->gdiplusReady = false;
+                    popup->gdiplusToken = 0;
+                }
+                delete popup;
+            }
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void registerPicturePopupClass(HINSTANCE instance) {
+    static bool registered = false;
+    if (registered) return;
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = picturePopupProc;
+    wc.hInstance = instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP),
+                                               IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = PICTURE_POPUP_CLASS;
+    const ATOM atom = RegisterClassExW(&wc);
+    registered = atom != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+int currentReportIndex(const RegularReportState* st) {
+    if (!st) return -1;
+    if (st->reportList) {
+        const int selected = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
+        if (selected >= 0 && selected < static_cast<int>(st->reportRows.size())) {
+            return selected;
+        }
+    }
+    if (st->selectedReportIndex >= 0 && st->selectedReportIndex < static_cast<int>(st->reportRows.size())) {
+        return st->selectedReportIndex;
+    }
+    return -1;
+}
+
+std::wstring trimWide(std::wstring value) {
+    auto notSpace = [](wchar_t ch) { return std::iswspace(ch) == 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
+    return value;
+}
+
+std::wstring reportListCellText(HWND list, int row, int col) {
+    if (!list || row < 0 || col < 0) return L"";
+    wchar_t text[256]{};
+    ListView_GetItemText(list, row, col, text, static_cast<int>(std::size(text)));
+    return trimWide(text);
+}
+
+std::wstring picturePopupTitle(const RegularReportState* st, int selected) {
+    std::wstring sampleNo = reportListCellText(st ? st->reportList : nullptr, selected, 1);
+    std::wstring patientName = reportListCellText(st ? st->reportList : nullptr, selected, 2);
+    if (sampleNo.empty() && st && selected >= 0 && selected < static_cast<int>(st->reportRows.size())) {
+        sampleNo = search::utf8_to_wide(search::trim(st->reportRows[static_cast<size_t>(selected)].oper_no));
+    }
+    if (patientName.empty() && st && selected >= 0 && selected < static_cast<int>(st->reportRows.size())) {
+        patientName = search::utf8_to_wide(search::trim(st->reportRows[static_cast<size_t>(selected)].name));
+    }
+
+    std::wstring title = L"结果图";
+    if (!sampleNo.empty() || !patientName.empty()) {
+        title += L" - ";
+        title += sampleNo;
+        if (!sampleNo.empty() && !patientName.empty()) {
+            title += L" ";
+        }
+        title += patientName;
+    }
+    return title;
+}
+
+void startPicturePopupQuery(PicturePopupState* popup, const std::string& connection,
+                            const std::string& repNo) {
+    if (!popup || !popup->hwnd) return;
+    popup->loading = true;
+    popup->status = L"正在加载图像...";
+    releasePicturePopupImage(popup);
+    InvalidateRect(popup->hwnd, nullptr, FALSE);
+    const HWND hwnd = popup->hwnd;
+    const int generation = ++popup->generation;
+    std::thread([hwnd, connection, repNo, generation]() {
+        auto* result = new PicturePopupLoadResult;
+        result->generation = generation;
+        result->ok = search::query_report_picture(connection, repNo, result->picture, result->error);
+        if (!PostMessageW(hwnd, WM_POPUP_PICTURE_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
+    }).detach();
+}
+
+void clearPicturePopup(PicturePopupState* popup, const std::wstring& title,
+                       const std::wstring& status) {
+    if (!popup || !popup->hwnd) return;
+    ++popup->generation;
+    popup->repNo.clear();
+    popup->loading = false;
+    releasePicturePopupImage(popup);
+    popup->status = status;
+    SetWindowTextW(popup->hwnd, title.c_str());
+    InvalidateRect(popup->hwnd, nullptr, FALSE);
+}
+
+void refreshPicturePopupForSelection(RegularReportState* st, int selected) {
+    if (!st || !IsWindow(st->picturePopup)) return;
+    auto* popup = reinterpret_cast<PicturePopupState*>(GetWindowLongPtrW(st->picturePopup, GWLP_USERDATA));
+    if (!popup) return;
+
+    const std::wstring title = picturePopupTitle(st, selected);
+    SetWindowTextW(st->picturePopup, title.c_str());
+
+    if (selected < 0 || selected >= static_cast<int>(st->reportRows.size())) {
+        clearPicturePopup(popup, L"结果图", L"请先选择一条报告记录。");
+        return;
+    }
+
+    const std::string repNo = search::trim(st->reportRows[static_cast<size_t>(selected)].rep_no);
+    if (repNo.empty()) {
+        clearPicturePopup(popup, title, L"当前报告没有验单号，无法查询图像。");
+        return;
+    }
+    if (popup->repNo == repNo && (popup->loading || popup->image || !popup->status.empty())) {
+        return;
+    }
+
+    std::string connection = st->reportConnectionString;
+    if (connection.empty()) {
+        connection = search::wide_to_utf8(search::build_connection_string_w(st->ctx.dbSettings));
+    }
+    if (connection.empty()) {
+        clearPicturePopup(popup, title, L"请先在“设置”中填写数据库连接信息。");
+        return;
+    }
+
+    popup->repNo = repNo;
+    std::wstring cloneError;
+    if (st->pictureImage && st->pictureRepNo == repNo &&
+        clonePicturePopupImage(popup, st, cloneError)) {
+        popup->loading = false;
+        InvalidateRect(st->picturePopup, nullptr, FALSE);
+        return;
+    }
+    startPicturePopupQuery(popup, connection, repNo);
+}
+
+void openPicturePopupForSelection(RegularReportState* st) {
+    const int selected = currentReportIndex(st);
+    if (!st || selected < 0) {
+        MessageBoxW(st ? st->hwnd : nullptr, L"请先选择一条报告记录。", L"常规报告", MB_ICONINFORMATION);
+        return;
+    }
+    const auto& row = st->reportRows[static_cast<size_t>(selected)];
+    const std::string repNo = search::trim(row.rep_no);
+    if (repNo.empty()) {
+        MessageBoxW(st->hwnd, L"当前报告没有验单号，无法查询图像。", L"常规报告", MB_ICONINFORMATION);
+        return;
+    }
+
+    std::string connection = st->reportConnectionString;
+    if (connection.empty()) {
+        connection = search::wide_to_utf8(search::build_connection_string_w(st->ctx.dbSettings));
+    }
+    if (connection.empty()) {
+        MessageBoxW(st->hwnd, L"请先在“设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
+        return;
+    }
+
+    registerPicturePopupClass(st->ctx.instance);
+    if (IsWindow(st->picturePopup)) {
+        ShowWindow(st->picturePopup, SW_SHOWNORMAL);
+        SetForegroundWindow(st->picturePopup);
+        refreshPicturePopupForSelection(st, selected);
+        return;
+    }
+
+    auto* popup = new PicturePopupState;
+    popup->owner = st;
+    popup->font = st->ctx.uiFont;
+    popup->repNo = repNo;
+    popup->status = L"正在加载图像...";
+
+    RECT ownerRc{};
+    GetWindowRect(st->hwnd, &ownerRc);
+    const int popupW = std::max(S(st->hwnd, PICTURE_POPUP_MIN_W),
+                                search::load_module_int(L"RegularReport", L"PicturePopupWidth",
+                                                        S(st->hwnd, PICTURE_POPUP_DEFAULT_W)));
+    const int popupH = std::max(S(st->hwnd, PICTURE_POPUP_MIN_H),
+                                search::load_module_int(L"RegularReport", L"PicturePopupHeight",
+                                                        S(st->hwnd, PICTURE_POPUP_DEFAULT_H)));
+    const int x = static_cast<int>(ownerRc.left) +
+                  std::max(0, static_cast<int>(ownerRc.right - ownerRc.left - popupW) / 2);
+    const int y = static_cast<int>(ownerRc.top) +
+                  std::max(0, static_cast<int>(ownerRc.bottom - ownerRc.top - popupH) / 2);
+    const std::wstring title = picturePopupTitle(st, selected);
+
+    HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, PICTURE_POPUP_CLASS, title.c_str(),
+                                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                x, y, popupW, popupH, st->hwnd, nullptr, st->ctx.instance, popup);
+    if (!hwnd) {
+        delete popup;
+        MessageBoxW(st->hwnd, L"结果图窗口创建失败。", L"常规报告", MB_ICONERROR);
+        return;
+    }
+    st->picturePopup = hwnd;
+    SetWindowTextW(hwnd, title.c_str());
+
+    std::wstring cloneError;
+    if (st->pictureImage && st->pictureRepNo == repNo &&
+        clonePicturePopupImage(popup, st, cloneError)) {
+        popup->loading = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    startPicturePopupQuery(popup, connection, repNo);
 }
 
 void updatePictureViewport(RegularReportState* st) {
@@ -1903,6 +2391,10 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (customDrawListSelection(cd, st ? st->resultList : nullptr, row)) {
+                        return CDRF_NEWFONT;
+                    }
                     const auto index = static_cast<size_t>(cd->nmcd.dwItemSpec);
                     if (st && index < st->resultRows.size()) {
                         const COLORREF color = resultTextColor(st->resultRows[index]);
@@ -1912,6 +2404,10 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     }
                     return CDRF_DODEFAULT;
                 }
+            }
+            if (st && nm->idFrom == IDC_RESULT_LIST && nm->code == NM_KILLFOCUS) {
+                redrawSelectedListRow(st->resultList);
+                return 0;
             }
             break;
         }
@@ -1985,7 +2481,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 return 0;
             }
             if (st && id == IDC_REPORT_DATE_TODAY_BUTTON) {
-                setInspectDateAndQuery(st, todayDate());
+                setInspectDateAndQuery(st, todayDate(), true);
                 return 0;
             }
             if (st && id == IDC_REPORT_DATE_PREV_BUTTON) {
@@ -2032,21 +2528,31 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 showReportContextMenu(st, reinterpret_cast<NMITEMACTIVATE*>(lp));
                 return 0;
             }
+            if (st && nm->idFrom == IDC_REPORT_LIST && nm->code == NM_KILLFOCUS) {
+                redrawSelectedListRow(st->reportList);
+                return 0;
+            }
             if (nm->idFrom == IDC_REPORT_LIST && nm->code == NM_CUSTOMDRAW) {
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (customDrawListSelection(cd, st ? st->reportList : nullptr, row)) {
+                        return CDRF_NOTIFYSUBITEMDRAW;
+                    }
                     return CDRF_NOTIFYSUBITEMDRAW;
                 }
                 if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    cd->clrTextBk = cd->iSubItem == RIGHT_REPORT_PRINT_COL
-                                        ? reportPrintCellColor(st, row)
-                                        : reportRowColor(st, row);
-                    cd->clrText = st && row >= 0 && row < static_cast<int>(st->reportRows.size()) &&
-                                          search::trim(st->reportRows[static_cast<size_t>(row)].emergency_flag) == "1"
-                                      ? RGB(0xE6, 0, 0)
-                                      : RGB(0, 0, 0);
+                    if (!customDrawListSelection(cd, st ? st->reportList : nullptr, row)) {
+                        cd->clrTextBk = cd->iSubItem == RIGHT_REPORT_PRINT_COL
+                                            ? reportPrintCellColor(st, row)
+                                            : reportRowColor(st, row);
+                        cd->clrText = st && row >= 0 && row < static_cast<int>(st->reportRows.size()) &&
+                                              search::trim(st->reportRows[static_cast<size_t>(row)].emergency_flag) == "1"
+                                          ? RGB(0xE6, 0, 0)
+                                          : RGB(0, 0, 0);
+                    }
                     return CDRF_NEWFONT;
                 }
             }
@@ -2080,8 +2586,12 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 if (search::trim(st->selectedMachineCode).empty()) {
                     MessageBoxW(st->hwnd, L"请先选择检验仪器。", L"常规报告", MB_ICONWARNING);
                 } else {
-                    runReportQuery(st);
+                    runReportQuery(st, true);
                 }
+                return 0;
+            }
+            if (st && LOWORD(wp) == IDC_BOTTOM_GRAPH) {
+                openPicturePopupForSelection(st);
                 return 0;
             }
             break;
@@ -2115,6 +2625,14 @@ void setCell(HWND list, int row, int col, const wchar_t* text) {
 void setCell(HWND list, int row, int col, const std::string& text) {
     const auto wide = search::utf8_to_wide(text);
     setCell(list, row, col, wide.c_str());
+}
+
+void setCellIfChanged(HWND list, int row, int col, const std::wstring& text) {
+    wchar_t current[2048]{};
+    ListView_GetItemText(list, row, col, current, static_cast<int>(std::size(current)));
+    if (text != current) {
+        setCell(list, row, col, text.c_str());
+    }
 }
 
 std::string referenceRange(const search::ResultRow& row) {
@@ -2238,45 +2756,111 @@ bool containsId(const std::vector<std::string>& ids, const std::string& id) {
     return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
+int findReportIndexById(const std::vector<search::ReportRow>& rows, const std::string& id) {
+    if (id.empty()) return -1;
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        if (search::trim(rows[static_cast<size_t>(i)].id) == id) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+std::array<std::wstring, REPORT_COLUMN_COUNT> reportDisplayValues(const search::ReportRow& data) {
+    auto w = [](const std::string& value) { return search::utf8_to_wide(value); };
+    std::array<std::wstring, REPORT_COLUMN_COUNT> values{};
+    values[0] = search::trim(data.emergency_flag) == "1" ? L"急" : L"";
+    values[1] = w(data.oper_no);
+    values[2] = w(data.name);
+    values[3] = w(data.sex);
+    values[4] = w(data.age);
+    values[5] = w(data.order_text);
+    values[6] = w(data.dept_name);
+    values[7] = w(data.bed_code);
+    values[8] = w(search::display_binary_print_flag(data.zymz_print));
+    values[9] = w(data.patient_type);
+    values[10] = w(data.requester);
+    values[11] = w(data.group_name);
+    values[12] = w(data.rep_no);
+    values[13] = w(data.chk_flag);
+    values[14] = w(data.conf);
+    values[15] = w(data.txm_no);
+    values[16] = w(data.group_name);
+    values[17] = w(data.sample_name);
+    values[18] = w(data.note);
+    values[19] = w(data.dean_oper);
+    values[20] = w(slashDateTimeMinute(data.chk_date));
+    values[21] = w(slashDateTimeMinute(data.collection_time));
+    values[22] = w(slashDate(data.inspect_date));
+    values[23] = w(slashDateTimeMinute(data.rep_time));
+    values[24] = w(data.fee);
+    values[25] = w(data.req_doctor);
+    values[26] = w(data.diag_name);
+    values[27] = w(data.reg_no);
+    values[28] = w(data.create_time);
+    values[29] = w(data.patient_phone);
+    return values;
+}
+
+bool reportDisplayEqual(const search::ReportRow& left, const search::ReportRow& right) {
+    return reportDisplayValues(left) == reportDisplayValues(right);
+}
+
 void insertReportRow(HWND list, int row, const search::ReportRow& data) {
+    const auto values = reportDisplayValues(data);
     LVITEMW itemDef{};
     itemDef.mask = LVIF_TEXT;
     itemDef.iItem = row;
-    itemDef.pszText = const_cast<wchar_t*>(search::trim(data.emergency_flag) == "1" ? L"急" : L"");
+    itemDef.pszText = const_cast<wchar_t*>(values[0].c_str());
     ListView_InsertItem(list, &itemDef);
-    setCell(list, row, 1, data.oper_no);
-    setCell(list, row, 2, data.name);
-    setCell(list, row, 3, data.sex);
-    setCell(list, row, 4, data.age);
-    setCell(list, row, 5, data.order_text);
-    setCell(list, row, 6, data.dept_name);
-    setCell(list, row, 7, data.bed_code);
-    setCell(list, row, 8, search::display_binary_print_flag(data.zymz_print));
-    setCell(list, row, 9, data.patient_type);
-    setCell(list, row, 10, data.requester);
-    setCell(list, row, 11, data.group_name);
-    setCell(list, row, 12, data.rep_no);
-    setCell(list, row, 13, data.chk_flag);
-    setCell(list, row, 14, data.conf);
-    setCell(list, row, 15, data.txm_no);
-    setCell(list, row, 16, data.group_name);
-    setCell(list, row, 17, data.sample_name);
-    setCell(list, row, 18, data.note);
-    setCell(list, row, 19, data.dean_oper);
-    setCell(list, row, 20, slashDateTimeMinute(data.chk_date));
-    setCell(list, row, 21, slashDateTimeMinute(data.collection_time));
-    setCell(list, row, 22, slashDate(data.inspect_date));
-    setCell(list, row, 23, slashDateTimeMinute(data.rep_time));
-    setCell(list, row, 24, data.fee);
-    setCell(list, row, 25, data.req_doctor);
-    setCell(list, row, 26, data.diag_name);
-    setCell(list, row, 27, data.reg_no);
-    setCell(list, row, 28, data.create_time);
-    setCell(list, row, 29, data.patient_phone);
+    for (int col = 1; col < REPORT_COLUMN_COUNT; ++col) {
+        setCell(list, row, col, values[static_cast<size_t>(col)].c_str());
+    }
 }
 
-void presentReportRows(RegularReportState* st) {
+void updateReportRowCells(HWND list, int row, const search::ReportRow& data) {
+    const auto values = reportDisplayValues(data);
+    for (int col = 0; col < REPORT_COLUMN_COUNT; ++col) {
+        setCellIfChanged(list, row, col, values[static_cast<size_t>(col)]);
+    }
+}
+
+bool sameReportOrder(const std::vector<search::ReportRow>& oldRows,
+                     const std::vector<search::ReportRow>& newRows) {
+    if (oldRows.size() != newRows.size()) return false;
+    for (size_t i = 0; i < oldRows.size(); ++i) {
+        if (search::trim(oldRows[i].id) != search::trim(newRows[i].id)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void sortReportRowsForDisplay(RegularReportState* st, std::vector<search::ReportRow>& rows,
+                              bool preserveSort) {
+    if (preserveSort && st && st->reportSortColumn >= 0) {
+        const int column = st->reportSortColumn;
+        const bool ascending = st->reportSortAscending;
+        std::stable_sort(rows.begin(), rows.end(),
+                         [column, ascending](const search::ReportRow& a, const search::ReportRow& b) {
+                             const int cmp = compareReportSortValue(a, b, column);
+                             return ascending ? cmp < 0 : cmp > 0;
+                         });
+        return;
+    }
+    std::stable_sort(rows.begin(), rows.end(), reportSampleLess);
+}
+
+void presentReportRows(RegularReportState* st,
+                       const std::vector<search::ReportRow>* previousRows = nullptr) {
     if (!st || !st->reportList) return;
+    if (previousRows && sameReportOrder(*previousRows, st->reportRows)) {
+        for (size_t i = 0; i < st->reportRows.size(); ++i) {
+            updateReportRowCells(st->reportList, static_cast<int>(i), st->reportRows[i]);
+        }
+        InvalidateRect(st->rightPanel, nullptr, TRUE);
+        return;
+    }
     ListView_DeleteAllItems(st->reportList);
     for (size_t i = 0; i < st->reportRows.size(); ++i) {
         insertReportRow(st->reportList, static_cast<int>(i), st->reportRows[i]);
@@ -2480,6 +3064,7 @@ void querySelectedResults(RegularReportState* st, int selected) {
             st->pictureRepNo.clear();
             ++st->pictureQueryGeneration;
             clearPictureView(st, L"");
+            refreshPicturePopupForSelection(st, -1);
         }
         return;
     }
@@ -2489,6 +3074,7 @@ void querySelectedResults(RegularReportState* st, int selected) {
     ++st->pictureQueryGeneration;
     clearPictureView(st, L"");
     querySelectedPicture(st, selected);
+    refreshPicturePopupForSelection(st, selected);
     if (st->resultQueryLoading && st->selectedReportIndex == selected) return;
     ListView_DeleteAllItems(st->resultList);
     st->resultRows.clear();
@@ -2544,11 +3130,73 @@ void finishReportQuery(RegularReportState* st, HWND hwnd, std::unique_ptr<Report
         MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
+    const bool preserveState = result->preserveState;
+    const std::vector<search::ReportRow> previousRows = st->reportRows;
+    std::string selectedId;
+    std::string selectedRepNo;
+    const int selected = st->reportList ? ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED) : -1;
+    if (selected >= 0 && selected < static_cast<int>(previousRows.size())) {
+        selectedId = search::trim(previousRows[static_cast<size_t>(selected)].id);
+        selectedRepNo = search::trim(previousRows[static_cast<size_t>(selected)].rep_no);
+    }
+
+    std::vector<std::string> checkedIds;
+    if (preserveState) {
+        for (int index : checkedReportIndexes(st)) {
+            if (index >= 0 && index < static_cast<int>(previousRows.size())) {
+                checkedIds.push_back(search::trim(previousRows[static_cast<size_t>(index)].id));
+            }
+        }
+    }
+    const int topIndex = preserveState && st->reportList ? ListView_GetTopIndex(st->reportList) : -1;
+
+    sortReportRowsForDisplay(st, result->rows, preserveState);
     st->reportRows = std::move(result->rows);
-    std::stable_sort(st->reportRows.begin(), st->reportRows.end(), reportSampleLess);
     st->reportConnectionString = std::move(result->connectionString);
-    presentReportRows(st);
-    if (!st->reportRows.empty()) {
+    st->reportQueryDate = std::move(result->queryDate);
+
+    st->suppressReportSelectionQuery = true;
+    presentReportRows(st, preserveState ? &previousRows : nullptr);
+    int restoredSelected = -1;
+    if (preserveState) {
+        for (int i = 0; i < static_cast<int>(st->reportRows.size()); ++i) {
+            const std::string id = search::trim(st->reportRows[static_cast<size_t>(i)].id);
+            if (containsId(checkedIds, id)) {
+                ListView_SetCheckState(st->reportList, i, TRUE);
+            }
+            if (!selectedId.empty() && id == selectedId) {
+                restoredSelected = i;
+            }
+        }
+        if (topIndex >= 0 && topIndex < ListView_GetItemCount(st->reportList)) {
+            ListView_EnsureVisible(st->reportList, topIndex, FALSE);
+        }
+    }
+    if (restoredSelected >= 0) {
+        ListView_SetItemState(st->reportList, restoredSelected, LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->reportList, restoredSelected, FALSE);
+    }
+    st->suppressReportSelectionQuery = false;
+
+    if (preserveState) {
+        if (restoredSelected >= 0) {
+            const int oldIndex = findReportIndexById(previousRows, selectedId);
+            const auto& row = st->reportRows[static_cast<size_t>(restoredSelected)];
+            const bool rowChanged = oldIndex < 0 ||
+                                    !reportDisplayEqual(previousRows[static_cast<size_t>(oldIndex)], row);
+            st->selectedReportIndex = restoredSelected;
+            populateLeftPanelFromReport(st, restoredSelected);
+            refreshPicturePopupForSelection(st, restoredSelected);
+            if (search::trim(row.rep_no) != selectedRepNo) {
+                querySelectedResults(st, restoredSelected);
+            } else if (rowChanged) {
+                InvalidateRect(st->reportList, nullptr, FALSE);
+            }
+        } else if (!selectedId.empty()) {
+            querySelectedResults(st, -1);
+        }
+    } else if (!st->reportRows.empty()) {
         ListView_SetItemState(st->reportList, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         querySelectedResults(st, 0);
     }
@@ -3105,6 +3753,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (st) {
                 stopAutoRefreshTimer(st);
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
+                if (IsWindow(st->picturePopup)) DestroyWindow(st->picturePopup);
                 releasePictureImage(st);
                 if (st->gdiplusReady) {
                     Gdiplus::GdiplusShutdown(st->gdiplusToken);
