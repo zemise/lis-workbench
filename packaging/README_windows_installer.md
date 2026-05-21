@@ -8,9 +8,9 @@
 
 | Job | Runner | Toolchain | LabelPrint | 产物 |
 |-----|--------|-----------|------------|------|
-| `windows-installer` | `windows-2022` | Visual Studio 2022 x64 | `labelprint-v1.2.2-windows-x64-vs2022-win7.zip` | `LISWorkbench-Setup-<version>-win7-win11.exe` |
+| `windows-installer` | `windows-2022` | Visual Studio 2022 x64 | `labelprint-v1.2.3-windows-x64-vs2022-win7.zip` | `LISWorkbench-Setup-<version>-win7-win11.exe` |
 
-CI 会从 LabelPrint GitHub Release 下载 `v1.2.2` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。
+CI 会从 LabelPrint GitHub Release 下载 `v1.2.3` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。
 
 说明：GitHub Actions 不能真正提供 Windows 7 runner 做运行验证；这里的 “Win7-Win11” 表示使用 VS2022、静态 MSVC runtime、Win7 兼容宏和 LabelPrint Win7 兼容包构建出的安装包，目标是覆盖 Windows 7 到 Windows 11。
 
@@ -46,7 +46,7 @@ out/windows/installer/LISWorkbench-Setup.exe
 ```powershell
 # Win32 主程序。默认优先使用 VS 2022，并静态链接 MSVC runtime，便于兼容 Windows 7。
 # 正式打包建议使用 LabelPrint release zip 解压目录，而不是依赖相邻源码目录。
-.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.2-windows-x64-vs2022-win7"
+.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.3-windows-x64-vs2022-win7"
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
@@ -56,7 +56,7 @@ New-Item -ItemType Directory -Force out\windows\installer
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
 
 ```powershell
-.\scripts\build_main.ps1 -Clean -Config Release -Generator "Visual Studio 18 2026" -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.2-windows-x64-vs2026"
+.\scripts\build_main.ps1 -Clean -Config Release -Generator "Visual Studio 18 2026" -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.3-windows-x64-vs2026"
 ```
 
 `-LabelPrintPackagePath` 会传给 CMake 的 `CMAKE_PREFIX_PATH`，使主项目优先通过 `find_package(LabelPrint 1.2 CONFIG)` 使用 release 包。该路径必须是 release zip 解压后的根目录，且包含 `cmake\LabelPrintConfig.cmake`；路径无效时脚本会直接停止，避免正式包误回退到本机源码。若不传该参数，构建仍会回退到 `LIS_LABELPRINT_DIR` 指向的源码目录，默认是 `..\..\020 LabelPrint\LabelPrint`，适合本机联调。
@@ -64,7 +64,7 @@ New-Item -ItemType Directory -Force out\windows\installer
 需要传入其他 CMake 变量时，可使用 `-CMakeArgs`：
 
 ```powershell
-.\scripts\build_main.ps1 -Clean -Config Release -CMakeArgs "-DCMAKE_PREFIX_PATH=C:\Deps\LabelPrint\labelprint-v1.2.2-windows-x64-vs2022-win7","-DLIS_LABELPRINT_DIR=C:\src\LabelPrint"
+.\scripts\build_main.ps1 -Clean -Config Release -CMakeArgs "-DCMAKE_PREFIX_PATH=C:\Deps\LabelPrint\labelprint-v1.2.3-windows-x64-vs2022-win7","-DLIS_LABELPRINT_DIR=C:\src\LabelPrint"
 ```
 
 `build_main.ps1` 会优先选择已安装的 VS 2022；如果本机没有 VS 2022，会自动退到已安装的 VS 2026。Windows 7 包必须安装 VS 2022 Build Tools 后再构建，也不要把 VS 2026 的 `Microsoft.VC*.CRT` 目录打进安装包。较新的运行库可能依赖 Win8+ 入口，例如 `CreateFile2`、`GetSystemTimePreciseAsFileTime`，在 Win7 上会启动失败。只面向 Windows 10/11 时可以显式使用：
