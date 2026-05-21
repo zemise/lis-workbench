@@ -113,7 +113,7 @@
   - 右侧信息列表下方提供 `今天 / 前一天 / 后一天` 快捷按钮，用于切换左侧 `检验日期` 并按当前检验仪器刷新列表；其后 `自动刷新` 默认未启用，勾选后按秒数输入定时刷新，默认 10 秒，最小 5 秒，且不会在上一次查询未完成时叠加发起。
   - 页面底部 `1 / 2 / 3` 按钮会读取系统设置中的快捷检验仪器，快速切换左侧 `检验仪器` 并按当前 `检验日期` 刷新右侧列表；如果当前页面已经是该快捷仪器，则复用保留状态刷新，并把对应按钮文字标记为 `[1] / [2] / [3]`。手动打开检验仪器弹窗时，会优先定位到当前页面已选仪器对应的科室和仪器；弹窗失焦时采用延迟关闭，避免点击主界面时打断主窗口激活。
   - 左侧 `样本号` 输入框支持输入样本号后按回车，在当前右侧信息列表中定位并选中对应行，同时触发左侧信息和中间结果列表联动更新。
-  - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码` 和 `打印勾选条码`，会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该报告 `REP_NO` 对应的中间项目明细 `组合项目` 列，而不是右侧列表的项目名称。
+  - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码` 和 `打印勾选条码`，会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该右侧报告行的 `检验仪器` 列内容，开单日期按 `2026/5/21` 这种仅日期格式打印。
   - 条码打印机名读取 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`，默认 `Xprinter XP-360B #2`；打印机型号和 TSPL/ZPL 后端由 LabelPrint 根据 Windows 打印机元数据自动选择，识别不出时按 XP-360B 兼容路径兜底。如果打印机名失效，需要在系统设置页重新选择条码打印机。
   - 中间结果列表复用检验结果查询的项目明细查询和 `NORMAL` 偏差展示逻辑；其中 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先取未删除启用记录，缺失时取同组任意非空名称兜底；连续相同组合项目只在第一行显示；`结果` 列保持白底，其他列使用浅灰底以突出结果值。
   - 中间结果列表的 `结果` 单元格支持界面内临时编辑：单击结果单元格开始编辑，回车提交到当前内存行并跳到下一行继续编辑，失焦或 Esc 取消且不抢回焦点；当前不执行数据库写入。
@@ -129,7 +129,7 @@
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
   - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果，并根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
   - `查询检验结果` 窗口的组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
-- GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.0` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
+- GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.1` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
 
 暂未实现：
 
@@ -232,7 +232,7 @@ VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release
 
 项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
 
-面向 Windows 7 打包时需要安装 VS 2022 Build Tools，并优先使用 LabelPrint 的 `windows-x64-vs2022-win7` release 包，例如 `.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.0-windows-x64-vs2022-win7"`。不要把 VS 2026 的 CRT DLL 打入安装目录，否则可能出现 `GetSystemTimePreciseAsFileTime` 等 Win8+ 入口点缺失。只面向 Windows 10/11 时可以显式使用 `-Generator "Visual Studio 18 2026"` 和对应的 LabelPrint VS2026 release 包。
+面向 Windows 7 打包时需要安装 VS 2022 Build Tools，并优先使用 LabelPrint 的 `windows-x64-vs2022-win7` release 包，例如 `.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.1-windows-x64-vs2022-win7"`。不要把 VS 2026 的 CRT DLL 打入安装目录，否则可能出现 `GetSystemTimePreciseAsFileTime` 等 Win8+ 入口点缺失。只面向 Windows 10/11 时可以显式使用 `-Generator "Visual Studio 18 2026"` 和对应的 LabelPrint VS2026 release 包。
 
 ## 使用说明
 

@@ -9,8 +9,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  LABELPRINT_VERSION: v1.2.0
-  LABELPRINT_WIN7_ASSET: labelprint-v1.2.0-windows-x64-vs2022-win7.zip
+  LABELPRINT_VERSION: v1.2.1
+  LABELPRINT_WIN7_ASSET: labelprint-v1.2.1-windows-x64-vs2022-win7.zip
 
 jobs:
   windows-installer:

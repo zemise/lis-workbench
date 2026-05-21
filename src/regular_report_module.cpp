@@ -1493,49 +1493,14 @@ void clearReportChecks(RegularReportState* st) {
     }
 }
 
-std::string joinedResultGroupNames(const std::vector<search::ResultRow>& rows) {
-    std::vector<std::string> uniqueNames;
-    for (const auto& row : rows) {
-        const std::string name = search::trim(row.group_name);
-        if (name.empty()) continue;
-        if (std::find(uniqueNames.begin(), uniqueNames.end(), name) == uniqueNames.end()) {
-            uniqueNames.push_back(name);
-        }
-    }
-
-    std::string result;
-    for (const auto& name : uniqueNames) {
-        if (!result.empty()) result += "/";
-        result += name;
-    }
-    return result;
-}
-
 std::string barcodeGroupNameForReport(RegularReportState* st, int reportIndex, std::string& error) {
     error.clear();
     if (!st || reportIndex < 0 || reportIndex >= static_cast<int>(st->reportRows.size())) {
         error = "invalid report row";
         return "";
     }
-
-    if (st->selectedReportIndex == reportIndex && !st->resultQueryLoading) {
-        const std::string loadedName = joinedResultGroupNames(st->resultRows);
-        if (!loadedName.empty()) return loadedName;
-    }
-
     const auto& row = st->reportRows[static_cast<size_t>(reportIndex)];
-    const std::string repNo = search::trim(row.rep_no);
-    if (repNo.empty()) return "";
-
-    std::string connection = st->reportConnectionString;
-    if (connection.empty()) {
-        connection = search::wide_to_utf8(search::build_connection_string_w(st->ctx.dbSettings));
-    }
-    std::vector<search::ResultRow> rows;
-    if (!search::load_result_rows(connection, repNo, rows, error)) {
-        return "";
-    }
-    return joinedResultGroupNames(rows);
+    return search::trim(row.group_name);
 }
 
 void appendReportBarcodeDetails(std::wstring& message, const search::ReportRow& row,
@@ -1550,7 +1515,7 @@ void appendReportBarcodeDetails(std::wstring& message, const search::ReportRow& 
     appendLine(L"条码号：", row.txm_no);
     appendLine(L"姓名：", row.name);
     appendLine(L"标本：", row.sample_name);
-    appendLine(L"开单日期：", slashDateTimeMinute(row.chk_date));
+    appendLine(L"开单日期：", slashDate(row.chk_date));
     appendLine(L"科室代码：", row.dept_name);
     message += L"病人号：";
     message += search::utf8_to_wide(row.reg_no);
@@ -1576,7 +1541,7 @@ void sendBarcodeLabel(const search::ReportRow& row, const std::string& barcodeGr
     data.specimenType = row.sample_name;
     data.department = row.dept_name;
     data.patientId = row.reg_no;
-    data.timestamp = slashDateTimeMinute(row.chk_date);
+    data.timestamp = slashDate(row.chk_date);
 
     labelprint::MedicalLabelPrintOptions options;
     options.model = labelprint::MedicalLabelPrinterModel::Auto;
