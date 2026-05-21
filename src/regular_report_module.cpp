@@ -93,6 +93,8 @@ constexpr UINT_PTR RESULT_LIST_SUBCLASS = 6214;
 constexpr UINT_PTR LEFT_TAB_SUBCLASS = 6215;
 constexpr int LEFT_CONTENT_HEIGHT = 875;
 constexpr int LEFT_SCROLL_STEP = 36;
+constexpr int LEFT_PANEL_MIN_W = 360;
+constexpr int LEFT_PANEL_MAX_W = 360;
 constexpr int PAD = 8;
 constexpr int GAP = 6;
 constexpr int SPLITTER_W = 8;
@@ -594,6 +596,45 @@ void setComboSingleText(HWND hwnd, const std::string& text) {
     const auto wide = search::utf8_to_wide(text);
     SendMessageW(hwnd, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
     SendMessageW(hwnd, CB_SETCURSEL, 0, 0);
+}
+
+struct AgeDisplayParts {
+    std::string value;
+    std::string unit = "岁";
+};
+
+AgeDisplayParts splitAgeDisplayText(const std::string& text) {
+    AgeDisplayParts parts;
+    std::string trimmed = search::trim(text);
+    if (trimmed.empty()) {
+        parts.value.clear();
+        return parts;
+    }
+
+    const char* units[] = {"小时", "岁", "月", "天", "分"};
+    for (const char* unit : units) {
+        const size_t unitLen = std::strlen(unit);
+        if (trimmed.size() >= unitLen && trimmed.compare(trimmed.size() - unitLen, unitLen, unit) == 0) {
+            parts.value = search::trim(trimmed.substr(0, trimmed.size() - unitLen));
+            parts.unit = unit;
+            return parts;
+        }
+    }
+    parts.value = trimmed;
+    return parts;
+}
+
+void fillAgeUnitCombo(HWND combo, const std::string& selectedUnit = "岁") {
+    if (!combo) return;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const char* units[] = {"岁", "月", "天", "小时", "分"};
+    int selected = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(units) / sizeof(units[0])); ++i) {
+        const auto wide = search::utf8_to_wide(units[i]);
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+        if (selectedUnit == units[i]) selected = i;
+    }
+    SendMessageW(combo, CB_SETCURSEL, selected, 0);
 }
 
 void setDatePickerValue(HWND hwnd, const std::string& text) {
@@ -1180,12 +1221,12 @@ void updateLeftScrollBar(RegularReportState* st) {
     const int maxScroll = std::max(0, contentH - page);
     st->leftScrollY = std::clamp(st->leftScrollY, 0, maxScroll);
     const int scrollW = GetSystemMetrics(SM_CXVSCROLL);
+    const bool needsScroll = contentH > page;
+    const int contentW = std::max(0, static_cast<int>(rc.right - rc.left) - scrollW);
 
-    MoveWindow(st->leftContent, 0, -st->leftScrollY,
-               std::max(0, static_cast<int>(rc.right - rc.left) - scrollW),
-               contentH, TRUE);
+    MoveWindow(st->leftContent, 0, -st->leftScrollY, contentW, contentH, TRUE);
     SetWindowPos(st->leftScrollBar, HWND_TOP,
-                 std::max(0, static_cast<int>(rc.right - rc.left) - scrollW), 0,
+                 contentW, 0,
                  scrollW, page, SWP_SHOWWINDOW);
 
     SCROLLINFO si{};
@@ -1196,7 +1237,7 @@ void updateLeftScrollBar(RegularReportState* st) {
     si.nPage = static_cast<UINT>(page);
     si.nPos = st->leftScrollY;
     SetScrollInfo(st->leftScrollBar, SB_CTL, &si, TRUE);
-    ShowWindow(st->leftScrollBar, contentH > page ? SW_SHOW : SW_HIDE);
+    ShowWindow(st->leftScrollBar, needsScroll ? SW_SHOW : SW_HIDE);
 }
 
 void scrollLeftPanelTo(RegularReportState* st, int targetY) {
@@ -3198,6 +3239,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected) {
         setControlText(st->patientNameEdit, "");
         setControlText(st->sexEdit, "");
         setControlText(st->ageEdit, "");
+        fillAgeUnitCombo(st->ageUnitCombo);
         setControlText(st->bedEdit, "");
         setControlText(st->phoneEdit, "");
         setControlText(st->deptEdit, "");
@@ -3231,8 +3273,9 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected) {
 
     setControlText(st->patientNameEdit, row.name);
     setControlText(st->sexEdit, row.sex);
-    setControlText(st->ageEdit, row.age);
-    setComboSingleText(st->ageUnitCombo, "岁");
+    const AgeDisplayParts age = splitAgeDisplayText(row.age);
+    setControlText(st->ageEdit, age.value);
+    fillAgeUnitCombo(st->ageUnitCombo, age.unit);
     setControlText(st->bedEdit, row.bed_code);
     setControlText(st->phoneEdit, row.patient_phone);
     setControlText(st->deptEdit, row.dept_name);
@@ -3493,10 +3536,12 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     RECT panelRc{};
     if (st->leftPanel) GetClientRect(st->leftPanel, &panelRc);
     const int scrollW = GetSystemMetrics(SM_CXVSCROLL);
-    const int panelLogicalW = panelRc.right > panelRc.left
-                                  ? static_cast<int>((panelRc.right - panelRc.left - scrollW) /
-                                                     std::max(0.1f, search::dpi_scale_factor(parent)))
-                                  : 300;
+    const float scale = std::max(0.1f, search::dpi_scale_factor(parent));
+    const int panelPxW = panelRc.right > panelRc.left
+                             ? static_cast<int>(panelRc.right - panelRc.left)
+                             : S(parent, LEFT_PANEL_MIN_W);
+    const int panelLogicalW = static_cast<int>(
+        std::max(0, panelPxW - scrollW) / scale);
     const int groupX = 8;
     const int innerPad = 6;
     const int labelW = leftLabelWidth(parent, st->ctx.uiFont);
@@ -3594,7 +3639,12 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     group(L"病人信息", groupX, groupY, groupW, patientH);
     label(L"姓名", labelX, rowY(0), labelW); st->patientNameEdit = edit(L"", inputX, rowY(0) - 2, narrowLeftShortW + 6, editH);
     label(L"性别", narrowRightLabelX, rowY(0), rightLabelW); st->sexEdit = edit(L"", narrowRightEditX, rowY(0) - 2, narrowRightEditW, editH);
-    label(L"年龄", labelX, rowY(1), labelW); st->ageEdit = edit(L"", inputX, rowY(1) - 2, 42, editH); st->ageUnitCombo = combo(L"岁", inputX + 46, rowY(1) - 2, std::max(42, narrowRightLabelX - inputX - 54), comboItemH * 5);
+    label(L"年龄", labelX, rowY(1), labelW);
+    const int ageUnitW = 52;
+    const int ageUnitX = std::max(inputX + 54, narrowRightLabelX - ageUnitW - 4);
+    st->ageEdit = edit(L"", inputX, rowY(1) - 2, std::max(48, ageUnitX - inputX - 4), editH);
+    st->ageUnitCombo = combo(L"岁", ageUnitX, rowY(1) - 2, ageUnitW, comboItemH * 5);
+    fillAgeUnitCombo(st->ageUnitCombo);
     label(L"床号", narrowRightLabelX, rowY(1), rightLabelW); st->bedEdit = edit(L"", narrowRightEditX, rowY(1) - 2, narrowRightEditW, editH);
     label(L"电话", labelX, rowY(2), labelW); st->phoneEdit = edit(L"", inputX, rowY(2) - 2, fullInputW, editH, ES_CENTER);
     label(L"临床科室", labelX, rowY(3), labelW); st->deptEdit = edit(L"", inputX, rowY(3) - 2, fullInputW, editH);
@@ -3835,7 +3885,8 @@ void layout(HWND hwnd, RegularReportState* st) {
     const int bottomH = S(hwnd, BOTTOM_PANEL_H);
     const int gap = S(hwnd, GAP);
     const int splitterW = S(hwnd, SPLITTER_W);
-    const int leftW = std::max(S(hwnd, 300), w * 21 / 100);
+    const int leftW = std::min(std::max(S(hwnd, LEFT_PANEL_MIN_W), w * 21 / 100),
+                               S(hwnd, LEFT_PANEL_MAX_W));
     const int topH = std::max(S(hwnd, 420), h - bottomH - gap);
     const int centerX = leftW + gap;
     const int minCenterW = S(hwnd, 460);

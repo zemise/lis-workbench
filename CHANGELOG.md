@@ -1,5 +1,11 @@
 # Changelog
 
+## v2026.05.21
+
+- **常规报告布局优化**：左侧区域宽度当前限制为 360 逻辑像素，内容区始终预留垂直滚动条宽度，避免有无滚动条时宽度跳变。
+- **常规报告年龄显示**：左侧年龄回填会拆分年龄数字和单位，单位下拉固定提供 `岁 / 月 / 天 / 小时 / 分` 并按查询结果自动匹配。
+- 版本号 v2026.05.21。
+
 ## v2026.05.20
 
 - **项目改名**：对外项目名切换为 `lis-workbench`，用户可见程序名切换为 `LIS 工作台`；CMake project 改为 `lis_workbench`，主程序输出改为 `lis_workbench.exe`，NSIS 安装包脚本改为 `LISWorkbench.nsi`，默认安装目录和安装包名改为 `LISWorkbench` / `LISWorkbench-Setup.exe`。为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部命名暂时保留。
