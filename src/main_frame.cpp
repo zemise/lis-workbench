@@ -1,4 +1,3 @@
-#define _WINSOCKAPI_    // prevent windows.h from including winsock.h
 #include <winsock2.h>   // must come before windows.h
 #include "main_app.h"
 #include "resource.h"
@@ -24,6 +23,8 @@
 #include "query_module.h"
 #include "regular_report_module.h"
 #include "settings_module.h"
+#include "version.h"
+#include "win32_control_id.h"
 namespace {
 
 constexpr int IDM_QUERY        = 1001;
@@ -111,6 +112,15 @@ void broadcastFontChanged() {
         SendMessageW(hwnd, app::WM_APP_FONT_CHANGED, 0, p);
         return TRUE;
     }, fontParam);
+}
+
+void broadcastSettingsChangedToMdiChildren() {
+    if (!g_ctx.mdiClient) return;
+    HWND child = GetWindow(g_ctx.mdiClient, GW_CHILD);
+    while (child) {
+        SendMessageW(child, app::WM_APP_SETTINGS_CHANGED, 0, 0);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
 }
 
 void rebuildUiFont(int fontSize) {
@@ -304,7 +314,7 @@ std::wstring getLocalIp() {
 
 void setupStatusBar(HWND hwnd) {
     HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
-                              0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<intptr_t>(ID_STATUS)),
+                              0, 0, 0, 0, hwnd, win32_control_id(ID_STATUS),
                               g_ctx.instance, nullptr);
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -374,6 +384,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, &ccs);
 
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
+            mtAddButton(tb, L"常规报告", IDM_TOOL2);
             mtAddStretch(tb);
             HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
             mtAddButton(tb, L"关闭", ID_BTNCLOSE, closeIcon);
@@ -422,10 +433,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Fixed items
             switch (id) {
                 case IDM_ABOUT:
+                {
+                    const std::wstring aboutText =
+                        L"LIS 工作台\n版本 " + search::utf8_to_wide(search::kVersion) +
+                        L"\n\n作者：Zhao Wang";
                     MessageBoxW(hwnd,
-                        L"LIS 工作台\n版本 v2026.05.07\n\n作者：Zhao Wang",
+                        aboutText.c_str(),
                         L"关于", MB_ICONINFORMATION);
                     return 0;
+                }
                 case ID_BTNCLOSE:        closeActiveMdiChild(); return 0;
                 case IDM_EXIT:           DestroyWindow(hwnd); return 0;
                 case IDM_CASCADE:        SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); return 0;
@@ -438,6 +454,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case app::WM_APP_SETTINGS_CHANGED:
             rebuildUiFont(g_ctx.fontSize);
+            broadcastSettingsChangedToMdiChildren();
             return 0;
         case WM_CLOSE:
             DestroyWindow(hwnd);

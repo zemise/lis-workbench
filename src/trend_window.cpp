@@ -7,6 +7,7 @@
 #include "search_text.h"
 #include "trend_chart_renderer.h"
 #include "trend_core.h"
+#include "win32_control_id.h"
 
 #include <commdlg.h>
 #include <commctrl.h>
@@ -629,15 +630,15 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
             ctx->hwnd = hwnd;
             ctx->item_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                             0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
+                                             0, 0, 100, 100, hwnd, win32_control_id(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
             ctx->export_button = CreateWindowExW(0, L"BUTTON", L"导出勾选项目", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                                 0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT), GetModuleHandleW(nullptr), nullptr);
+                                                 0, 0, 100, 32, hwnd, win32_control_id(IDC_TREND_EXPORT), GetModuleHandleW(nullptr), nullptr);
             ctx->export_image_button = CreateWindowExW(0, L"BUTTON", L"导出勾选图片", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                                       0, 0, 100, 32, hwnd, reinterpret_cast<HMENU>(IDC_TREND_EXPORT_IMAGE), GetModuleHandleW(nullptr), nullptr);
+                                                       0, 0, 100, 32, hwnd, win32_control_id(IDC_TREND_EXPORT_IMAGE), GetModuleHandleW(nullptr), nullptr);
             ctx->chart = CreateWindowExW(WS_EX_CLIENTEDGE, L"ResultTrendChart", L"", WS_CHILD | WS_VISIBLE,
-                                        0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_CHART), GetModuleHandleW(nullptr), nullptr);
+                                        0, 0, 100, 100, hwnd, win32_control_id(IDC_TREND_CHART), GetModuleHandleW(nullptr), nullptr);
             ctx->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-                                       0, 0, 100, 100, hwnd, reinterpret_cast<HMENU>(IDC_TREND_LIST), GetModuleHandleW(nullptr), nullptr);
+                                       0, 0, 100, 100, hwnd, win32_control_id(IDC_TREND_LIST), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(ctx->item_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_CHECKBOXES);
             const float ds = search::dpi_scale_factor(hwnd);
             auto dS = [ds](int v) { return static_cast<int>(v * ds); };

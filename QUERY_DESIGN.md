@@ -175,6 +175,112 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 
 列表不合并同一条形码的多条记录，保持 `LS_AS_BARCODE` 查询结果一行对应一行，避免因聚合造成现场查询变慢。
 
+## 常规报告
+
+工具菜单中的 `常规报告` 以三栏工作台形式复用检验结果查询的数据链路。页面打开时不自动查询；用户先选择左侧 `检验仪器`，再按左侧 `检验日期` 查询当天该仪器下的报告主记录。
+
+### 查询入口
+
+| 界面输入 | 查询字段 / 规则 |
+| --- | --- |
+| 检验日期 | `LS_AS_REPORT.CHK_DATE >= 日期` 且 `< 日期 + 1 天` |
+| 检验仪器 | 弹窗来源 `LS_AS_ROOM` / `LS_AS_MACHINE`，选定后以 `LS_AS_REPORT.MACH_CODE` 过滤 |
+
+系统设置页可配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，保存到 `[RegularReport] QuickMachine*Code / QuickMachine*Name / QuickMachine*RoomCode`。中文仪器名会以 ASCII 安全编码写入 `ClientConfig.ini`，程序读取时自动还原，避免 Win32 profile API 按系统 ANSI 代码页保存后乱码。配置弹窗复用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源；如果常规报告页当前已有检验仪器，弹窗打开时会优先按当前 `ROOM_CODE` 选中科室，并按当前 `MACH_CODE` 选中仪器；弹窗失焦时只投递关闭消息，不在 `WM_ACTIVATE` 中同步销毁，避免点击主界面时影响主窗口重新激活。点击快捷按钮后只更新当前页的 `检验仪器` 条件，并按当前 `检验日期` 重新查询右侧报告列表。如果当前页面已经是该快捷仪器，则按保留状态刷新处理；切换到其他快捷仪器时仍按普通查询处理。底部快捷按钮按 `MACH_CODE + ROOM_CODE` 与当前页面检验仪器匹配，匹配项用 `[1] / [2] / [3]` 文本标记，不依赖仪器名称；打开页面、手动选择检验仪器、点击快捷按钮和系统设置保存后都会刷新该标记。
+
+### 右侧信息列表
+
+右侧信息列表以 `LS_AS_REPORT` 为主表，默认按 `OPER_NO` 升序展示。当前优先保存并使用 `LS_AS_REPORT.ID` 作为行唯一标识；界面选中行后再用该行 `REP_NO` 查询项目明细。
+
+| 界面列 | 数据库字段 / 规则 |
+| --- | --- |
+| 标签 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后取 `JZ_FLAG`；`1` 显示 `急`，`0` 不显示 |
+| 样本号 | `LS_AS_REPORT.OPER_NO` |
+| 姓名 | `LS_AS_REPORT.NAME` |
+| 性别 | `LS_AS_REPORT.SEX = LS_AS_SEX.SEX_CODE`，显示 `SEX_NAME` |
+| 年龄 | `LS_AS_REPORT.AGE` |
+| 医嘱内容 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后聚合 `ORDER_TEXT`，多行用 `/` 分隔 |
+| 科室代码 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后取 `DEPT_NAME` |
+| 床号 | `LS_AS_REPORT.BED_CODE` |
+| 打印 | `LS_AS_REPORT.ZYMZ_PRINT` |
+| 病人类型 | `LS_AS_REPORT.TYPE = LS_AS_PATTYPE.TYPE`，显示 `TYPE_NAME` |
+| 检验者 | `LS_AS_REPORT.OPER_CODE = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID` |
+| 项目名称 | `LS_AS_REPORT.GROUP_NO` |
+| 验单号 | `LS_AS_REPORT.REP_NO` |
+| 审核 / 确认 | `CHK_FLAG` / `CONF` |
+| 条形码 | `LS_AS_REPORT.TXM_NO` |
+| 检验仪器 | 当前显示 `GROUP_NO`，后续可按实际字段再调整 |
+| 标本 | `LS_AS_REPORT.SAMP_CODE = LS_AS_SAMPLE.SAMP_CODE`，显示 `SAMP_NAME` |
+| 备注 | `LS_AS_REPORT.NOTE` |
+| 开单日期 | `LS_AS_REPORT.REP_DATE` |
+| 签收时间 | `LS_AS_BARCODE.IN_DATE` |
+| 检验日期 | `LS_AS_REPORT.CHK_DATE` |
+| 报告时间 | `LS_AS_REPORT.REP_TIME` |
+| 费用 | `LS_AS_REPORT.FY` |
+| 医生代号 | `LS_AS_REPORT.REQ_DR = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`，查不到姓名时显示为空 |
+| 临床诊断 | `LS_AS_REPORT.DIAG_NAME` |
+| 病人号 | `LS_AS_REPORT.REG_NO` |
+| 上机时间 | `LS_AS_REPORT.CREATE_TIME` |
+| 电话 | `LS_AS_REPORT.PAT_PHONE` |
+
+行背景色规则：`CONF='S'` 优先显示深绿色；否则 `CHK_FLAG='T'` 显示蓝色；未审核保持默认背景色。若 `JZ_FLAG='1'`，该行文字显示为红色。
+
+中间结果列表和右侧信息列表均使用 `NM_CUSTOMDRAW` 处理业务行色。选中行优先使用系统高亮色，并清理 `CDIS_SELECTED/CDIS_FOCUS` 后交回默认绘制，避免 ListView 失去焦点时被系统非活动选中态覆盖成浅色；收到 `NM_KILLFOCUS` 时会重绘当前选中行。
+
+中间结果列表的 `结果` 列保持白色背景；其他列默认使用浅灰背景，用于弱化辅助字段并突出结果值。选中行高亮优先于列背景色。
+
+中间结果列表的 `结果` 单元格支持界面内临时编辑。实现方式是单击 `结果` 子项时，在该单元格位置创建覆盖 `EDIT` 控件；回车时只更新 `st->resultRows[row].result` 和当前 ListView 文本，并自动跳到下一行 `结果` 单元格继续编辑；失焦或 Esc 取消。失焦取消时不强制把焦点设回 ListView，避免点击其他按钮时第一次点击被焦点切换消耗。该功能不调用任何数据库更新语句，切换报告、重新查询或关闭窗口时会取消未完成编辑。
+
+右侧顶部第一行摘要只统计当前已加载到列表中的内存数据，不额外访问数据库：`样本数` 统计 `REP_NO` 非空行，`上机数` 统计 `NAME` 非空行，`审核数` 统计 `CHK_FLAG='T'` 行，`发送数` 统计 `CONF='S'` 行。
+
+点击右侧信息列表表头时，只对内存中的 `st->reportRows` 做 `std::stable_sort` 并重绘列表，不重新访问数据库。排序前会记录当前选中行的 `LS_AS_REPORT.ID` 和已勾选行的 ID，排序后再恢复选中和勾选状态。
+
+右侧信息列表上方的 `⇧` / `⇩` 按钮只在当前内存列表内跳转，分别选中第一行和最后一行，不访问数据库。页面底部 `上一个 / 下一个` 也只在当前内存列表内移动当前选中行，切换后复用右侧列表选中联动，刷新左侧信息和中间项目明细。右侧信息列表下方的 `今天 / 前一天 / 后一天` 会先更新左侧 `检验日期`，再按当前 `检验仪器` 重新发起报告主列表查询；其后的 `自动刷新` 默认不启用，勾选后按秒数输入启动窗口定时器，默认 10 秒，输入值按 5-3600 秒夹取，且若上一轮报告主列表查询尚未完成则跳过本次定时触发，避免堆积数据库查询。页面底部 `刷新(F5)` 会读取当前左侧 `检验仪器` 和 `检验日期`，重新发起报告主列表查询并刷新右侧列表；查询完成后若没有可恢复或可自动选中的报告行，则清空左侧详情、中间结果和图像状态，避免保留上一条报告内容。
+
+`刷新(F5)` 和 `自动刷新` 使用保留状态刷新：查询发起时不清空右侧列表、中间明细和左侧信息；查询完成后以 `LS_AS_REPORT.ID` 恢复选中行、勾选行和滚动位置。若刷新前后行 ID 顺序一致，则只比较并更新变化的单元格；若行集合或顺序发生变化，则重建右侧列表后再恢复状态。原选中行仍存在时会重新查询该行中间明细，用数据库查询结果覆盖界面内临时编辑值；原选中行消失时清空左侧信息和中间明细。
+
+日期控件会记录当前列表对应的查询日期。右侧已有选中行时，如果 `检验日期` 控件重复触发同一天查询，或点击 `今天` 按钮，也按保留状态刷新处理；`前一天 / 后一天` 仍按明确换日期的普通查询处理。
+
+左侧 `样本号` 输入框按回车时，只在当前已加载的 `st->reportRows` 内按 `OPER_NO` 定位；匹配到后选中右侧对应行，并复用现有选中行联动逻辑刷新左侧信息和中间项目明细。
+
+右侧信息列表第一列启用勾选框。右键某一行会弹出报告操作菜单：
+
+- `打印条码`：打印当前右键行。
+- `打印勾选条码`：按当前列表顺序打印所有勾选行；如果中途失败，会停止后续打印并提示已发送数量和失败记录。
+
+打印会把对应行字段填入外部 `LabelPrint` 项目的 `MedicalLabelData`，再调用 `printMedicalLabel` 统一入口发送 RAW 打印任务。打印机名读取 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`，默认值为 `Xprinter XP-360B #2`，并以宽字符形式传给 LabelPrint，避免中文打印机名经过 ANSI 转换后失效。LabelPrint 内部会读取 Windows 打印机元数据，自动选择 XP-360B 的 TSPL 位图路径或 Zebra ZD888 的 ZPL 路径；无法识别时按 XP-360B 兼容路径兜底。打印数据中的样本号、条码号、姓名、标本、开单日期、科室代码、病人号来自右侧报告行；条码上的组合项目取自右侧报告行的 `检验仪器` 列内容，不再为了打印条码额外查询中间项目明细；开单日期按 `yyyy/M/d` 格式输出。
+
+如果保存的打印机名因为 Windows 重命名、换电脑或驱动重装而失效，右键打印会提示失败原因和当前打印机名。用户需要到 `系统设置` 页重新选择常规报告条码打印机并保存。
+
+构建时主项目优先通过 `find_package(LabelPrint 1.2 CONFIG QUIET)` 查找 `LabelPrint::labelprint`。正式打包建议使用 `scripts/build_main.ps1 -LabelPrintPackagePath` 指向 LabelPrint release zip 解压目录，使构建可复现且不依赖本机相邻源码目录。如果未找到已安装或已解压的 LabelPrint CMake package，或版本低于统一打印入口所需版本，则回退到 CMake 变量 `LIS_LABELPRINT_DIR` 指定的源码目录，默认路径为 `../../020 LabelPrint/LabelPrint`，并以 `add_subdirectory` 接入。两种方式都找不到时，常规报告仍可使用查询功能，但右键 `打印条码` 会提示打印功能未启用。
+
+条码模板当前使用以下字段：
+
+- 样本号
+- 组合项目
+- 条码号
+- 姓名
+- 标本
+- 开单日期
+- 科室代码
+- 病人号
+
+### 左侧和中间联动
+
+右侧选中某一行后：
+
+- 左侧 `标本信息 / 病人信息 / 验单信息` 从当前选中行回填。
+- 左侧年龄显示会解析 `LS_AS_REPORT` 查询结果中的年龄文本，识别末尾 `岁 / 月 / 天 / 小时 / 分`，输入框只显示数字部分，单位下拉框选中对应单位；无法识别单位时保留原文本并默认选中 `岁`。
+- `检验者 / 审核 / 申请日期 / 签收时间 / 上机时间 / 报告时间` 是只读展示控件，由程序写入，用户不能手动修改。
+- `检验日期` 仍是查询条件；程序回填选中行检验日期时会屏蔽自动查询，避免选中行触发重复查询。
+- 左侧可输入控件维护独立 `leftTabControls` 顺序，不依赖 Win32 默认创建顺序；Tab 按页面视觉从上到下跳转，Shift+Tab 反向跳转。
+- 左侧区域宽度使用 21% 比例布局，但当前限制为 360 逻辑像素；内容区始终预留垂直滚动条宽度，避免有无滚动条时自绘分组和控件宽度跳变。
+- 中间检验结果列表通过当前行 `REP_NO` 查询 `LS_AS_REPENTRY`，并复用 `LS_AS_ITEM` 字典、参考区间和 `NORMAL` 偏差显示规则。
+- 中间列表的 `组合项目` 列不再直接使用右侧报告行项目名，而是按当前明细行 `LS_AS_REPENTRY.GROUP_CODE` 关联 `LS_AS_LABMATCH.GROUP_CODE`，再取 `LS_AS_LABMATCH.GROUP_NAME`。取名时优先使用 `DELETE_BIT=0 且 USE_FLAG=0` 的非空名称；若缺失，则取同一 `GROUP_CODE` 下任意非空名称作为兜底。
+- 中间列表查询排序加入 `GROUP_CODE / ITEM_CODE / ID`，让相同组合项目尽量连续展示；界面展示时连续相同的组合项目名只显示第一行，其余行显示为空。
+- 中间 `图象` 页签打开时，才通过当前行 `REP_NO` 查询 `LS_AS_ITEMPICTURE.PICTURE`。查询只取 `DELETE_BIT=0` 且图片非空的第一张记录，按 `PIC_NO, ID` 排序；若无图片则保持空白，有图片时用 GDI+ 在左上角固定大图层内按比例绘制，外层视口提供横向/纵向滚动条，不随拖条宽度变化而缩放。
+- 页面底部 `图形(T)` 会按当前选中报告行的 `REP_NO` 打开独立结果图窗口，查询来源仍复用 `LS_AS_ITEMPICTURE.PICTURE`。若中间 `图象` 页签已经加载了同一报告图像，则直接克隆已加载图像；否则弹窗先显示加载状态，再后台查询并在窗口客户区绘制图片，不再额外套滚动容器。弹窗打开后，右侧信息列表选择变化会同步更新标题和图片。独立窗口使用项目图标，采用离屏位图双缓冲绘制，并在缩放时跳过背景擦除，以减少 GDI+ 图片重绘残影；用户调整后的窗口尺寸保存到 `[RegularReport] PicturePopupWidth / PicturePopupHeight`，下次打开沿用。
+
 ## 当前未实现的截图功能
 
 - 历史库 / 当前库切换。

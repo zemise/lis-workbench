@@ -4,7 +4,7 @@ Unicode false
 !define APP_NAME "LIS Workbench"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.05.07"
+!define APP_VERSION "v2026.05.21"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
@@ -39,11 +39,24 @@ UninstPage instfiles
 
 Section "Install"
   SetOutPath "$INSTDIR"
+  ; Remove stale bundled CRT/UCRT DLLs from older packages. New Release builds
+  ; link the MSVC runtime statically, and newer CRT DLLs can break Windows 7.
+  Delete "$INSTDIR\MSVCP*.dll"
+  Delete "$INSTDIR\VCRUNTIME*.dll"
+  Delete "$INSTDIR\CONCRT*.dll"
+  Delete "$INSTDIR\ucrtbase.dll"
+  Delete "$INSTDIR\api-ms-win-crt-*.dll"
   File "${BUILD_DIR}\${APP_EXE}"
-  File /nonfatal "${BUILD_DIR}\*.dll"
-  File /nonfatal "${BUILD_DIR}\*.pdb"
+  !if /FileExists "${BUILD_DIR}\*.dll"
+    File "${BUILD_DIR}\*.dll"
+  !endif
+  !if /FileExists "${BUILD_DIR}\*.pdb"
+    File "${BUILD_DIR}\*.pdb"
+  !endif
   !ifdef VC_REDIST_DIR
-    File /nonfatal "${VC_REDIST_DIR}\*.dll"
+    !if /FileExists "${VC_REDIST_DIR}\*.dll"
+      File "${VC_REDIST_DIR}\*.dll"
+    !endif
   !endif
   SetOutPath "$INSTDIR"
   SetOverwrite off
@@ -77,6 +90,11 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\${APP_NAME}"
 
   Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\MSVCP*.dll"
+  Delete "$INSTDIR\VCRUNTIME*.dll"
+  Delete "$INSTDIR\CONCRT*.dll"
+  Delete "$INSTDIR\ucrtbase.dll"
+  Delete "$INSTDIR\api-ms-win-crt-*.dll"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

@@ -1,4 +1,4 @@
-name: Build
+name: Build LIS Workbench
 
 on:
   push:
@@ -9,146 +9,102 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  LABELPRINT_VERSION: v1.2.7
+  LABELPRINT_WIN7_ASSET: labelprint-v1.2.7-windows-x64-vs2022-win7.zip
 
 jobs:
-  # ── Win32 cross-compile (Linux → Windows via MinGW) ──────────
-  build-win32:
-    runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.version.outputs.value }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            g++-mingw-w64-x86-64 \
-            ninja-build \
-            cmake
-
-      - name: Read version
-        id: version
-        run: |
-          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
-          echo "value=${ver}" >> "$GITHUB_OUTPUT"
-
-      - name: Configure
-        run: |
-          cmake -S . -B build/windows-x64 -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build/windows-x64 -j
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: result_search-win32-${{ steps.version.outputs.value }}
-          path: build/windows-x64/result_search.exe
-
-  # ── Qt 5.15 build + NSIS packager (Windows native) ───────────
-  build-qt:
+  windows-installer:
+    name: Windows 7-11 installer
     runs-on: windows-2022
-    outputs:
-      version: ${{ steps.version.outputs.value }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Read app version
         id: version
-        shell: bash
+        shell: pwsh
         run: |
-          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
-          echo "value=${ver}" >> "$GITHUB_OUTPUT"
+          $line = Select-String -Path src/version.h -Pattern 'kVersion\s*=' | Select-Object -First 1
+          if (-not $line) {
+            throw "Cannot read version from src/version.h"
+          }
+          $value = [regex]::Match($line.Line, '"([^"]+)"').Groups[1].Value
+          if (-not $value) {
+            throw "Invalid version line: $($line.Line)"
+          }
+          "value=$value" >> $env:GITHUB_OUTPUT
 
-      - name: Install Qt 5.15
-        shell: bash
+      - name: Download LabelPrint release package
+        id: labelprint
+        shell: pwsh
         run: |
-          pip install aqtinstall
-          aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 \
-            --outputdir "${{ runner.temp }}/Qt"
+          $zipPath = Join-Path $env:RUNNER_TEMP $env:LABELPRINT_WIN7_ASSET
+          $extractRoot = Join-Path $env:RUNNER_TEMP "LabelPrint"
+          $url = "https://github.com/zemise/LabelPrint/releases/download/$env:LABELPRINT_VERSION/$env:LABELPRINT_WIN7_ASSET"
 
-      - name: Configure Qt build
-        shell: bash
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+
+          $config = Get-ChildItem -Path $extractRoot -Recurse -Filter LabelPrintConfig.cmake |
+            Select-Object -First 1
+          if (-not $config) {
+            throw "LabelPrintConfig.cmake not found in $zipPath"
+          }
+
+          $packageRoot = Split-Path (Split-Path $config.FullName -Parent) -Parent
+          "package_root=$packageRoot" >> $env:GITHUB_OUTPUT
+          Write-Host "LabelPrint package root: $packageRoot"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build LIS Workbench
+        shell: pwsh
         run: |
-          cmake -S . -B build/windows-qt \
-            -G "Visual Studio 17 2022" -A x64 \
-            -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/5.15.2/msvc2019_64" \
-            -DBUILD_QT_GUI=ON
+          .\scripts\build_main.ps1 `
+            -Clean `
+            -Config Release `
+            -Generator "Visual Studio 17 2022" `
+            -LabelPrintPackagePath "${{ steps.labelprint.outputs.package_root }}"
 
-      - name: Build Qt
-        shell: bash
-        run: cmake --build build/windows-qt --target result_search_qt --config Release -j
-
-      - name: Deploy Qt DLLs
-        shell: bash
+      - name: Package installer
+        shell: pwsh
         run: |
-          mkdir -p deploy
-          cp build/windows-qt/Release/result_search_qt.exe deploy/
-          "${{ runner.temp }}/Qt/5.15.2/msvc2019_64/bin/windeployqt" \
-            --no-translations --no-compiler-runtime deploy/result_search_qt.exe
+          $outDir = "out\windows\installer"
+          New-Item -ItemType Directory -Force $outDir | Out-Null
 
-      - name: Package NSIS installer (Qt)
-        shell: cmd
-        run: |
-          if not exist out\windows\installer mkdir out\windows\installer
-          makensis ^
-            /DAPP_NAME="Result Search Qt" ^
-            /DAPP_VERSION=${{ steps.version.outputs.value }} ^
-            /DAPP_EXE=result_search_qt.exe ^
-            /DBUILD_DIR=..\deploy ^
-            /DOUTPUT_DIR=..\out\windows\installer ^
-            /DOUTPUT_NAME=ResultSearch-Qt-Setup.exe ^
-            packaging\ResultSearch.nsi
+          $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            $cmd = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if (-not $cmd) {
+              throw "makensis.exe not found"
+            }
+            $makensis = $cmd.Source
+          }
 
-      - name: Upload Qt (portable)
+          $outputName = "LISWorkbench-Setup-${{ steps.version.outputs.value }}-win7-win11.exe"
+          & $makensis `
+            "/DAPP_VERSION=${{ steps.version.outputs.value }}" `
+            "/DAPP_EXE=lis_workbench.exe" `
+            "/DBUILD_DIR=..\build\main-app\Release" `
+            "/DOUTPUT_DIR=..\out\windows\installer" `
+            "/DOUTPUT_NAME=$outputName" `
+            "packaging\LISWorkbench.nsi"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "NSIS packaging failed"
+          }
+
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: result_search-qt-${{ steps.version.outputs.value }}
-          path: deploy/
+          name: LISWorkbench-Setup-${{ steps.version.outputs.value }}-win7-win11
+          path: out/windows/installer/LISWorkbench-Setup-${{ steps.version.outputs.value }}-win7-win11.exe
 
-      - name: Upload Qt installer
+      - name: Upload portable exe
         uses: actions/upload-artifact@v4
         with:
-          name: ResultSearch-Qt-Setup-${{ steps.version.outputs.value }}
-          path: out/windows/installer/ResultSearch-Qt-Setup.exe
-
-  # ── Main application (Win32 MDI shell) ────────────────────────
-  build-main-app:
-    runs-on: windows-2022
-    outputs:
-      version: ${{ steps.version.outputs.value }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read version
-        id: version
-        shell: bash
-        run: |
-          ver=$(awk -F'"' '/kVersion/ {print $2; exit}' src/version.h)
-          echo "value=${ver}" >> "$GITHUB_OUTPUT"
-
-      - name: Configure
-        shell: bash
-        run: |
-          cmake -S . -B build/main-app \
-            -G "Visual Studio 17 2022" -A x64
-
-      - name: Build
-        shell: bash
-        run: cmake --build build/main-app --target main_app --config Release -j
-
-      - name: Package portable
-        shell: bash
-        run: |
-          mkdir -p deploy/main-app
-          cp build/main-app/Release/main_app.exe deploy/main-app/
-          cp "${{ runner.temp }}/result_search.ini" deploy/main-app/ 2>/dev/null || true
-
-      - name: Upload main_app
-        uses: actions/upload-artifact@v4
-        with:
-          name: main_app-${{ steps.version.outputs.value }}
-          path: deploy/main-app/
+          name: LISWorkbench-Portable-${{ steps.version.outputs.value }}-win7-win11
+          path: build/main-app/Release/lis_workbench.exe

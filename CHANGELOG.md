@@ -1,20 +1,29 @@
 # Changelog
 
-## v2026.05.07
+## v2026.05.21
+
+- **常规报告布局优化**：左侧区域宽度当前限制为 360 逻辑像素，内容区始终预留垂直滚动条宽度，避免有无滚动条时宽度跳变。
+- **常规报告年龄显示**：左侧年龄回填会拆分年龄数字和单位，单位下拉固定提供 `岁 / 月 / 天 / 小时 / 分` 并按查询结果自动匹配。
+- **常规报告条码打印**：右键 `打印条码` 和 `打印勾选条码` 的组合项目内容改为取右侧报告行 `检验仪器` 列，不再为了条码打印额外查询中间项目明细；开单日期改为 `yyyy/M/d` 仅日期格式。
+- **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.7` release 包，继续跟进 XP-360B 条码布局和文本居中修正。
+- 版本号 v2026.05.21。
+
+## v2026.05.20
 
 - **项目改名**：对外项目名切换为 `lis-workbench`，用户可见程序名切换为 `LIS 工作台`；CMake project 改为 `lis_workbench`，主程序输出改为 `lis_workbench.exe`，NSIS 安装包脚本改为 `LISWorkbench.nsi`，默认安装目录和安装包名改为 `LISWorkbench` / `LISWorkbench-Setup.exe`。为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部命名暂时保留。
-- **配置文件改名**：主配置文件改为 `ClientConfig.ini`；Win32 和 Qt 入口都会在新文件不存在且旧 `result_search.ini` 存在时复制迁移，安装包也会优先从旧配置复制生成新配置。
+- **配置文件改名**：主配置文件改为 `ClientConfig.ini`；Win32 和 Qt 入口都会在新文件不存在且旧 `result_search.ini` 存在时复制迁移，安装包也会优先从旧配置复制生成新配置。Win32 模块配置中的非 ASCII 值会以 ASCII 安全编码保存并在读取时自动还原，避免中文打印机名、快捷检验仪器名受系统 ANSI 代码页影响后乱码。
 - **模块系统**：`ModuleContext` + `ModuleDef` 统一接口；`g_modules[]` 注册表自动菜单+自动分发；`save/load_module_int` 分区配置；设置表单提取为 `settings_module.cpp`；占位模块预留扩展点。新增模块只需写一个 `.cpp` + 注册一行。
 - **MDI 单实例窗口**：`module_registry.h` 提供 `activate_existing_mdi_child_by_title`，检验结果查询、输血结果查询、系统设置均复用该入口；重复点击菜单时激活已打开窗口。
 - **检验结果查询接入**：`query_module.cpp` — 每实例独立 `QueryState`，复用全部查询/趋势逻辑，复用通用拖条控件并持久化分割器位置到 INI。
 - **输血结果查询接入**：`blood_module.cpp` 接入 `LS_XK_BloodRequestApply` / `LS_XK_BloodRequestApplySon` 只读查询；支持默认最近 7 天自动查询、病人编号/姓名/申请单号/申请状态/申请日期筛选，`申请状态` 按 `ApplyForm_Statue` 中文值过滤。
 - **已签收条码查询接入**：工具菜单 `已签收条码查询` 替换原工具占位页，新增 `barcode_module.cpp` 和 `query_barcodes` 只读查询，按 `LS_AS_BARCODE` 支持日期、条形码、姓名、病人号、上机状态、专业组和取消签收状态筛选；上机状态筛选和列表展示均基于 `OPER_STATE`。
-- **常规报告界面接入**：工具菜单 `常规报告` 替换原 `工具2` 占位页，新增 `regular_report_module.cpp`，按 `temp/模版2.png` 基本完成左侧标本/病人/验单信息、中间检验结果列表、右侧信息列表和底部功能按钮区；中间/右侧拖条复用 `search_splitter` 并保存到 `[RegularReport] SplitterX`；左侧滚动区域用自绘分组边框/标题替代真实 `GROUPBOX`，内部控件启用 `WS_CLIPSIBLINGS`；右侧顶部摘要改为父面板自绘并按宽度换行，以减少快速拖动和滚动时的残影；当前暂不接数据库查询。
+- **常规报告接入**：工具菜单 `常规报告` 替换原 `工具2` 占位页，新增 `regular_report_module.cpp`，按 `temp/模版2.png` 基本完成左侧标本/病人/验单信息、中间检验结果列表、右侧信息列表和底部功能按钮区；支持按检验日期和检验仪器查询 `LS_AS_REPORT`，右侧选中报告后回填左侧信息并通过 `REP_NO` 查询中间项目明细，左侧可输入控件支持按视觉上下顺序 Tab 跳转；中间 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先未删除启用名称并用同组非空名称兜底，连续相同组合项目只显示首行，中间 `结果` 列保持白底、其他列浅灰底，结果单元格支持界面内临时编辑且不写数据库，中间 `图象` 页签按 `REP_NO` 显示 `LS_AS_ITEMPICTURE.PICTURE`；底部 `图形(T)` 可打开独立结果图窗口，跟随右侧选中报告刷新，使用项目图标、双缓冲绘制并保存窗口尺寸；右侧信息列表新增 `标签` 列并按 `LS_AS_BARCODE.JZ_FLAG` 显示急诊红字，支持表头本地排序并保留选中/勾选状态，上方箭头可快速选中第一行/最后一行，底部 `上一个 / 下一个` 可切换当前选中报告的相邻行，下方 `今天 / 前一天 / 后一天` 可快捷切换检验日期，`自动刷新` 可按默认 10 秒间隔定时刷新且避免查询叠加，左侧样本号回车可定位右侧对应报告行，中间/右侧列表失焦后仍保持当前选中行高亮；底部 `1/2/3` 可按系统设置快速切换检验仪器，并在当前页面匹配对应快捷仪器时用 `[1] / [2] / [3]` 标记按钮文字，检验仪器弹窗失焦时延迟关闭以保持主窗口点击激活体验，底部 `刷新(F5)`、自动刷新、重复选择当前检验日期、点击 `今天` 和重复点击当前快捷仪器会保留现有列表、选中行、勾选行和滚动位置，行顺序未变时只更新变化单元格，无可选中报告时会清空左侧详情、中间结果和图像状态；右侧顶部样本数/上机数/审核数/发送数按当前列表动态统计；主工具栏新增 `常规报告` 快捷入口；右侧报告行新增右键菜单，`打印条码` / `打印勾选条码` 对接外部 `LabelPrint` 项目，使用中间项目明细的组合项目内容填充条码标签，并通过 LabelPrint `printMedicalLabel` 统一入口自动选择 XP-360B TSPL 位图或 Zebra ZD888 ZPL 路径；构建时优先 `find_package(LabelPrint 1.2)`，找不到再回退 `LIS_LABELPRINT_DIR` 源码接入；系统设置页新增常规报告条码打印机和快捷检验仪器选择入口；中间/右侧拖条复用 `search_splitter` 并保存到 `[RegularReport] SplitterX`；左侧滚动区域用自绘分组边框/标题替代真实 `GROUPBOX`，内部控件启用 `WS_CLIPSIBLINGS`；右侧顶部摘要改为父面板自绘并按宽度换行，以减少快速拖动和滚动时的残影。
 - **LIS 摘要项目代码配置化**：系统设置新增 ABO、RhD、Hb、PLT 项目代码配置，保存到 `ClientConfig.ini` 的 `[LisSummary]`，输血检验结果窗口据此显示最近血型鉴定和血常规摘要。
 - **LIS 查询体验优化**：输血检验结果窗口中，组合项目列表查询和最近血型/血常规摘要查询拆分为两个独立后台任务；列表先返回先展示，摘要完成后再单独刷新，避免慢摘要阻塞列表显示。
 - **字体设置联动**：主程序按系统设置字号创建模块字体；菜单栏及子菜单、输血结果查询窗口和 LIS 检验信息弹窗会随设置页字号保存后同步刷新，底部状态栏保持系统默认字体。
-- **安装包运行库补齐**：NSIS 脚本支持通过 `VC_REDIST_DIR` 把 MSVC x64 CRT DLL 一起打入安装包，避免目标电脑缺少 `MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`。
-- 版本号 v2026.05.07。
+- **安装包运行库与 Win7 兼容**：Win32 目标固定 `WINVER/_WIN32_WINNT=0x0601`，Win10 DPI API 改为动态探测并回退；配置文件迁移改用 Win32 文件 API，减少 `std::filesystem` 带来的新系统入口依赖。`scripts/build_main.ps1` 默认优先已安装的 VS 2022，未安装时自动退到 VS 2026，并开启 `LIS_STATIC_MSVC_RUNTIME=ON`；NSIS 安装时会清理旧包残留的 CRT/UCRT DLL。面向 Windows 7 打包时仍需安装 VS 2022 Build Tools，且不建议携带 VS 2026 CRT DLL，避免 `CreateFile2` / `GetSystemTimePreciseAsFileTime` 等入口点缺失。
+- **GitHub Actions 安装包**：CI 改为当前 `LISWorkbench` 主程序专用构建，下载 LabelPrint `v1.2.0` Win7 兼容 release 包，使用 VS2022 构建并通过 NSIS 输出 `LISWorkbench-Setup-<version>-win7-win11.exe`，弥补本地缺少完整 Windows 7-11 打包环境的问题。
+- 版本号 v2026.05.20。
 
 ## v2026.05.06
 

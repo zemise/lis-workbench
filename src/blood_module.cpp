@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_columns.h"
 #include "search_ui_layout.h"
+#include "win32_control_id.h"
 
 #include <algorithm>
 #include <commctrl.h>
@@ -286,12 +287,12 @@ HWND createMultilineValue(HWND parent, const wchar_t* text, int x, int y, int w,
 
 HWND createToolButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HWND createOwnerDrawButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                           x, y, w, h, parent, reinterpret_cast<HMENU>(id), GetModuleHandleW(nullptr), nullptr);
+                           x, y, w, h, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
 }
 
 HFONT createScaledFont(HFONT base, double scale, LONG weight) {
@@ -673,7 +674,7 @@ void createBloodControls(HWND hwnd, BloodState* st) {
 
     st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-        0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_LIST), st->ctx.instance, nullptr);
+        0, 0, 0, 0, hwnd, win32_control_id(IDC_LIST), st->ctx.instance, nullptr);
     ListView_SetExtendedListViewStyle(st->list, LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     struct ListColumnDef {
         int id;
@@ -723,7 +724,7 @@ void createBloodControls(HWND hwnd, BloodState* st) {
 
     st->tabs = CreateWindowExW(0, WC_TABCONTROLW, L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_TABS), st->ctx.instance, nullptr);
+        0, 0, 0, 0, hwnd, win32_control_id(IDC_TABS), st->ctx.instance, nullptr);
     const wchar_t* tabTexts[] = {
         L"用血申请", L"交叉配血", L"检测信息", L"收费信息", L"输血历史", L"不良反应", L"输血效果", L"用血前评估"
     };
@@ -1349,9 +1350,9 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(st->daysSpin, UDM_SETRANGE32, 1, 3650);
             SendMessageW(st->daysSpin, UDM_SETPOS32, 0, DEFAULT_LIS_DAYS);
             st->queryButton = CreateWindowExW(0, L"BUTTON", L"按病人号查询", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                              0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_LIS_QUERY), GetModuleHandleW(nullptr), nullptr);
+                                              0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_QUERY), GetModuleHandleW(nullptr), nullptr);
             st->queryNameButton = CreateWindowExW(0, L"BUTTON", L"按名字查询", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                                  0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_LIS_QUERY_NAME), GetModuleHandleW(nullptr), nullptr);
+                                                  0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_QUERY_NAME), GetModuleHandleW(nullptr), nullptr);
             st->summaryBloodPrefix = createStatic(hwnd, L"正在读取最近检验摘要...", SS_LEFT, 0, 0, 0, 0);
             st->summaryBloodValue = createStatic(hwnd, L"", SS_LEFT, 0, 0, 0, 0);
             st->summaryBloodDate = createStatic(hwnd, L"", SS_LEFT, 0, 0, 0, 0);
@@ -1361,7 +1362,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             st->reports = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_LIS_REPORTS), GetModuleHandleW(nullptr), nullptr);
+                0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_REPORTS), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(st->reports, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             search::add_list_column(st->reports, 0, L"检验时间", 100);
             search::add_list_column(st->reports, 1, L"组合项目", 160);
@@ -1371,7 +1372,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             st->results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(IDC_LIS_RESULTS), GetModuleHandleW(nullptr), nullptr);
+                0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_RESULTS), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(st->results, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             search::add_list_column(st->results, 0, L"项目代码", 92);
             search::add_list_column(st->results, 1, L"项目名称", 145);

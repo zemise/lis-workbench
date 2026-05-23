@@ -2,14 +2,14 @@
 
 #include "app_settings.h"
 
-#include <filesystem>
+#include <string>
 
 namespace search {
 
-std::filesystem::path module_dir();
-std::filesystem::path default_ini_path();
-AppSettings load_settings(const std::filesystem::path& ini_path);
-bool save_settings(const std::filesystem::path& ini_path, const AppSettings& settings);
+std::wstring module_dir();
+std::wstring default_ini_path();
+AppSettings load_settings(const std::wstring& ini_path);
+bool save_settings(const std::wstring& ini_path, const AppSettings& settings);
 
 // Module-private config — section = module name, key = setting name
 void save_module_int(const wchar_t* module, const wchar_t* key, int value);

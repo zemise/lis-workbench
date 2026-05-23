@@ -33,6 +33,26 @@ int main() {
 
 namespace {
 
+void enable_dpi_awareness() {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (!user32) return;
+
+    using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(HANDLE);
+    auto set_process_dpi_awareness_context = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+        GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+    if (set_process_dpi_awareness_context &&
+        set_process_dpi_awareness_context(reinterpret_cast<HANDLE>(-4))) {
+        return;
+    }
+
+    using SetProcessDPIAwareFn = BOOL(WINAPI*)();
+    auto set_process_dpi_aware = reinterpret_cast<SetProcessDPIAwareFn>(
+        GetProcAddress(user32, "SetProcessDPIAware"));
+    if (set_process_dpi_aware) {
+        set_process_dpi_aware();
+    }
+}
+
 constexpr int IDC_PATIENT_ID = 1002;
 constexpr int IDC_BARCODE = 1003;
 constexpr int IDC_NAME = 1004;
@@ -384,7 +404,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    enable_dpi_awareness();
     load_settings();
     g_ui_context.ui_font = create_ui_font(g_font_size);
     INITCOMMONCONTROLSEX icc{};
