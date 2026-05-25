@@ -9,6 +9,9 @@
 - `cmake/`
   - `toolchains/` — Windows 交叉编译工具链
 - `scripts/`
+  - `lis.ps1` — Windows 常用构建/运行/打包统一入口
+  - `build_main.ps1` — Win32 主程序和 `Updater.exe` 构建脚本
+  - `create_update_package.ps1` — 生成自动更新 zip 和 `manifest.json`
   - `build_windows_package.sh` — Windows 便携包/安装包构建脚本
 - `packaging/`
   - `LISWorkbench.nsi` — NSIS 安装包脚本
@@ -28,6 +31,7 @@
 - CMake project 名：`lis_workbench`
 - 配置文件：`ClientConfig.ini`；旧 `result_search.ini` 仅作为升级迁移来源。
 - 主程序输出文件：`lis_workbench.exe`
+- 自动更新器输出文件：`Updater.exe`
 - 兼容保留：独立检验查询工具 `result_search.exe`、`search_core` 和 `search_*` 源文件名暂不重命名，避免影响既有构建脚本和代码引用。
 
 ## 文件层级 — 按迁移状态
@@ -45,6 +49,8 @@
 | `version.h` | 版本号与标题 | 原样复用 |
 | `search_ui_columns.h` | 列号常量 | Qt 中列语义由 model 管理，参考此文件 |
 | `trend_core.*` | 趋势数据查询 | 原样复用（ODBC 切换后） |
+| `update_manifest.*` | 自动更新 manifest 解析、版本比较、SHA-256 校验 | 可作为后续 Qt/Win32 共享更新核心 |
+| `update_source.*` | 自动更新源抽象、文件夹更新源、HTTP 更新源和统一检查拉取流程 | 主程序设置页 `检查更新` 入口已复用 |
 
 ### 边界层（接口保留，实现替换）
 
@@ -72,8 +78,9 @@
 | `barcode_module.cpp/h` | 已签收条码查询单实例 MDI 子窗口，按 `LS_AS_BARCODE` 只读检索 |
 | `regular_report_module.cpp/h` | 常规报告单实例 MDI 子窗口，按 `temp/模版2.png` 基本完成报告工作台；按检验日期和检验仪器查询 `LS_AS_REPORT`，右侧选中行回填左侧信息并联动中间项目明细；中间组合项目按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，连续相同项只显示首行，图象页按 `REP_NO` 按需查询 `LS_AS_ITEMPICTURE.PICTURE` 并用滚动视口显示大图；底部 `图形(T)` 打开独立结果图窗口，复用同一图片查询逻辑，跟随右侧选中行刷新，双缓冲绘制并按 `[RegularReport] PicturePopupWidth/Height` 保存尺寸；右侧列表支持本地排序、首末行跳转、今天/前一天/后一天快捷切换检验日期、样本号回车定位、顶部动态统计、保留状态刷新、勾选批量打印；中间/右侧自绘 ListView 会在失焦后保持选中行高亮；底部 `1/2/3` 快捷检验仪器读取 `[RegularReport] QuickMachine*`；右键菜单对接 `LabelPrint` 执行 `打印条码`，条码组合项目来自中间明细 `ResultRow.group_name` 去重拼接，打印机型号和 TSPL/ZPL 后端由 LabelPrint `printMedicalLabel` 统一入口负责；构建时优先 `find_package(LabelPrint 1.2)`，找不到再回退 `LIS_LABELPRINT_DIR` 源码接入；中间/右侧拖条位置按 `[RegularReport] SplitterX` 持久化；左侧长表单用自绘分组框替代真实 `GROUPBOX`，右侧顶部摘要由父面板自绘并自动换行，配合 `WS_CLIPSIBLINGS` 降低拖动/滚动残影 |
 | `blood_module.cpp/h` | 输血结果查询单实例 MDI 子窗口，按 `LS_XK_BloodRequestApply` 只读检索；LIS 结果弹窗列表与摘要分离后台查询 |
-| `settings_module.cpp/h` | 系统设置单实例 MDI 子窗口，维护数据库、字号、LIS 摘要代码、常规报告条码打印机和底部快捷检验仪器配置 |
+| `settings_module.cpp/h` | 系统设置单实例 MDI 子窗口，维护数据库、字号、LIS 摘要代码、常规报告条码打印机、底部快捷检验仪器和自动更新源配置；`检查更新` 可缓存更新包并启动 `Updater.exe` |
 | `search_ui_context.h` | Win32 句柄集合、字体上下文 |
+| `updater_main.cpp` | 独立 `Updater.exe` 入口，支持 zip 包/已展开目录，负责等待主程序退出、解压、备份、替换、失败回滚和重启 |
 
 ## 代码分层约定
 
@@ -103,6 +110,6 @@
 - ~~工具模块：已签收条码查询接入~~ ✅
 - ~~工具模块：常规报告界面接入~~ ✅
 - ~~模块系统改造（5.1~5.7）~~ ✅
-- **当前**：主程序模块细节打磨与现场验证
+- **当前**：自动更新基础设施、主程序模块细节打磨与现场验证
 - **中期**：Qt 版本功能对齐 Win32 版
 - **长期**：Qt 版本稳定后，Win32 入口降级为可选回退构建

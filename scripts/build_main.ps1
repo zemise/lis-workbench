@@ -13,6 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 $BuildDir = "build\main-app"
 $Exe = "$BuildDir\$Config\lis_workbench.exe"
+$UpdaterExe = "$BuildDir\$Config\Updater.exe"
 
 function Assert-LabelPrintPackagePath([string]$Path) {
     if (-not $Path) { return }
@@ -122,8 +123,11 @@ if ($NeedsConfigure) {
 Write-Host "==> Building ($Config)..."
 cmake --build $BuildDir --target main_app --config $Config -j $env:NUMBER_OF_PROCESSORS
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+cmake --build $BuildDir --target updater --config $Config -j $env:NUMBER_OF_PROCESSORS
+if ($LASTEXITCODE -ne 0) { throw "Updater build failed" }
 
 Write-Host "==> Ready: $Exe"
+Write-Host "==> Updater: $UpdaterExe"
 
 # Run
 if ($Run) {

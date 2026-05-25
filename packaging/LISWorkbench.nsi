@@ -4,7 +4,7 @@ Unicode false
 !define APP_NAME "LIS Workbench"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.05.21"
+!define APP_VERSION "v2026.05.25"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
@@ -47,6 +47,9 @@ Section "Install"
   Delete "$INSTDIR\ucrtbase.dll"
   Delete "$INSTDIR\api-ms-win-crt-*.dll"
   File "${BUILD_DIR}\${APP_EXE}"
+  !if /FileExists "${BUILD_DIR}\Updater.exe"
+    File "${BUILD_DIR}\Updater.exe"
+  !endif
   !if /FileExists "${BUILD_DIR}\*.dll"
     File "${BUILD_DIR}\*.dll"
   !endif
@@ -90,6 +93,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\${APP_NAME}"
 
   Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\Updater.exe"
   Delete "$INSTDIR\MSVCP*.dll"
   Delete "$INSTDIR\VCRUNTIME*.dll"
   Delete "$INSTDIR\CONCRT*.dll"

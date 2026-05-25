@@ -49,6 +49,16 @@ if(WIN32)
     target_link_libraries(search_core PUBLIC odbc32)
 endif()
 
+add_library(update_core STATIC
+    src/update_manifest.cpp
+    src/update_source.cpp
+)
+target_include_directories(update_core PUBLIC src)
+target_compile_definitions(update_core PUBLIC UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
+if(WIN32)
+    target_link_libraries(update_core PUBLIC advapi32 urlmon)
+endif()
+
 set(LIS_LABELPRINT_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../020 LabelPrint/LabelPrint"
     CACHE PATH "Fallback path to the LabelPrint source project")
@@ -128,7 +138,7 @@ add_executable(main_app WIN32
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool)
+target_link_libraries(main_app PRIVATE search_core update_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool)
 if(LIS_HAS_LABELPRINT)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)
@@ -144,6 +154,24 @@ endif()
 
 if(MINGW)
     target_link_options(main_app PRIVATE -municode -static -static-libgcc -static-libstdc++)
+endif()
+
+# ── Standalone updater ────────────────────────────────────────
+add_executable(updater
+    src/updater_main.cpp
+)
+set_target_properties(updater PROPERTIES OUTPUT_NAME Updater)
+target_include_directories(updater PRIVATE src)
+target_compile_definitions(updater PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
+target_link_libraries(updater PRIVATE update_core)
+if(WIN32)
+    target_link_libraries(updater PRIVATE shell32 ole32 oleaut32)
+endif()
+if(MSVC)
+    target_link_options(updater PRIVATE /MANIFEST:NO)
+endif()
+if(MINGW)
+    target_link_options(updater PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
 # ── Qt 5.15 frontend (opt-in) ─────────────────────────────────

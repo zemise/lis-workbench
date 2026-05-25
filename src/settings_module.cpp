@@ -8,12 +8,17 @@
 #include "search_controller.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
+#include "update_source.h"
+#include "version.h"
 #include <commctrl.h>
+#include <shellapi.h>
 #include <windows.h>
 #include <winspool.h>
 
 #include <algorithm>
 #include <array>
+#include <memory>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -39,12 +44,25 @@ constexpr int IDC_SET_QUICK_MACHINE_PICK_2 = 5120;
 constexpr int IDC_SET_QUICK_MACHINE_PICK_3 = 5121;
 constexpr int IDC_PICKER_ROOM = 5122;
 constexpr int IDC_PICKER_MACHINE = 5123;
+constexpr int IDC_SET_UPDATE_SOURCE = 5124;
+constexpr int IDC_SET_UPDATE_MANIFEST_URL = 5125;
+constexpr int IDC_SET_UPDATE_FOLDER = 5126;
+constexpr int IDC_SET_CHECK_UPDATE = 5127;
+constexpr UINT WM_SETTINGS_UPDATE_CHECK_DONE = WM_APP + 73;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
 constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
 constexpr const wchar_t* DEFAULT_BARCODE_PRINTER_NAME = L"Xprinter XP-360B #2";
+constexpr const wchar_t* UPDATE_SECTION = L"Update";
+constexpr const wchar_t* UPDATE_SOURCE_FOLDER = L"Folder";
+constexpr const wchar_t* UPDATE_SOURCE_HTTP = L"Http";
+constexpr const wchar_t* UPDATE_SOURCE_FOLDER_LABEL = L"共享文件夹";
+constexpr const wchar_t* UPDATE_SOURCE_HTTP_LABEL = L"HTTP";
+constexpr const wchar_t* UPDATE_CACHE_DIR_NAME = L"LISWorkbench\\UpdateCache";
+constexpr const wchar_t* UPDATE_APP_EXE_NAME = L"lis_workbench.exe";
+constexpr const wchar_t* UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 constexpr int PICKER_W = 440;
 constexpr int PICKER_H = 360;
 constexpr int PICKER_PAD = 12;
@@ -76,6 +94,18 @@ struct SettingsMachinePickerState {
     int slot = 0;
     std::vector<search::RoomOption> rooms;
     std::vector<search::MachineOption> machines;
+};
+
+struct SettingsUpdateCheckDone {
+    bool ok = false;
+    lis_update::UpdateCheckResult result;
+    std::string error;
+};
+
+struct SettingsUpdateConfig {
+    std::wstring sourceType;
+    std::wstring manifestUrl;
+    std::wstring folderPath;
 };
 
 SettingsState* g_pending = nullptr;
@@ -120,6 +150,172 @@ std::wstring readCombo(HWND hwnd, int id) {
         }
     }
     return readEdit(hwnd, id);
+}
+
+void selectComboText(HWND combo, const wchar_t* text, int fallback_index = 0) {
+    const int found = static_cast<int>(SendMessageW(combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                                                    reinterpret_cast<LPARAM>(text)));
+    SendMessageW(combo, CB_SETCURSEL, found >= 0 ? found : fallback_index, 0);
+}
+
+void populateUpdateSourceCombo(HWND hwnd) {
+    HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
+    if (!combo) return;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(UPDATE_SOURCE_FOLDER_LABEL));
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(UPDATE_SOURCE_HTTP_LABEL));
+
+    const std::wstring saved = search::load_module_str(UPDATE_SECTION, L"SourceType", UPDATE_SOURCE_FOLDER);
+    selectComboText(combo, saved == UPDATE_SOURCE_HTTP ? UPDATE_SOURCE_HTTP_LABEL : UPDATE_SOURCE_FOLDER_LABEL, 0);
+}
+
+std::wstring selectedUpdateSourceType(HWND hwnd) {
+    HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
+    const int index = combo ? static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0)) : 0;
+    return index == 1 ? UPDATE_SOURCE_HTTP : UPDATE_SOURCE_FOLDER;
+}
+
+SettingsUpdateConfig collectUpdateConfig(HWND hwnd) {
+    SettingsUpdateConfig cfg;
+    cfg.sourceType = selectedUpdateSourceType(hwnd);
+    cfg.manifestUrl = readEdit(hwnd, IDC_SET_UPDATE_MANIFEST_URL);
+    cfg.folderPath = readEdit(hwnd, IDC_SET_UPDATE_FOLDER);
+    return cfg;
+}
+
+void saveUpdateConfig(const SettingsUpdateConfig& cfg) {
+    search::save_module_str(UPDATE_SECTION, L"SourceType", cfg.sourceType);
+    search::save_module_str(UPDATE_SECTION, L"ManifestUrl", cfg.manifestUrl);
+    search::save_module_str(UPDATE_SECTION, L"FolderPath", cfg.folderPath);
+}
+
+void setUpdateCheckButtonState(HWND hwnd, bool checking) {
+    HWND button = GetDlgItem(hwnd, IDC_SET_CHECK_UPDATE);
+    if (!button) return;
+    EnableWindow(button, checking ? FALSE : TRUE);
+    SetWindowTextW(button, checking ? L"检查中..." : L"检查更新");
+}
+
+bool localFileExists(const std::wstring& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring quoteProcessArg(const std::wstring& value) {
+    std::wstring out = L"\"";
+    for (wchar_t ch : value) {
+        if (ch == L'"') out += L'\\';
+        out += ch;
+    }
+    out += L"\"";
+    return out;
+}
+
+bool launchUpdaterForPackage(HWND hwnd, SettingsState* st, const std::wstring& package_path) {
+    const std::wstring app_dir = search::module_dir();
+    const std::wstring updater_path = lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
+    if (!localFileExists(updater_path)) {
+        MessageBoxW(hwnd, L"安装目录中未找到 Updater.exe。", L"安装更新", MB_ICONERROR);
+        return false;
+    }
+
+    std::wstring args;
+    args += L"--app-dir " + quoteProcessArg(app_dir);
+    args += L" --app-exe " + quoteProcessArg(UPDATE_APP_EXE_NAME);
+    args += L" --package-file " + quoteProcessArg(package_path);
+    args += L" --pid " + std::to_wstring(GetCurrentProcessId());
+
+    HINSTANCE started = ShellExecuteW(nullptr, L"open", updater_path.c_str(), args.c_str(),
+                                      app_dir.c_str(), SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(started) <= 32) {
+        MessageBoxW(hwnd, L"启动 Updater.exe 失败。", L"安装更新", MB_ICONERROR);
+        return false;
+    }
+
+    if (st && st->ctx.appContext) {
+        auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
+        if (gctx->mainWindow) {
+            PostMessageW(gctx->mainWindow, WM_CLOSE, 0, 0);
+            return true;
+        }
+    }
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root) PostMessageW(root, WM_CLOSE, 0, 0);
+    return true;
+}
+
+std::wstring programDataUpdateCacheDir() {
+    DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+    std::wstring base;
+    if (needed > 0) {
+        std::wstring buffer(static_cast<size_t>(needed), L'\0');
+        DWORD written = GetEnvironmentVariableW(L"ProgramData", buffer.data(), needed);
+        if (written > 0 && written < needed) {
+            buffer.resize(static_cast<size_t>(written));
+            base = buffer;
+        }
+    }
+    if (base.empty()) {
+        base = search::module_dir();
+    }
+    return lis_update::join_update_path(base, UPDATE_CACHE_DIR_NAME);
+}
+
+void showUpdateCheckResult(HWND hwnd, SettingsState* st, const SettingsUpdateCheckDone& done) {
+    setUpdateCheckButtonState(hwnd, false);
+
+    if (!done.ok) {
+        MessageBoxW(hwnd, search::utf8_to_wide(done.error).c_str(), L"检查更新失败", MB_ICONERROR);
+        return;
+    }
+
+    if (!done.result.update_available) {
+        const std::wstring message = L"当前已是最新版本。\r\n当前版本：" + search::utf8_to_wide(search::kVersion);
+        MessageBoxW(hwnd, message.c_str(), L"检查更新", MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring message = L"发现新版本：" + search::utf8_to_wide(done.result.manifest.version) +
+                           L"\r\n更新包已缓存到：\r\n" + done.result.package_path +
+                           L"\r\n\r\n是否立即安装并重启程序？";
+    const int answer = MessageBoxW(hwnd, message.c_str(), L"检查更新",
+                                   MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+    if (answer == IDYES) {
+        launchUpdaterForPackage(hwnd, st, done.result.package_path);
+    }
+}
+
+void startConfiguredUpdateCheck(HWND hwnd) {
+    const SettingsUpdateConfig cfg = collectUpdateConfig(hwnd);
+    if (cfg.sourceType == UPDATE_SOURCE_HTTP) {
+        if (cfg.manifestUrl.empty()) {
+            MessageBoxW(hwnd, L"请先填写 HTTP manifest URL。", L"检查更新", MB_ICONWARNING);
+            return;
+        }
+    } else {
+        if (cfg.folderPath.empty()) {
+            MessageBoxW(hwnd, L"请先填写共享文件夹路径。", L"检查更新", MB_ICONWARNING);
+            return;
+        }
+    }
+
+    setUpdateCheckButtonState(hwnd, true);
+
+    const std::wstring cache_dir = programDataUpdateCacheDir();
+    std::thread([hwnd, cfg, cache_dir]() {
+        auto* done = new SettingsUpdateCheckDone;
+        std::unique_ptr<lis_update::IUpdateSource> source;
+        if (cfg.sourceType == UPDATE_SOURCE_HTTP) {
+            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
+        } else {
+            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
+        }
+        done->ok = lis_update::check_and_fetch_update(*source, search::kVersion,
+                                                      cache_dir, done->result, done->error);
+        if (!PostMessageW(hwnd, WM_SETTINGS_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
+            delete done;
+        }
+    }).detach();
 }
 
 std::vector<std::wstring> enumPrinterNames() {
@@ -424,9 +620,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_3, S(116), S(482), S(470), S(24));
             search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_3, L"...", S(596), S(480), S(40), S(28));
 
-            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(532), S(92), S(30));
-            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(532), S(84), S(30));
-            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(532), S(84), S(30));
+            search::create_label(hwnd, L"更新源", S(20), S(526), S(86), S(22));
+            search::create_combo(hwnd, IDC_SET_UPDATE_SOURCE, S(116), S(526), S(140), S(180), false);
+            search::create_button(hwnd, IDC_SET_CHECK_UPDATE, L"检查更新", S(276), S(524), S(100), S(28));
+
+            search::create_label(hwnd, L"HTTP地址", S(20), S(560), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_UPDATE_MANIFEST_URL, S(116), S(560), S(520), S(24));
+
+            search::create_label(hwnd, L"共享目录", S(20), S(594), S(86), S(22));
+            search::create_edit(hwnd, IDC_SET_UPDATE_FOLDER, S(116), S(594), S(520), S(24));
+
+            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(646), S(92), S(30));
+            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(646), S(84), S(30));
+            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(646), S(84), S(30));
 
             auto& app = st->app;
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
@@ -450,6 +656,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SendMessageW(GetDlgItem(hwnd, quickMachineEditId(i)), EM_SETREADONLY, TRUE, 0);
             }
             populatePrinterCombo(hwnd);
+            populateUpdateSourceCombo(hwnd);
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_URL),
+                           search::load_module_str(UPDATE_SECTION, L"ManifestUrl", L"").c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER),
+                           search::load_module_str(UPDATE_SECTION, L"FolderPath", L"").c_str());
 
             EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
                 SendMessageW(child, WM_SETFONT, param, TRUE);
@@ -459,6 +670,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_SIZE:
             return 0;
+        case WM_SETTINGS_UPDATE_CHECK_DONE: {
+            std::unique_ptr<SettingsUpdateCheckDone> done(
+                reinterpret_cast<SettingsUpdateCheckDone*>(lp));
+            if (done) {
+                showUpdateCheckResult(hwnd, st, *done);
+            }
+            return 0;
+        }
         case WM_COMMAND: {
             int id = LOWORD(wp);
             if (id == IDC_SET_CANCEL) { DestroyWindow(hwnd); return 0; }
@@ -482,6 +701,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
+            if (id == IDC_SET_CHECK_UPDATE) {
+                startConfiguredUpdateCheck(hwnd);
+                return 0;
+            }
             if (id == IDC_SET_SAVE) {
                 st->app.db = collectForm(hwnd);
                 st->app.ui.font_size = clampFontSize(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
@@ -500,6 +723,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     search::save_module_str(L"RegularReport", quickMachineNameKey(i),
                                             st->quickMachineNames[static_cast<size_t>(i)]);
                 }
+                saveUpdateConfig(collectUpdateConfig(hwnd));
                 if (st->ctx.appContext) {
                     auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
                     gctx->dbSettings = st->app.db;

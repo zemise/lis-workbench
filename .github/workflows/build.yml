@@ -97,14 +97,30 @@ jobs:
             throw "NSIS packaging failed"
           }
 
+      - name: Create update package and manifest
+        shell: pwsh
+        run: |
+          .\scripts\create_update_package.ps1 `
+            -Version "${{ steps.version.outputs.value }}" `
+            -BuildDir "build\main-app\Release" `
+            -OutputRoot "out\windows\update"
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: LISWorkbench-Setup-${{ steps.version.outputs.value }}-win7-win11
           path: out/windows/installer/LISWorkbench-Setup-${{ steps.version.outputs.value }}-win7-win11.exe
 
-      - name: Upload portable exe
+      - name: Upload update files
+        uses: actions/upload-artifact@v4
+        with:
+          name: LISWorkbench-Updates-${{ steps.version.outputs.value }}-win7-win11
+          path: out/windows/update/updates/**
+
+      - name: Upload portable binaries
         uses: actions/upload-artifact@v4
         with:
           name: LISWorkbench-Portable-${{ steps.version.outputs.value }}-win7-win11
-          path: build/main-app/Release/lis_workbench.exe
+          path: |
+            build/main-app/Release/lis_workbench.exe
+            build/main-app/Release/Updater.exe

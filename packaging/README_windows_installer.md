@@ -8,9 +8,18 @@
 
 | Job | Runner | Toolchain | LabelPrint | 产物 |
 |-----|--------|-----------|------------|------|
-| `windows-installer` | `windows-2022` | Visual Studio 2022 x64 | `labelprint-v1.2.7-windows-x64-vs2022-win7.zip` | `LISWorkbench-Setup-<version>-win7-win11.exe` |
+| `windows-installer` | `windows-2022` | Visual Studio 2022 x64 | `labelprint-v1.2.7-windows-x64-vs2022-win7.zip` | 安装包、更新 zip、manifest |
 
-CI 会从 LabelPrint GitHub Release 下载 `v1.2.7` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。
+CI 会从 LabelPrint GitHub Release 下载 `v1.2.7` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。
+
+自动更新产物由 `scripts/create_update_package.ps1` 生成：
+
+```text
+out/windows/update/updates/manifest.json
+out/windows/update/updates/packages/LISWorkbench-<version>-win7-win11.zip
+```
+
+Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。
 
 说明：GitHub Actions 不能真正提供 Windows 7 runner 做运行验证；这里的 “Win7-Win11” 表示使用 VS2022、静态 MSVC runtime、Win7 兼容宏和 LabelPrint Win7 兼容包构建出的安装包，目标是覆盖 Windows 7 到 Windows 11。
 
@@ -43,6 +52,24 @@ out/windows/installer/LISWorkbench-Setup.exe
 
 ## 实机打包（Windows）
 
+推荐使用根目录快捷脚本：
+
+```powershell
+.\lis.ps1 rebuild-package -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.7-windows-x64-vs2022-win7"
+```
+
+生成结果：
+
+```text
+out\windows\installer\LISWorkbench-Setup.exe
+out\windows\update\updates\manifest.json
+out\windows\update\updates\packages\LISWorkbench-<version>-win7-win11.zip
+```
+
+`lis.ps1 package` 和 `lis.ps1 rebuild-package` 会从 `src\version.h` 自动读取版本号；需要覆盖时可传 `-AppVersion vYYYY.MM.DD`。
+
+等价的底层命令如下：
+
 ```powershell
 # Win32 主程序。默认优先使用 VS 2022，并静态链接 MSVC runtime，便于兼容 Windows 7。
 # 正式打包建议使用 LabelPrint release zip 解压目录，而不是依赖相邻源码目录。
@@ -50,7 +77,7 @@ out/windows/installer/LISWorkbench-Setup.exe
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.05.21 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.05.25 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：

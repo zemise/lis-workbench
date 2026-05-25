@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.05.21`
+当前版本：`v2026.05.25`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -12,7 +12,7 @@
 - 对外项目名和仓库名使用 `lis-workbench`。
 - 用户可见程序名使用 `LIS 工作台`。
 - 配置文件使用 `ClientConfig.ini`；升级时如果只存在旧 `result_search.ini`，程序会自动复制迁移。
-- 主程序输出文件名使用 `lis_workbench.exe`。
+- 主程序输出文件名使用 `lis_workbench.exe`；自动更新替换由独立 `Updater.exe` 执行。
 - 为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部模块名暂时保留。
 
 ### 架构概要
@@ -87,6 +87,7 @@
 - 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- 系统设置支持配置自动更新源，保存到 `ClientConfig.ini` 的 `[Update]`；`检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
@@ -221,14 +222,27 @@ cmake --build build/windows-x64 -j
 - [CHANGELOG.md](CHANGELOG.md)
 - [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
 - [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [AUTO_UPDATE_DESIGN.md](AUTO_UPDATE_DESIGN.md)
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
 ## Windows 安装包
 
-主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和 `检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
+
+常用构建命令已封装到根目录 `lis.ps1`：
+
+```powershell
+.\lis.ps1 build
+.\lis.ps1 run
+.\lis.ps1 clean
+.\lis.ps1 package -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.7-windows-x64-vs2022-win7"
+.\lis.ps1 rebuild-package -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.7-windows-x64-vs2022-win7"
+```
+
+`package` / `rebuild-package` 会同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。
 
 项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
 
