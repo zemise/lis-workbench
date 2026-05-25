@@ -8,17 +8,14 @@
 #include "search_controller.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
-#include "update_source.h"
-#include "version.h"
+#include "update_config.h"
+#include "win32_control_id.h"
 #include <commctrl.h>
-#include <shellapi.h>
 #include <windows.h>
 #include <winspool.h>
 
 #include <algorithm>
 #include <array>
-#include <memory>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -47,22 +44,15 @@ constexpr int IDC_PICKER_MACHINE = 5123;
 constexpr int IDC_SET_UPDATE_SOURCE = 5124;
 constexpr int IDC_SET_UPDATE_MANIFEST_URL = 5125;
 constexpr int IDC_SET_UPDATE_FOLDER = 5126;
-constexpr int IDC_SET_CHECK_UPDATE = 5127;
-constexpr UINT WM_SETTINGS_UPDATE_CHECK_DONE = WM_APP + 73;
+constexpr int IDC_SET_UPDATE_AUTO_CHECK = 5128;
+constexpr int IDC_SET_UPDATE_MANIFEST_LABEL = 5129;
+constexpr int IDC_SET_UPDATE_FOLDER_LABEL = 5130;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
 constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
 constexpr const wchar_t* DEFAULT_BARCODE_PRINTER_NAME = L"Xprinter XP-360B #2";
-constexpr const wchar_t* UPDATE_SECTION = L"Update";
-constexpr const wchar_t* UPDATE_SOURCE_FOLDER = L"Folder";
-constexpr const wchar_t* UPDATE_SOURCE_HTTP = L"Http";
-constexpr const wchar_t* UPDATE_SOURCE_FOLDER_LABEL = L"共享文件夹";
-constexpr const wchar_t* UPDATE_SOURCE_HTTP_LABEL = L"HTTP";
-constexpr const wchar_t* UPDATE_CACHE_DIR_NAME = L"LISWorkbench\\UpdateCache";
-constexpr const wchar_t* UPDATE_APP_EXE_NAME = L"lis_workbench.exe";
-constexpr const wchar_t* UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 constexpr int PICKER_W = 440;
 constexpr int PICKER_H = 360;
 constexpr int PICKER_PAD = 12;
@@ -94,12 +84,6 @@ struct SettingsMachinePickerState {
     int slot = 0;
     std::vector<search::RoomOption> rooms;
     std::vector<search::MachineOption> machines;
-};
-
-struct SettingsUpdateCheckDone {
-    bool ok = false;
-    lis_update::UpdateCheckResult result;
-    std::string error;
 };
 
 struct SettingsUpdateConfig {
@@ -162,17 +146,30 @@ void populateUpdateSourceCombo(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
     if (!combo) return;
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(UPDATE_SOURCE_FOLDER_LABEL));
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(UPDATE_SOURCE_HTTP_LABEL));
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(lis_update::kSourceFolderLabel));
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(lis_update::kSourceHttpLabel));
 
-    const std::wstring saved = search::load_module_str(UPDATE_SECTION, L"SourceType", UPDATE_SOURCE_FOLDER);
-    selectComboText(combo, saved == UPDATE_SOURCE_HTTP ? UPDATE_SOURCE_HTTP_LABEL : UPDATE_SOURCE_FOLDER_LABEL, 0);
+    const std::wstring saved = search::load_module_str(
+        lis_update::kConfigSection, L"SourceType", lis_update::kSourceFolder);
+    selectComboText(combo,
+                    saved == lis_update::kSourceHttp
+                        ? lis_update::kSourceHttpLabel
+                        : lis_update::kSourceFolderLabel,
+                    0);
 }
 
 std::wstring selectedUpdateSourceType(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
     const int index = combo ? static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0)) : 0;
-    return index == 1 ? UPDATE_SOURCE_HTTP : UPDATE_SOURCE_FOLDER;
+    return index == 1 ? lis_update::kSourceHttp : lis_update::kSourceFolder;
+}
+
+void updateSourceFieldVisibility(HWND hwnd) {
+    const bool is_http = selectedUpdateSourceType(hwnd) == lis_update::kSourceHttp;
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_LABEL), is_http ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_URL), is_http ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER_LABEL), is_http ? SW_HIDE : SW_SHOW);
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER), is_http ? SW_HIDE : SW_SHOW);
 }
 
 SettingsUpdateConfig collectUpdateConfig(HWND hwnd) {
@@ -184,138 +181,9 @@ SettingsUpdateConfig collectUpdateConfig(HWND hwnd) {
 }
 
 void saveUpdateConfig(const SettingsUpdateConfig& cfg) {
-    search::save_module_str(UPDATE_SECTION, L"SourceType", cfg.sourceType);
-    search::save_module_str(UPDATE_SECTION, L"ManifestUrl", cfg.manifestUrl);
-    search::save_module_str(UPDATE_SECTION, L"FolderPath", cfg.folderPath);
-}
-
-void setUpdateCheckButtonState(HWND hwnd, bool checking) {
-    HWND button = GetDlgItem(hwnd, IDC_SET_CHECK_UPDATE);
-    if (!button) return;
-    EnableWindow(button, checking ? FALSE : TRUE);
-    SetWindowTextW(button, checking ? L"检查中..." : L"检查更新");
-}
-
-bool localFileExists(const std::wstring& path) {
-    const DWORD attrs = GetFileAttributesW(path.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
-}
-
-std::wstring quoteProcessArg(const std::wstring& value) {
-    std::wstring out = L"\"";
-    for (wchar_t ch : value) {
-        if (ch == L'"') out += L'\\';
-        out += ch;
-    }
-    out += L"\"";
-    return out;
-}
-
-bool launchUpdaterForPackage(HWND hwnd, SettingsState* st, const std::wstring& package_path) {
-    const std::wstring app_dir = search::module_dir();
-    const std::wstring updater_path = lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
-    if (!localFileExists(updater_path)) {
-        MessageBoxW(hwnd, L"安装目录中未找到 Updater.exe。", L"安装更新", MB_ICONERROR);
-        return false;
-    }
-
-    std::wstring args;
-    args += L"--app-dir " + quoteProcessArg(app_dir);
-    args += L" --app-exe " + quoteProcessArg(UPDATE_APP_EXE_NAME);
-    args += L" --package-file " + quoteProcessArg(package_path);
-    args += L" --pid " + std::to_wstring(GetCurrentProcessId());
-
-    HINSTANCE started = ShellExecuteW(nullptr, L"open", updater_path.c_str(), args.c_str(),
-                                      app_dir.c_str(), SW_SHOWNORMAL);
-    if (reinterpret_cast<INT_PTR>(started) <= 32) {
-        MessageBoxW(hwnd, L"启动 Updater.exe 失败。", L"安装更新", MB_ICONERROR);
-        return false;
-    }
-
-    if (st && st->ctx.appContext) {
-        auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
-        if (gctx->mainWindow) {
-            PostMessageW(gctx->mainWindow, WM_CLOSE, 0, 0);
-            return true;
-        }
-    }
-    HWND root = GetAncestor(hwnd, GA_ROOT);
-    if (root) PostMessageW(root, WM_CLOSE, 0, 0);
-    return true;
-}
-
-std::wstring programDataUpdateCacheDir() {
-    DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
-    std::wstring base;
-    if (needed > 0) {
-        std::wstring buffer(static_cast<size_t>(needed), L'\0');
-        DWORD written = GetEnvironmentVariableW(L"ProgramData", buffer.data(), needed);
-        if (written > 0 && written < needed) {
-            buffer.resize(static_cast<size_t>(written));
-            base = buffer;
-        }
-    }
-    if (base.empty()) {
-        base = search::module_dir();
-    }
-    return lis_update::join_update_path(base, UPDATE_CACHE_DIR_NAME);
-}
-
-void showUpdateCheckResult(HWND hwnd, SettingsState* st, const SettingsUpdateCheckDone& done) {
-    setUpdateCheckButtonState(hwnd, false);
-
-    if (!done.ok) {
-        MessageBoxW(hwnd, search::utf8_to_wide(done.error).c_str(), L"检查更新失败", MB_ICONERROR);
-        return;
-    }
-
-    if (!done.result.update_available) {
-        const std::wstring message = L"当前已是最新版本。\r\n当前版本：" + search::utf8_to_wide(search::kVersion);
-        MessageBoxW(hwnd, message.c_str(), L"检查更新", MB_ICONINFORMATION);
-        return;
-    }
-
-    std::wstring message = L"发现新版本：" + search::utf8_to_wide(done.result.manifest.version) +
-                           L"\r\n更新包已缓存到：\r\n" + done.result.package_path +
-                           L"\r\n\r\n是否立即安装并重启程序？";
-    const int answer = MessageBoxW(hwnd, message.c_str(), L"检查更新",
-                                   MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-    if (answer == IDYES) {
-        launchUpdaterForPackage(hwnd, st, done.result.package_path);
-    }
-}
-
-void startConfiguredUpdateCheck(HWND hwnd) {
-    const SettingsUpdateConfig cfg = collectUpdateConfig(hwnd);
-    if (cfg.sourceType == UPDATE_SOURCE_HTTP) {
-        if (cfg.manifestUrl.empty()) {
-            MessageBoxW(hwnd, L"请先填写 HTTP manifest URL。", L"检查更新", MB_ICONWARNING);
-            return;
-        }
-    } else {
-        if (cfg.folderPath.empty()) {
-            MessageBoxW(hwnd, L"请先填写共享文件夹路径。", L"检查更新", MB_ICONWARNING);
-            return;
-        }
-    }
-
-    setUpdateCheckButtonState(hwnd, true);
-
-    const std::wstring cache_dir = programDataUpdateCacheDir();
-    std::thread([hwnd, cfg, cache_dir]() {
-        auto* done = new SettingsUpdateCheckDone;
-        std::unique_ptr<lis_update::IUpdateSource> source;
-        if (cfg.sourceType == UPDATE_SOURCE_HTTP) {
-            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
-        } else {
-            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
-        }
-        done->ok = lis_update::check_and_fetch_update(*source, search::kVersion,
-                                                      cache_dir, done->result, done->error);
-        if (!PostMessageW(hwnd, WM_SETTINGS_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
-            delete done;
-        }
-    }).detach();
+    search::save_module_str(lis_update::kConfigSection, L"SourceType", cfg.sourceType);
+    search::save_module_str(lis_update::kConfigSection, L"ManifestUrl", cfg.manifestUrl);
+    search::save_module_str(lis_update::kConfigSection, L"FolderPath", cfg.folderPath);
 }
 
 std::vector<std::wstring> enumPrinterNames() {
@@ -466,8 +334,8 @@ LRESULT CALLBACK pickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                               WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                               S(PICKER_PAD), S(PICKER_LIST_Y),
                                               innerW, S(PICKER_H - PICKER_LIST_Y - PICKER_PAD),
-                                              hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PICKER_MACHINE)),
-                                              GetModuleHandleW(nullptr), nullptr);
+                                              hwnd, win32_control_id(IDC_PICKER_MACHINE), GetModuleHandleW(nullptr),
+                                              nullptr);
             ListView_SetExtendedListViewStyle(ps->machineList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             search::add_list_column(ps->machineList, 0, L"仪器", S(PICKER_CODE_W));
             search::add_list_column(ps->machineList, 1, L"仪器名称", S(PICKER_NAME_W));
@@ -622,17 +490,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             search::create_label(hwnd, L"更新源", S(20), S(526), S(86), S(22));
             search::create_combo(hwnd, IDC_SET_UPDATE_SOURCE, S(116), S(526), S(140), S(180), false);
-            search::create_button(hwnd, IDC_SET_CHECK_UPDATE, L"检查更新", S(276), S(524), S(100), S(28));
 
-            search::create_label(hwnd, L"HTTP地址", S(20), S(560), S(86), S(22));
+            CreateWindowExW(0, L"STATIC", L"HTTP地址", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                            S(20), S(560), S(86), S(22), hwnd,
+                            win32_control_id(IDC_SET_UPDATE_MANIFEST_LABEL), GetModuleHandleW(nullptr), nullptr);
             search::create_edit(hwnd, IDC_SET_UPDATE_MANIFEST_URL, S(116), S(560), S(520), S(24));
 
-            search::create_label(hwnd, L"共享目录", S(20), S(594), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_UPDATE_FOLDER, S(116), S(594), S(520), S(24));
+            CreateWindowExW(0, L"STATIC", L"共享目录", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                            S(20), S(560), S(86), S(22), hwnd,
+                            win32_control_id(IDC_SET_UPDATE_FOLDER_LABEL), GetModuleHandleW(nullptr), nullptr);
+            search::create_edit(hwnd, IDC_SET_UPDATE_FOLDER, S(116), S(560), S(520), S(24));
 
-            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(646), S(92), S(30));
-            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(646), S(84), S(30));
-            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(646), S(84), S(30));
+            CreateWindowExW(0, L"BUTTON", L"自动检查更新",
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                            S(116), S(594), S(150), S(24), hwnd,
+                            win32_control_id(IDC_SET_UPDATE_AUTO_CHECK), GetModuleHandleW(nullptr), nullptr);
+
+            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(640), S(92), S(30));
+            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(640), S(84), S(30));
+            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(640), S(84), S(30));
 
             auto& app = st->app;
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
@@ -658,9 +534,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             populatePrinterCombo(hwnd);
             populateUpdateSourceCombo(hwnd);
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_URL),
-                           search::load_module_str(UPDATE_SECTION, L"ManifestUrl", L"").c_str());
+                           search::load_module_str(lis_update::kConfigSection, L"ManifestUrl",
+                                                   lis_update::kDefaultGithubManifestUrl).c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER),
-                           search::load_module_str(UPDATE_SECTION, L"FolderPath", L"").c_str());
+                           search::load_module_str(lis_update::kConfigSection, L"FolderPath", L"").c_str());
+            updateSourceFieldVisibility(hwnd);
+            SendMessageW(GetDlgItem(hwnd, IDC_SET_UPDATE_AUTO_CHECK), BM_SETCHECK,
+                         search::load_module_int(lis_update::kConfigSection, L"AutoCheck", 0)
+                             ? BST_CHECKED
+                             : BST_UNCHECKED,
+                         0);
 
             EnumChildWindows(hwnd, [](HWND child, LPARAM param) -> BOOL {
                 SendMessageW(child, WM_SETFONT, param, TRUE);
@@ -670,16 +553,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_SIZE:
             return 0;
-        case WM_SETTINGS_UPDATE_CHECK_DONE: {
-            std::unique_ptr<SettingsUpdateCheckDone> done(
-                reinterpret_cast<SettingsUpdateCheckDone*>(lp));
-            if (done) {
-                showUpdateCheckResult(hwnd, st, *done);
-            }
-            return 0;
-        }
         case WM_COMMAND: {
             int id = LOWORD(wp);
+            if (id == IDC_SET_UPDATE_SOURCE && HIWORD(wp) == CBN_SELCHANGE) {
+                updateSourceFieldVisibility(hwnd);
+                return 0;
+            }
             if (id == IDC_SET_CANCEL) { DestroyWindow(hwnd); return 0; }
             if (id == IDC_SET_QUICK_MACHINE_PICK_1 || id == IDC_SET_QUICK_MACHINE_PICK_2 ||
                 id == IDC_SET_QUICK_MACHINE_PICK_3) {
@@ -701,10 +580,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
-            if (id == IDC_SET_CHECK_UPDATE) {
-                startConfiguredUpdateCheck(hwnd);
-                return 0;
-            }
             if (id == IDC_SET_SAVE) {
                 st->app.db = collectForm(hwnd);
                 st->app.ui.font_size = clampFontSize(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
@@ -724,6 +599,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                             st->quickMachineNames[static_cast<size_t>(i)]);
                 }
                 saveUpdateConfig(collectUpdateConfig(hwnd));
+                search::save_module_int(lis_update::kConfigSection, L"AutoCheck",
+                                        SendMessageW(GetDlgItem(hwnd, IDC_SET_UPDATE_AUTO_CHECK),
+                                                     BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
                 if (st->ctx.appContext) {
                     auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
                     gctx->dbSettings = st->app.db;

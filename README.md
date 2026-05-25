@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.05.25`
+当前版本：`v2026.05.25.2`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -87,7 +87,10 @@
 - 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
-- 系统设置支持配置自动更新源，保存到 `ClientConfig.ini` 的 `[Update]`；`检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
+- 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
+- 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
+- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。
+- `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
@@ -228,7 +231,7 @@ cmake --build build/windows-x64 -j
 
 ## Windows 安装包
 
-主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和 `检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和菜单栏 `系统 -> 检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 

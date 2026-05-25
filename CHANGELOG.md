@@ -1,17 +1,20 @@
 # Changelog
 
-## v2026.05.25
+## v2026.05.25.2
 
 - **自动更新基础设施**：新增自动更新设计文档、`update_core` 基础库和独立 `Updater.exe` target；构建脚本会同时构建主程序和更新器，NSIS 安装包会随主程序安装/卸载 `Updater.exe`。首版更新器支持 zip 包和已展开目录两种输入，可解压、备份、替换、失败回滚和重启主程序。
 - **自动更新源**：`update_core` 新增 `FolderUpdateSource`、`HttpUpdateSource` 和统一 `check_and_fetch_update` 流程，两个通道共用 manifest 解析、版本比较、更新包拉取和 SHA-256 校验。
-- **自动更新主程序集成**：系统设置页新增 `[Update]` 更新源配置和 `检查更新` 入口，支持后台按共享文件夹或 HTTP manifest 检查新版本、缓存更新包并校验 size / SHA-256；发现新版本后可确认安装，主程序会启动 `Updater.exe` 并退出。
+- **自动更新主程序集成**：系统设置页新增 `[Update]` 更新源配置，菜单栏 `系统 -> 检查更新` 支持后台按共享文件夹或 HTTP manifest 检查新版本、缓存更新包并校验 size / SHA-256；发现新版本后可确认安装，主程序会启动 `Updater.exe` 并退出。
 - **自动更新发布产物**：GitHub Actions 新增更新 zip 和 `manifest.json` artifact，更新 zip 与 manifest 采用共享目录、HTTP 和 GitHub Release 共用的同目录结构；推送与版本号一致的 `v*` 标签时会自动创建/更新 GitHub Release。
+- **自动更新配置体验**：系统设置页更新源默认选择共享文件夹，切换更新源时只显示共享目录或 HTTP 地址其中一项；HTTP manifest 地址为空时默认使用 GitHub `releases/latest/download/manifest.json`，客户端不再需要随版本号修改更新地址。
+- **自动检查更新**：系统设置页新增自动检查开关；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再进入下载和安装流程。
+- **更新日志落盘**：`Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，方便现场更新失败后回传分析。
 - **构建脚本整理**：新增根目录 `lis.ps1` 和 `scripts/lis.ps1`，封装 `build / clean / run / package / rebuild-package` 常用命令。
 - **常规报告布局优化**：左侧区域宽度当前限制为 360 逻辑像素，内容区始终预留垂直滚动条宽度，避免有无滚动条时宽度跳变。
 - **常规报告年龄显示**：左侧年龄回填会拆分年龄数字和单位，单位下拉固定提供 `岁 / 月 / 天 / 小时 / 分` 并按查询结果自动匹配。
 - **常规报告条码打印**：右键 `打印条码` 和 `打印勾选条码` 的组合项目内容改为取右侧报告行 `检验仪器` 列，不再为了条码打印额外查询中间项目明细；开单日期改为 `yyyy/M/d` 仅日期格式。
 - **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.7` release 包，继续跟进 XP-360B 条码布局和文本居中修正。
-- 版本号 v2026.05.25。
+- 版本号 v2026.05.25.2。
 
 ## v2026.05.20
 

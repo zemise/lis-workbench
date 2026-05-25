@@ -118,7 +118,11 @@ bool delete_tree(const std::wstring& path, std::wstring& error) {
 }
 
 void append_log(const std::wstring& app_dir, const std::wstring& line) {
-    const std::wstring log_path = join_path(app_dir, L"updater.log");
+    const std::wstring log_dir = join_path(app_dir, L"log");
+    std::wstring ignored_error;
+    ensure_directory(log_dir, ignored_error);
+
+    const std::wstring log_path = join_path(log_dir, L"updater.log");
     HANDLE file = CreateFileW(log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -447,16 +451,16 @@ int run_update(const Options& options) {
     }
 
     const std::wstring backup_dir = make_backup_dir(options.app_dir);
-    if (!copy_tree(options.app_dir, backup_dir, {L"backup", L"updater.log"}, L"", error)) {
+    if (!copy_tree(options.app_dir, backup_dir, {L"backup", L"log"}, L"", error)) {
         append_log(options.app_dir, L"backup failed: " + error);
         return 6;
     }
 
     const std::wstring running_updater = current_module_path();
-    if (!copy_tree(package_dir, options.app_dir, {L"ClientConfig.ini"}, running_updater, error)) {
+    if (!copy_tree(package_dir, options.app_dir, {L"ClientConfig.ini", L"log"}, running_updater, error)) {
         append_log(options.app_dir, L"replace failed: " + error);
         std::wstring restore_error;
-        if (!copy_tree(backup_dir, options.app_dir, {L"backup", L"updater.log"}, running_updater, restore_error)) {
+        if (!copy_tree(backup_dir, options.app_dir, {L"backup", L"log"}, running_updater, restore_error)) {
             append_log(options.app_dir, L"rollback failed: " + restore_error);
             return 8;
         }
