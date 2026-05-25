@@ -123,7 +123,7 @@ public:
   "minUpdaterVersion": "1.0.0",
   "publishedAt": "2026-05-25T10:00:00+08:00",
   "package": {
-    "file": "packages/LISWorkbench-v2026.05.25-win7-win11.zip",
+    "file": "LISWorkbench-v2026.05.25-win7-win11.zip",
     "sha256": "0123456789abcdef...",
     "size": 12345678
   },
@@ -291,11 +291,10 @@ GitHub Actions 已新增产物：
 ```text
 updates/
   manifest.json
-  packages/
-    LISWorkbench-v2026.05.25-win7-win11.zip
+  LISWorkbench-v2026.05.25-win7-win11.zip
 ```
 
-GitHub Release 可以上传 manifest 和 zip；内网共享目录直接复制同样结构。当前 CI 先把整个 `updates` 目录上传为 Actions artifact，后续再自动附加到 GitHub Release。
+GitHub Release 会在推送 `v*` 标签时自动创建或更新，并上传安装包、manifest 和更新 zip。普通分支 push 和 PR 只上传 Actions artifact，不发布 Release。内网共享目录直接复制同样结构。manifest 与 zip 保持同目录，这样 GitHub Release asset URL、普通 HTTP 目录和共享文件夹都能使用同一个 `package.file` 相对路径。
 
 ## 安全与校验
 
@@ -366,7 +365,7 @@ GitHub Release 可以上传 manifest 和 zip；内网共享目录直接复制同
 - ~~GitHub Actions 生成 zip 更新包。~~
 - ~~生成 manifest。~~
 - ~~上传 artifact。~~
-- 后续可自动附加到 GitHub Release。
+- ~~推送 `v*` 标签时自动附加到 GitHub Release。~~
 
 ### 阶段 5：增强
 
@@ -386,13 +385,13 @@ GitHub Release 可以上传 manifest 和 zip；内网共享目录直接复制同
 - SHA-256 校验。
 - 独立 `Updater.exe` 替换主程序。
 - 保留旧版本备份和失败回滚。
+- 推送版本标签时自动发布 GitHub Release。
 
 不做：
 
 - 差分更新。
 - 静默强制更新。
 - 多版本灰度。
-- 自动发布到 GitHub Release。
 - 数据库结构升级。
 
 这样能先验证现场更新链路，把风险控制在程序文件替换范围内。

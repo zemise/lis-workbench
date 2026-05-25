@@ -228,7 +228,7 @@ cmake --build build/windows-x64 -j
 
 ## Windows 安装包
 
-主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和 `检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact。
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和 `检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 

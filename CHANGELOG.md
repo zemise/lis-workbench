@@ -5,7 +5,7 @@
 - **自动更新基础设施**：新增自动更新设计文档、`update_core` 基础库和独立 `Updater.exe` target；构建脚本会同时构建主程序和更新器，NSIS 安装包会随主程序安装/卸载 `Updater.exe`。首版更新器支持 zip 包和已展开目录两种输入，可解压、备份、替换、失败回滚和重启主程序。
 - **自动更新源**：`update_core` 新增 `FolderUpdateSource`、`HttpUpdateSource` 和统一 `check_and_fetch_update` 流程，两个通道共用 manifest 解析、版本比较、更新包拉取和 SHA-256 校验。
 - **自动更新主程序集成**：系统设置页新增 `[Update]` 更新源配置和 `检查更新` 入口，支持后台按共享文件夹或 HTTP manifest 检查新版本、缓存更新包并校验 size / SHA-256；发现新版本后可确认安装，主程序会启动 `Updater.exe` 并退出。
-- **自动更新发布产物**：GitHub Actions 新增更新 zip 和 `manifest.json` artifact，更新 zip 与 manifest 采用共享目录/HTTP 共用的 `updates/manifest.json + updates/packages/*.zip` 结构。
+- **自动更新发布产物**：GitHub Actions 新增更新 zip 和 `manifest.json` artifact，更新 zip 与 manifest 采用共享目录、HTTP 和 GitHub Release 共用的同目录结构；推送与版本号一致的 `v*` 标签时会自动创建/更新 GitHub Release。
 - **构建脚本整理**：新增根目录 `lis.ps1` 和 `scripts/lis.ps1`，封装 `build / clean / run / package / rebuild-package` 常用命令。
 - **常规报告布局优化**：左侧区域宽度当前限制为 360 逻辑像素，内容区始终预留垂直滚动条宽度，避免有无滚动条时宽度跳变。
 - **常规报告年龄显示**：左侧年龄回填会拆分年龄数字和单位，单位下拉固定提供 `岁 / 月 / 天 / 小时 / 分` 并按查询结果自动匹配。

@@ -3,9 +3,13 @@ name: Build LIS Workbench
 on:
   push:
     branches: [main, feat/*]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -124,3 +128,41 @@ jobs:
           path: |
             build/main-app/Release/lis_workbench.exe
             build/main-app/Release/Updater.exe
+
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = "${{ steps.version.outputs.value }}"
+          if ($tag -ne $version) {
+            throw "Release tag '$tag' does not match src/version.h version '$version'"
+          }
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $installer = "out\windows\installer\LISWorkbench-Setup-$version-win7-win11.exe"
+          $manifest = "out\windows\update\updates\manifest.json"
+          $package = "out\windows\update\updates\LISWorkbench-$version-win7-win11.zip"
+
+          foreach ($file in @($installer, $manifest, $package)) {
+            if (-not (Test-Path $file)) {
+              throw "Release asset missing: $file"
+            }
+          }
+
+          $notes = "LIS Workbench $version`n`nWindows 7-11 installer, automatic-update manifest, and automatic-update zip package."
+          & gh release view $version --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $version $installer $manifest $package --clobber
+          } else {
+            & gh release create $version $installer $manifest $package --title "LIS Workbench $version" --notes $notes --verify-tag
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release publish failed"
+          }

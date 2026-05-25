@@ -28,14 +28,13 @@ if (-not (Test-Path $updaterExe)) {
 }
 
 $updatesRoot = Join-Path $OutputRoot "updates"
-$packagesDir = Join-Path $updatesRoot "packages"
 $stageDir = Join-Path $OutputRoot "package-root"
 $packageName = "LISWorkbench-$Version-win7-win11.zip"
-$packagePath = Join-Path $packagesDir $packageName
+$packagePath = Join-Path $updatesRoot $packageName
 $manifestPath = Join-Path $updatesRoot "manifest.json"
 
 Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $stageDir, $packagesDir | Out-Null
+New-Item -ItemType Directory -Force -Path $stageDir, $updatesRoot | Out-Null
 
 Copy-Item -LiteralPath $appExe -Destination $stageDir
 Copy-Item -LiteralPath $updaterExe -Destination $stageDir
@@ -56,7 +55,7 @@ $manifest = [ordered]@{
     minUpdaterVersion = "1.0.0"
     publishedAt = $publishedAt
     package = [ordered]@{
-        file = "packages/$packageName"
+        file = $packageName
         sha256 = $hash
         size = $size
     }
