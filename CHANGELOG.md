@@ -1,10 +1,13 @@
 # Changelog
 
-## v2026.05.28
+## v2026.05.28.2
 
+- **常规报告危急值提示**：中间结果列表优先采用 `LS_AS_REPENTRY.NORMAL_WJ` 的 LIS 判定结果，并保留客户端按 `LS_AS_DEF_ITEMSCOPE.DNBOUND1 / UPBOUND1` 计算危急值的能力，用于当前展示兜底和后续仪器输入后的实时判断。
+- **常规报告危急值联动**：右侧信息列表按验单号检查是否存在 `LS_AS_REPENTRY.NORMAL_WJ=9`，列表刷新后无需点选也能提示危急值；未审核且未发送显示 `#FAC0CB`，已审核且已发送显示 `#FFFF39`，并保留 `LS_AS_WjzMessage` 未删除记录的已发送黄色提示。
+- **常规报告危急值统计**：右侧顶部第二行改为显示 `危急报告数` 和 `危急报告已审`，分别统计当前列表中的危急值报告总数及其中已审核已发送的报告数。
 - **LabelPrint 来源选择**：`lis.ps1` 新增 `-LabelPrintSource github|local|package`，正式打包可默认从 GitHub Release 下载 LabelPrint，本地联调可显式使用本地源码，已有解压包可继续通过 `-LabelPrintPackagePath` 使用。
 - **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.9` release 包。
-- 版本号 v2026.05.28。
+- 版本号 v2026.05.28.2。
 
 ## v2026.05.25.2
 

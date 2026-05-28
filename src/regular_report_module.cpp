@@ -130,7 +130,6 @@ constexpr int RIGHT_DATE_BUTTON_W = 72;
 constexpr int AUTO_REFRESH_DEFAULT_SECONDS = 10;
 constexpr int AUTO_REFRESH_MIN_SECONDS = 5;
 constexpr int AUTO_REFRESH_MAX_SECONDS = 3600;
-constexpr const wchar_t* RIGHT_SUMMARY_LINE2 = L"危急报告已阅:1；急诊报告已阅:2；危急报告未阅:3；急诊报告未阅:3；";
 constexpr const wchar_t* MACHINE_PICKER_CLASS = L"RegularReportMachinePicker";
 constexpr int MACHINE_PICKER_CLIENT_W = 256;
 constexpr int MACHINE_PICKER_INITIAL_H = 182;
@@ -148,6 +147,12 @@ constexpr int MACHINE_PICKER_MAX_ROWS = 8;
 constexpr int MACHINE_PICKER_HEADER_H = 28;
 constexpr int MACHINE_PICKER_BOTTOM_PAD = 10;
 constexpr int MACHINE_PICKER_LIST_EXTRA_H = 6;
+const COLORREF COLOR_WHITE = RGB(0xFF, 0xFF, 0xFF);
+const COLORREF COLOR_RESULT_SIDE_BG = RGB(0xF0, 0xF0, 0xF0);
+const COLORREF COLOR_REPORT_REVIEWED = RGB(0x6F, 0x94, 0xE6);
+const COLORREF COLOR_REPORT_SENT = RGB(0x98, 0xBB, 0x8F);
+const COLORREF COLOR_CRITICAL_PENDING = RGB(0xFA, 0xC0, 0xCB);
+const COLORREF COLOR_CRITICAL_FINAL = RGB(0xFF, 0xFF, 0x39);
 
 struct ColumnDef {
     int index;
@@ -357,6 +362,22 @@ std::wstring rightSummaryLine1(const RegularReportState* st) {
     return L"样本数(" + std::to_wstring(sampleCount) + L"):上机数(" +
            std::to_wstring(machineCount) + L"):审核数(" + std::to_wstring(reviewedCount) +
            L"):发送数(" + std::to_wstring(sentCount) + L")";
+}
+
+std::wstring rightSummaryLine2(const RegularReportState* st) {
+    int criticalCount = 0;
+    int reviewedCriticalCount = 0;
+    if (st) {
+        for (const auto& row : st->reportRows) {
+            if (search::trim(row.critical_result_flag) != "1") continue;
+            ++criticalCount;
+            if (search::trim(row.chk_flag) == "T" && search::trim(row.conf) == "S") {
+                ++reviewedCriticalCount;
+            }
+        }
+    }
+    return L"危急报告数:" + std::to_wstring(criticalCount) +
+           L"；危急报告已审:" + std::to_wstring(reviewedCriticalCount) + L"；";
 }
 
 const wchar_t* quickMachineCodeKey(int slot) {
@@ -733,14 +754,16 @@ int wrappedTextHeightPx(HWND hwnd, HFONT font, const wchar_t* text, int widthPx,
     return std::max(minHeightPx, static_cast<int>(rc.bottom - rc.top) + S(hwnd, 2));
 }
 
-RightHeaderLayout rightHeaderLayout(HWND hwnd, HFONT font, int panelWidthPx, const std::wstring& summaryLine1) {
+RightHeaderLayout rightHeaderLayout(HWND hwnd, HFONT font, int panelWidthPx,
+                                    const std::wstring& summaryLine1,
+                                    const std::wstring& summaryLine2) {
     const int innerX = S(hwnd, PAD);
     const int innerW = std::max(S(hwnd, 80), panelWidthPx - S(hwnd, PAD * 2));
     const int top = S(hwnd, 4);
     const int gap = S(hwnd, 2);
     const int line1H = wrappedTextHeightPx(hwnd, font, summaryLine1.c_str(), innerW, S(hwnd, 20));
     const int line2Y = top + line1H + gap;
-    const int line2H = wrappedTextHeightPx(hwnd, font, RIGHT_SUMMARY_LINE2, innerW, S(hwnd, 24));
+    const int line2H = wrappedTextHeightPx(hwnd, font, summaryLine2.c_str(), innerW, S(hwnd, 24));
     RightHeaderLayout layout{};
     layout.line1 = RECT{innerX, top, innerX + innerW, top + line1H};
     layout.line2 = RECT{innerX, line2Y, innerX + innerW, line2Y + line2H};
@@ -1382,28 +1405,51 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
+bool reportIsSent(const search::ReportRow& report) {
+    return search::trim(report.conf) == "S";
+}
+
+bool reportIsReviewed(const search::ReportRow& report) {
+    return search::trim(report.chk_flag) == "T";
+}
+
+bool reportHasSavedCriticalResult(const search::ReportRow& report) {
+    return search::trim(report.critical_result_flag) == "1";
+}
+
+bool reportHasCriticalMessage(const search::ReportRow& report) {
+    return search::trim(report.wjz_message_flag) == "1";
+}
+
 COLORREF reportRowColor(const RegularReportState* st, int row) {
     if (!st || row < 0 || row >= static_cast<int>(st->reportRows.size())) {
-        return RGB(0xFF, 0xFF, 0xFF);
+        return COLOR_WHITE;
     }
     const auto& report = st->reportRows[static_cast<size_t>(row)];
-    const auto conf = search::trim(report.conf);
-    if (conf == "S") {
-        return RGB(0x98, 0xBB, 0x8F);
+    const bool sent = reportIsSent(report);
+    const bool reviewed = reportIsReviewed(report);
+    const bool hasSavedCritical = reportHasSavedCriticalResult(report);
+    if (sent && reviewed && (hasSavedCritical || reportHasCriticalMessage(report))) {
+        return COLOR_CRITICAL_FINAL;
     }
-    const auto chkFlag = search::trim(report.chk_flag);
-    if (chkFlag == "T") {
-        return RGB(0x6F, 0x94, 0xE6);
+    if (hasSavedCritical && !sent && !reviewed) {
+        return COLOR_CRITICAL_PENDING;
     }
-    return RGB(0xFF, 0xFF, 0xFF);
+    if (sent) {
+        return COLOR_REPORT_SENT;
+    }
+    if (reviewed) {
+        return COLOR_REPORT_REVIEWED;
+    }
+    return COLOR_WHITE;
 }
 
 COLORREF reportPrintCellColor(const RegularReportState* st, int row) {
     if (!st || row < 0 || row >= static_cast<int>(st->reportRows.size())) {
-        return RGB(0xFF, 0xFF, 0xFF);
+        return COLOR_WHITE;
     }
     const auto printFlag = search::trim(st->reportRows[static_cast<size_t>(row)].zymz_print);
-    return printFlag == "1" ? RGB(0xA6, 0xEC, 0x9A) : RGB(0xFF, 0xFF, 0xFF);
+    return printFlag == "1" ? RGB(0xA6, 0xEC, 0x9A) : COLOR_WHITE;
 }
 
 COLORREF resultTextColor(const search::ResultRow& row) {
@@ -1412,6 +1458,43 @@ COLORREF resultTextColor(const search::ResultRow& row) {
         case search::ResultRowTone::Low:  return RGB(0, 0, 220);
         default:                          return CLR_INVALID;
     }
+}
+
+bool parseNumericText(const std::string& value, double& out) {
+    const std::string text = search::trim(value);
+    const char* p = text.c_str();
+    while (*p && *p != '+' && *p != '-' && *p != '.' &&
+           (*p < '0' || *p > '9')) {
+        ++p;
+    }
+    if (!*p) return false;
+    char* end = nullptr;
+    out = std::strtod(p, &end);
+    return end && end != p;
+}
+
+bool resultValueCrossesCriticalScope(const search::ResultRow& row) {
+    double result = 0.0;
+    if (!parseNumericText(row.result, result)) return false;
+
+    double high = 0.0;
+    if (parseNumericText(row.critical_high_bound, high) && result >= high) {
+        return true;
+    }
+
+    double low = 0.0;
+    if (parseNumericText(row.critical_low_bound, low) && result <= low) {
+        return true;
+    }
+    return false;
+}
+
+bool resultHasSavedCriticalValue(const search::ResultRow& row) {
+    return search::trim(row.normal_wj) == "9";
+}
+
+bool resultRowHasCriticalValue(const search::ResultRow& row) {
+    return resultHasSavedCriticalValue(row) || resultValueCrossesCriticalScope(row);
 }
 
 bool listViewRowSelected(HWND list, int row) {
@@ -2653,14 +2736,23 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     if (customDrawListSelection(cd, st ? st->resultList : nullptr, row)) {
                         return CDRF_NEWFONT;
                     }
-                    cd->clrTextBk = cd->iSubItem == RESULT_VALUE_COL ? RGB(0xFF, 0xFF, 0xFF)
-                                                                      : RGB(0xF0, 0xF0, 0xF0);
                     const auto index = static_cast<size_t>(cd->nmcd.dwItemSpec);
                     if (st && index < st->resultRows.size()) {
-                        const COLORREF color = resultTextColor(st->resultRows[index]);
+                        const auto& rowData = st->resultRows[index];
+                        if (cd->iSubItem == RESULT_VALUE_COL) {
+                            cd->clrTextBk = COLOR_WHITE;
+                        } else if (resultRowHasCriticalValue(rowData)) {
+                            cd->clrTextBk = COLOR_CRITICAL_FINAL;
+                        } else {
+                            cd->clrTextBk = COLOR_RESULT_SIDE_BG;
+                        }
+                        const COLORREF color = resultTextColor(rowData);
                         if (color != CLR_INVALID) {
                             cd->clrText = color;
                         }
+                    } else {
+                        cd->clrTextBk = cd->iSubItem == RESULT_VALUE_COL ? COLOR_WHITE
+                                                                          : COLOR_RESULT_SIDE_BG;
                     }
                     return CDRF_NEWFONT;
                 }
@@ -2712,8 +2804,9 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             FillRect(dc, &client, st && st->panelBrush ? st->panelBrush : GetSysColorBrush(COLOR_BTNFACE));
             if (st) {
                 const std::wstring summaryLine1 = rightSummaryLine1(st);
+                const std::wstring summaryLine2 = rightSummaryLine2(st);
                 const RightHeaderLayout header = rightHeaderLayout(hwnd, st->ctx.uiFont, client.right - client.left,
-                                                                   summaryLine1);
+                                                                   summaryLine1, summaryLine2);
                 HGDIOBJ oldFont = st->ctx.uiFont ? SelectObject(dc, st->ctx.uiFont) : nullptr;
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, RGB(0, 0, 0xCC));
@@ -2724,7 +2817,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                          st->blackBrush ? st->blackBrush : reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
                 SetTextColor(dc, RGB(0xFF, 0xFF, 0));
                 RECT line2 = header.line2;
-                DrawTextW(dc, RIGHT_SUMMARY_LINE2, -1, &line2, DT_WORDBREAK | DT_CENTER | DT_VCENTER);
+                DrawTextW(dc, summaryLine2.c_str(), -1, &line2, DT_WORDBREAK | DT_CENTER | DT_VCENTER);
                 if (oldFont) SelectObject(dc, oldFont);
             }
             EndPaint(hwnd, &ps);
@@ -3901,7 +3994,8 @@ void layout(HWND hwnd, RegularReportState* st) {
                centerW - S(hwnd, PAD * 2), S(hwnd, MIDDLE_STATUS_H), TRUE);
     const int rightInnerX = S(hwnd, PAD);
     const int rightInnerW = std::max(S(hwnd, 80), rightW - S(hwnd, PAD * 2));
-    const RightHeaderLayout rightHeader = rightHeaderLayout(hwnd, st->ctx.uiFont, rightW, rightSummaryLine1(st));
+    const RightHeaderLayout rightHeader = rightHeaderLayout(hwnd, st->ctx.uiFont, rightW,
+                                                            rightSummaryLine1(st), rightSummaryLine2(st));
     const int rightTabY = rightHeader.bottom + S(hwnd, 6);
     const int rightSearchLabelY = rightTabY + S(hwnd, RIGHT_SEARCH_LABEL_Y - RIGHT_TAB_Y);
     const int rightSearchControlY = rightTabY + S(hwnd, RIGHT_SEARCH_CONTROL_Y - RIGHT_TAB_Y);
