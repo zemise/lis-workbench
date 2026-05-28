@@ -211,6 +211,8 @@ struct RegularReportState {
     HWND reportNoEdit = nullptr;
     HWND operNoEdit = nullptr;
     HWND patientTypeCombo = nullptr;
+    HWND urgentCheck = nullptr;
+    HWND urgentLabel = nullptr;
     HWND urgentEdit = nullptr;
     HWND barcodeEdit = nullptr;
     HWND regNoEdit = nullptr;
@@ -367,17 +369,30 @@ std::wstring rightSummaryLine1(const RegularReportState* st) {
 std::wstring rightSummaryLine2(const RegularReportState* st) {
     int criticalCount = 0;
     int reviewedCriticalCount = 0;
+    int emergencyCount = 0;
+    int reviewedEmergencyCount = 0;
     if (st) {
         for (const auto& row : st->reportRows) {
-            if (search::trim(row.critical_result_flag) != "1") continue;
-            ++criticalCount;
-            if (search::trim(row.chk_flag) == "T" && search::trim(row.conf) == "S") {
-                ++reviewedCriticalCount;
+            const std::string reportType = search::trim(row.report_type);
+            const bool reviewedAndSent = search::trim(row.chk_flag) == "T" && search::trim(row.conf) == "S";
+            if (reportType == "9") {
+                ++criticalCount;
+                if (reviewedAndSent) {
+                    ++reviewedCriticalCount;
+                }
+            }
+            if (reportType == "0" || search::trim(row.barcode_jz_flag) == "1") {
+                ++emergencyCount;
+                if (reviewedAndSent) {
+                    ++reviewedEmergencyCount;
+                }
             }
         }
     }
     return L"危急报告数:" + std::to_wstring(criticalCount) +
-           L"；危急报告已审:" + std::to_wstring(reviewedCriticalCount) + L"；";
+           L"；危急报告已审:" + std::to_wstring(reviewedCriticalCount) +
+           L"；急诊报告数:" + std::to_wstring(emergencyCount) +
+           L"；急诊报告已审:" + std::to_wstring(reviewedEmergencyCount) + L"；";
 }
 
 const wchar_t* quickMachineCodeKey(int slot) {
@@ -1209,6 +1224,8 @@ void clearLeftPanel(RegularReportState* st) {
     st->reportNoEdit = nullptr;
     st->operNoEdit = nullptr;
     st->patientTypeCombo = nullptr;
+    st->urgentCheck = nullptr;
+    st->urgentLabel = nullptr;
     st->urgentEdit = nullptr;
     st->barcodeEdit = nullptr;
     st->regNoEdit = nullptr;
@@ -1391,6 +1408,11 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             HWND ctl = reinterpret_cast<HWND>(lp);
+            if (GetPropW(ctl, L"RegularEmergencyLabel")) {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(0xE6, 0, 0));
+                return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
+            }
             if (GetPropW(ctl, L"RegularLeftLabel")) {
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, RGB(0x00, 0x00, 0xC4));
@@ -1413,12 +1435,20 @@ bool reportIsReviewed(const search::ReportRow& report) {
     return search::trim(report.chk_flag) == "T";
 }
 
-bool reportHasSavedCriticalResult(const search::ReportRow& report) {
-    return search::trim(report.critical_result_flag) == "1";
+bool reportIsEmergencyReport(const search::ReportRow& report) {
+    return search::trim(report.report_type) == "0";
 }
 
-bool reportHasCriticalMessage(const search::ReportRow& report) {
-    return search::trim(report.wjz_message_flag) == "1";
+bool reportHasBarcodeEmergencyLabel(const search::ReportRow& report) {
+    return search::trim(report.barcode_jz_flag) == "1";
+}
+
+bool reportUsesEmergencyTextColor(const search::ReportRow& report) {
+    return reportIsEmergencyReport(report) || reportHasBarcodeEmergencyLabel(report);
+}
+
+bool reportIsCriticalReport(const search::ReportRow& report) {
+    return search::trim(report.report_type) == "9";
 }
 
 COLORREF reportRowColor(const RegularReportState* st, int row) {
@@ -1428,11 +1458,11 @@ COLORREF reportRowColor(const RegularReportState* st, int row) {
     const auto& report = st->reportRows[static_cast<size_t>(row)];
     const bool sent = reportIsSent(report);
     const bool reviewed = reportIsReviewed(report);
-    const bool hasSavedCritical = reportHasSavedCriticalResult(report);
-    if (sent && reviewed && (hasSavedCritical || reportHasCriticalMessage(report))) {
+    const bool critical = reportIsCriticalReport(report);
+    if (sent && reviewed && critical) {
         return COLOR_CRITICAL_FINAL;
     }
-    if (hasSavedCritical && !sent && !reviewed) {
+    if (critical && !sent && !reviewed) {
         return COLOR_CRITICAL_PENDING;
     }
     if (sent) {
@@ -2902,7 +2932,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                             ? reportPrintCellColor(st, row)
                                             : reportRowColor(st, row);
                         cd->clrText = st && row >= 0 && row < static_cast<int>(st->reportRows.size()) &&
-                                              search::trim(st->reportRows[static_cast<size_t>(row)].emergency_flag) == "1"
+                                              reportUsesEmergencyTextColor(st->reportRows[static_cast<size_t>(row)])
                                           ? RGB(0xE6, 0, 0)
                                           : RGB(0, 0, 0);
                     }
@@ -3051,7 +3081,7 @@ bool reportSampleLess(const search::ReportRow& a, const search::ReportRow& b) {
 
 std::string reportSortValue(const search::ReportRow& row, int column) {
     switch (column) {
-        case 0: return row.emergency_flag;
+        case 0: return row.barcode_jz_flag;
         case 1: return row.oper_no;
         case 2: return row.name;
         case 3: return row.sex;
@@ -3130,7 +3160,7 @@ int findReportIndexById(const std::vector<search::ReportRow>& rows, const std::s
 std::array<std::wstring, REPORT_COLUMN_COUNT> reportDisplayValues(const search::ReportRow& data) {
     auto w = [](const std::string& value) { return search::utf8_to_wide(value); };
     std::array<std::wstring, REPORT_COLUMN_COUNT> values{};
-    values[0] = search::trim(data.emergency_flag) == "1" ? L"急" : L"";
+    values[0] = reportHasBarcodeEmergencyLabel(data) ? L"急" : L"";
     values[1] = w(data.oper_no);
     values[2] = w(data.name);
     values[3] = w(data.sex);
@@ -3291,6 +3321,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected) {
         setControlText(st->reportNoEdit, "");
         setControlText(st->operNoEdit, "");
         setComboSingleText(st->patientTypeCombo, "");
+        if (st->urgentCheck) SendMessageW(st->urgentCheck, BM_SETCHECK, BST_UNCHECKED, 0);
         setControlText(st->urgentEdit, "");
         setControlText(st->barcodeEdit, "");
         setControlText(st->regNoEdit, "");
@@ -3325,6 +3356,10 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected) {
     setControlText(st->reportNoEdit, row.rep_no);
     setControlText(st->operNoEdit, row.oper_no);
     setComboSingleText(st->patientTypeCombo, row.patient_type);
+    if (st->urgentCheck) {
+        SendMessageW(st->urgentCheck, BM_SETCHECK,
+                     reportUsesEmergencyTextColor(row) ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
     setControlText(st->urgentEdit, "");
     setControlText(st->barcodeEdit, row.txm_no);
     setControlText(st->regNoEdit, row.reg_no);
@@ -3659,6 +3694,14 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
         add(combo);
         return combo;
     };
+    auto checkbox = [&](int px, int py, int w, int h) {
+        HWND hwnd = CreateWindowExW(0, L"BUTTON", L"",
+                                    WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_CHECKBOX | BS_RIGHTBUTTON,
+                                    x(px), y(py), x(fitW(px, w, 16)), x(std::max(h, editH)),
+                                    p, nullptr, GetModuleHandleW(nullptr), nullptr);
+        add(hwnd);
+        return hwnd;
+    };
     auto datePicker = [&](int px, int py, int w, int h, const wchar_t* format, const SYSTEMTIME* value, int id = 0) {
         HWND hwnd = makeDatePicker(p, x(px), y(py), x(fitW(px, w, 80)), x(std::max(h, editH)), format, value, id);
         add(hwnd);
@@ -3686,8 +3729,17 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     label(L"检验单号", labelX, rowY(3), labelW); st->reportNoEdit = edit(L"", inputX, rowY(3) - 2, narrowLeftShortW, editH, ES_CENTER | ES_READONLY);
     label(L"样本号", narrowRightLabelX, rowY(3), rightLabelW); st->operNoEdit = edit(L"", narrowRightEditX, rowY(3) - 2, narrowRightEditW, editH, ES_CENTER);
     SetWindowSubclass(st->operNoEdit, sampleInputProc, SAMPLE_INPUT_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
-    label(L"病人类型", labelX, rowY(4), labelW); st->patientTypeCombo = combo(L"", inputX, rowY(4) - 2, narrowLeftShortW, comboItemH * 5);
-    label(L"急诊", narrowRightLabelX, rowY(4), rightLabelW); st->urgentEdit = edit(L"", narrowRightEditX, rowY(4) - 2, narrowRightEditW, editH);
+    label(L"病人类型", labelX, rowY(4), labelW);
+    const int urgentCheckW = 20;
+    // Offset into the label area to counter the native checkbox's internal padding.
+    const int urgentCheckGap = -12;
+    const int urgentCheckX = narrowRightLabelX - urgentCheckW - urgentCheckGap;
+    const int patientTypeW = std::max(42, urgentCheckX - inputX - 6);
+    st->patientTypeCombo = combo(L"", inputX, rowY(4) - 2, patientTypeW, comboItemH * 5);
+    st->urgentCheck = checkbox(urgentCheckX, rowY(4) - 2, urgentCheckW, editH + 2);
+    st->urgentLabel = label(L"急诊", narrowRightLabelX, rowY(4), rightLabelW);
+    SetPropW(st->urgentLabel, L"RegularEmergencyLabel", reinterpret_cast<HANDLE>(1));
+    st->urgentEdit = edit(L"", narrowRightEditX, rowY(4) - 2, narrowRightEditW, editH);
     label(L"条形码", labelX, rowY(5), labelW); st->barcodeEdit = edit(L"", inputX, rowY(5) - 2, fullInputW, editH, ES_CENTER);
     label(L"住院号:", labelX, rowY(6), labelW); st->regNoEdit = edit(L"", inputX, rowY(6) - 2, fullInputW, editH);
 
@@ -4133,6 +4185,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             HWND ctl = reinterpret_cast<HWND>(lp);
+            if (GetPropW(ctl, L"RegularEmergencyLabel")) {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(0xE6, 0, 0));
+                return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
+            }
             if (GetPropW(ctl, L"RegularLeftLabel")) {
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, RGB(0x00, 0x00, 0xC4));

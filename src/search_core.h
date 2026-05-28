@@ -61,9 +61,8 @@ struct ReportRow {
     std::string diag_name;
     std::string create_time;
     std::string patient_phone;
-    std::string emergency_flag;
-    std::string wjz_message_flag;      // LS_AS_WjzMessage exists for this REP_NO.
-    std::string critical_result_flag;  // Any LS_AS_REPENTRY.NORMAL_WJ=9 for this REP_NO.
+    std::string report_type;           // LS_AS_REPORT.assaypat_type: 0=emergency, 9=critical.
+    std::string barcode_jz_flag;       // LS_AS_BARCODE.JZ_FLAG, used only for the right-list label.
 };
 
 struct RoomOption {

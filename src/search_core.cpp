@@ -533,11 +533,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(NULLIF(LTRIM(RTRIM(emp_dean.NAME)),''),isnull(cast(r.DEAN_OPER as varchar(20)),'')),"
         << " isnull(LTRIM(RTRIM(emp_req.NAME)),''),"
         << " isnull(r.DIAG_NAME,''),isnull(r.CREATE_TIME,''),isnull(r.PAT_PHONE,''),"
-        << " isnull(cast(bar.JZ_FLAG as varchar(20)),''),"
-        << " CASE WHEN EXISTS (SELECT 1 FROM LS_AS_WjzMessage w WITH (NOLOCK)"
-        << " WHERE isnull(w.Delete_Bit,0)=0 AND w.Rep_No=r.REP_NO) THEN '1' ELSE '' END,"
-        << " CASE WHEN EXISTS (SELECT 1 FROM LS_AS_REPENTRY ew WITH (NOLOCK)"
-        << " WHERE ew.DELETE_BIT=0 AND ew.REP_NO=r.REP_NO AND ew.NORMAL_WJ=9) THEN '1' ELSE '' END"
+        << " isnull(cast(r.assaypat_type as varchar(20)),''),"
+        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -628,9 +625,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.diag_name = fetch_column(stmt, 30);
         row.create_time = fetch_column(stmt, 31);
         row.patient_phone = fetch_column(stmt, 32);
-        row.emergency_flag = fetch_column(stmt, 33);
-        row.wjz_message_flag = fetch_column(stmt, 34);
-        row.critical_result_flag = fetch_column(stmt, 35);
+        row.report_type = fetch_column(stmt, 33);
+        row.barcode_jz_flag = fetch_column(stmt, 34);
         rows.push_back(row);
     }
 

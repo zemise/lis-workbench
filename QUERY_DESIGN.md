@@ -223,7 +223,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 上机时间 | `LS_AS_REPORT.CREATE_TIME` |
 | 电话 | `LS_AS_REPORT.PAT_PHONE` |
 
-行背景色规则：`CONF='S'` 优先显示深绿色；否则 `CHK_FLAG='T'` 显示蓝色；未审核保持默认背景色。若 `JZ_FLAG='1'`，该行文字显示为红色。
+行背景色规则：报告级危急状态按 `LS_AS_REPORT.assaypat_type = 9` 判断，未审核且未发送显示粉色，已审核且已发送显示黄色；非危急报告中 `CONF='S'` 优先显示深绿色，否则 `CHK_FLAG='T'` 显示蓝色，未审核保持默认背景色。若 `assaypat_type = 0` 或 `JZ_FLAG = 1`，该行文字显示为红色。
 
 中间结果列表和右侧信息列表均使用 `NM_CUSTOMDRAW` 处理业务行色。选中行优先使用系统高亮色，并清理 `CDIS_SELECTED/CDIS_FOCUS` 后交回默认绘制，避免 ListView 失去焦点时被系统非活动选中态覆盖成浅色；收到 `NM_KILLFOCUS` 时会重绘当前选中行。
 
@@ -231,7 +231,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 
 中间结果列表的 `结果` 单元格支持界面内临时编辑。实现方式是单击 `结果` 子项时，在该单元格位置创建覆盖 `EDIT` 控件；回车时只更新 `st->resultRows[row].result` 和当前 ListView 文本，并自动跳到下一行 `结果` 单元格继续编辑；失焦或 Esc 取消。失焦取消时不强制把焦点设回 ListView，避免点击其他按钮时第一次点击被焦点切换消耗。该功能不调用任何数据库更新语句，切换报告、重新查询或关闭窗口时会取消未完成编辑。
 
-右侧顶部第一行摘要只统计当前已加载到列表中的内存数据，不额外访问数据库：`样本数` 统计 `REP_NO` 非空行，`上机数` 统计 `NAME` 非空行，`审核数` 统计 `CHK_FLAG='T'` 行，`发送数` 统计 `CONF='S'` 行。
+右侧顶部摘要只统计当前已加载到列表中的内存数据，不额外访问数据库：第一行 `样本数` 统计 `REP_NO` 非空行，`上机数` 统计 `NAME` 非空行，`审核数` 统计 `CHK_FLAG='T'` 行，`发送数` 统计 `CONF='S'` 行；第二行 `危急报告数` 统计 `assaypat_type=9` 行，`急诊报告数` 统计 `assaypat_type=0` 或 `JZ_FLAG=1` 行，对应 `已审` 统计均要求 `CHK_FLAG='T'` 且 `CONF='S'`。
 
 点击右侧信息列表表头时，只对内存中的 `st->reportRows` 做 `std::stable_sort` 并重绘列表，不重新访问数据库。排序前会记录当前选中行的 `LS_AS_REPORT.ID` 和已勾选行的 ID，排序后再恢复选中和勾选状态。
 
