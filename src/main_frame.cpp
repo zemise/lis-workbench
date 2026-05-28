@@ -6,10 +6,12 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <commctrl.h>
+#include <shellapi.h>
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -23,6 +25,8 @@
 #include "query_module.h"
 #include "regular_report_module.h"
 #include "settings_module.h"
+#include "update_config.h"
+#include "update_source.h"
 #include "version.h"
 #include "win32_control_id.h"
 namespace {
@@ -32,6 +36,7 @@ constexpr int IDM_BLOOD        = 1002;
 constexpr int IDM_SETTINGS     = 2001;
 constexpr int IDM_EXIT         = 2002;
 constexpr int IDM_ABOUT        = 2003;
+constexpr int IDM_CHECK_UPDATE = 2004;
 constexpr int IDM_CASCADE      = 2101;
 constexpr int IDM_TILE_H       = 2102;
 constexpr int IDM_TILE_V       = 2103;
@@ -46,14 +51,40 @@ constexpr int IDM_TOOL4        = 3014;
 constexpr int IDM_TOOL5        = 3015;
 constexpr int ID_STATUS        = 4001;
 constexpr int ID_TIMER         = 5001;
+constexpr int ID_AUTO_UPDATE_TIMER = 5002;
+constexpr UINT WM_AUTO_UPDATE_CHECK_DONE = WM_APP + 31;
+constexpr UINT WM_MANUAL_UPDATE_CHECK_DONE = WM_APP + 32;
 
 constexpr const wchar_t* MDI_CHILD_CLASS = L"MdiPlaceholderChild";
+constexpr const wchar_t* UPDATE_CACHE_DIR_NAME = L"LISWorkbench\\UpdateCache";
+constexpr const wchar_t* UPDATE_APP_EXE_NAME = L"lis_workbench.exe";
+constexpr const wchar_t* UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 
 app::Context g_ctx;
+bool g_manualUpdateChecking = false;
 
 struct MenuDrawText {
     std::wstring text;
     bool topLevel = false;
+};
+
+struct AutoUpdateCheckDone {
+    bool ok = false;
+    bool updateAvailable = false;
+    std::string version;
+    std::string error;
+};
+
+struct ManualUpdateCheckDone {
+    bool ok = false;
+    lis_update::UpdateCheckResult result;
+    std::string error;
+};
+
+struct UpdateSourceConfig {
+    std::wstring sourceType;
+    std::wstring manifestUrl;
+    std::wstring folderPath;
 };
 
 std::vector<std::unique_ptr<MenuDrawText>> g_menuDrawTexts;
@@ -228,6 +259,210 @@ ModuleContext makeCtx() {
              g_ctx.dbSettings, g_ctx.fontSize, &g_ctx };
 }
 
+void setMainStatusText(const wchar_t* text) {
+    HWND sb = GetDlgItem(g_ctx.mainWindow, ID_STATUS);
+    if (sb) SendMessageW(sb, SB_SETTEXT, 0, reinterpret_cast<LPARAM>(text ? text : L""));
+}
+
+UpdateSourceConfig loadUpdateSourceConfig() {
+    UpdateSourceConfig cfg;
+    cfg.sourceType = search::load_module_str(
+        lis_update::kConfigSection, L"SourceType", lis_update::kSourceFolder);
+    if (cfg.sourceType != lis_update::kSourceHttp) {
+        cfg.sourceType = lis_update::kSourceFolder;
+    }
+
+    cfg.manifestUrl = search::load_module_str(
+        lis_update::kConfigSection, L"ManifestUrl", lis_update::kDefaultGithubManifestUrl);
+    if (cfg.manifestUrl.empty()) {
+        cfg.manifestUrl = lis_update::kDefaultGithubManifestUrl;
+    }
+    cfg.folderPath = search::load_module_str(lis_update::kConfigSection, L"FolderPath", L"");
+    return cfg;
+}
+
+bool localFileExists(const std::wstring& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring quoteProcessArg(const std::wstring& value) {
+    std::wstring out = L"\"";
+    for (wchar_t ch : value) {
+        if (ch == L'"') out += L'\\';
+        out += ch;
+    }
+    out += L"\"";
+    return out;
+}
+
+std::wstring programDataUpdateCacheDir() {
+    DWORD needed = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+    std::wstring base;
+    if (needed > 0) {
+        std::wstring buffer(static_cast<size_t>(needed), L'\0');
+        DWORD written = GetEnvironmentVariableW(L"ProgramData", buffer.data(), needed);
+        if (written > 0 && written < needed) {
+            buffer.resize(static_cast<size_t>(written));
+            base = buffer;
+        }
+    }
+    if (base.empty()) {
+        base = search::module_dir();
+    }
+    return lis_update::join_update_path(base, UPDATE_CACHE_DIR_NAME);
+}
+
+bool launchUpdaterForPackage(HWND hwnd, const std::wstring& package_path) {
+    const std::wstring app_dir = search::module_dir();
+    const std::wstring updater_path = lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
+    if (!localFileExists(updater_path)) {
+        MessageBoxW(hwnd, L"安装目录中未找到 Updater.exe。", L"安装更新", MB_ICONERROR);
+        return false;
+    }
+
+    std::wstring args;
+    args += L"--app-dir " + quoteProcessArg(app_dir);
+    args += L" --app-exe " + quoteProcessArg(UPDATE_APP_EXE_NAME);
+    args += L" --package-file " + quoteProcessArg(package_path);
+    args += L" --pid " + std::to_wstring(GetCurrentProcessId());
+
+    HINSTANCE started = ShellExecuteW(nullptr, L"open", updater_path.c_str(), args.c_str(),
+                                      app_dir.c_str(), SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(started) <= 32) {
+        MessageBoxW(hwnd, L"启动 Updater.exe 失败。", L"安装更新", MB_ICONERROR);
+        return false;
+    }
+
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    return true;
+}
+
+void startManualUpdateCheck(HWND hwnd) {
+    if (g_manualUpdateChecking) {
+        MessageBoxW(hwnd, L"正在检查更新，请稍候。", L"检查更新", MB_ICONINFORMATION);
+        return;
+    }
+
+    const UpdateSourceConfig cfg = loadUpdateSourceConfig();
+    if (cfg.sourceType == lis_update::kSourceHttp) {
+        if (cfg.manifestUrl.empty()) {
+            MessageBoxW(hwnd, L"请先在系统设置中填写 HTTP manifest URL。", L"检查更新", MB_ICONWARNING);
+            return;
+        }
+    } else if (cfg.folderPath.empty()) {
+        MessageBoxW(hwnd, L"请先在系统设置中填写共享文件夹路径。", L"检查更新", MB_ICONWARNING);
+        return;
+    }
+
+    g_manualUpdateChecking = true;
+    setMainStatusText(L"正在检查更新...");
+
+    const std::wstring cache_dir = programDataUpdateCacheDir();
+    std::thread([hwnd, cfg, cache_dir]() {
+        auto* done = new ManualUpdateCheckDone;
+        std::unique_ptr<lis_update::IUpdateSource> source;
+        if (cfg.sourceType == lis_update::kSourceHttp) {
+            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
+        } else {
+            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
+        }
+
+        done->ok = lis_update::check_and_fetch_update(*source, search::kVersion,
+                                                      cache_dir, done->result, done->error);
+        if (!PostMessageW(hwnd, WM_MANUAL_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
+            delete done;
+        }
+    }).detach();
+}
+
+void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone& done) {
+    g_manualUpdateChecking = false;
+    setMainStatusText(L"就绪");
+
+    if (!done.ok) {
+        MessageBoxW(hwnd, search::utf8_to_wide(done.error).c_str(), L"检查更新失败", MB_ICONERROR);
+        return;
+    }
+
+    if (!done.result.update_available) {
+        const std::wstring message = L"当前已是最新版本。\r\n当前版本：" +
+                                     search::utf8_to_wide(search::kVersion);
+        MessageBoxW(hwnd, message.c_str(), L"检查更新", MB_ICONINFORMATION);
+        return;
+    }
+
+    const std::wstring message =
+        L"发现新版本：" + search::utf8_to_wide(done.result.manifest.version) +
+        L"\r\n更新包已缓存到：\r\n" + done.result.package_path +
+        L"\r\n\r\n是否立即安装并重启程序？";
+    const int answer = MessageBoxW(hwnd, message.c_str(), L"检查更新",
+                                   MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+    if (answer == IDYES) {
+        launchUpdaterForPackage(hwnd, done.result.package_path);
+    }
+}
+
+std::wstring todayUpdateStamp() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t buf[16]{};
+    swprintf(buf, 16, L"%04d%02d%02d", st.wYear, st.wMonth, st.wDay);
+    return buf;
+}
+
+bool shouldAutoCheckUpdateToday() {
+    if (!search::load_module_int(lis_update::kConfigSection, L"AutoCheck", 0)) {
+        return false;
+    }
+    const std::wstring today = todayUpdateStamp();
+    const std::wstring last = search::load_module_str(lis_update::kConfigSection, L"LastCheckTime", L"");
+    return last != today;
+}
+
+void markAutoCheckUpdateToday() {
+    search::save_module_str(lis_update::kConfigSection, L"LastCheckTime", todayUpdateStamp());
+}
+
+void startAutoUpdateCheck(HWND hwnd) {
+    const UpdateSourceConfig cfg = loadUpdateSourceConfig();
+
+    if (cfg.sourceType == lis_update::kSourceHttp && cfg.manifestUrl.empty()) return;
+    if (cfg.sourceType != lis_update::kSourceHttp && cfg.folderPath.empty()) return;
+
+    std::thread([hwnd, cfg]() {
+        auto* done = new AutoUpdateCheckDone;
+        std::unique_ptr<lis_update::IUpdateSource> source;
+        if (cfg.sourceType == lis_update::kSourceHttp) {
+            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
+        } else {
+            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
+        }
+
+        lis_update::UpdateManifest manifest;
+        done->ok = source->fetch_manifest(manifest, done->error);
+        if (done->ok && lis_update::compare_version_strings(manifest.version, search::kVersion) > 0) {
+            done->updateAvailable = true;
+            done->version = manifest.version;
+        }
+        if (!PostMessageW(hwnd, WM_AUTO_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
+            delete done;
+        }
+    }).detach();
+}
+
+void showAutoUpdateCheckResult(HWND hwnd, const AutoUpdateCheckDone& done) {
+    if (!done.ok || !done.updateAvailable) return;
+    const std::wstring message =
+        L"发现新版本：" + search::utf8_to_wide(done.version) +
+        L"\r\n是否现在下载并安装更新？";
+    const int answer = MessageBoxW(hwnd, message.c_str(), L"自动检查更新",
+                                   MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON2);
+    if (answer == IDYES) {
+        startManualUpdateCheck(hwnd);
+    }
+}
+
 void appendOwnerDrawItem(HMENU menu, UINT_PTR id, const wchar_t* text, bool enabled = true) {
     UINT flags = MF_OWNERDRAW | (enabled ? MF_ENABLED : MF_GRAYED);
     AppendMenuW(menu, flags, id, reinterpret_cast<LPCWSTR>(addMenuDrawText(text, false)));
@@ -273,6 +508,7 @@ HMENU setupMenus(HWND hwnd) {
     // Fixed items appended to last menu (L"系统")
     for (int j = 0; j < subCount; j++) {
         if (wcscmp(subNames[j], L"系统") == 0) {
+            appendOwnerDrawItem(subMenus[j], IDM_CHECK_UPDATE, L"检查更新(&U)...");
             AppendMenuW(subMenus[j], MF_SEPARATOR, 0, nullptr);
             appendOwnerDrawItem(subMenus[j], IDM_ABOUT, L"关于(&A)...");
             appendOwnerDrawItem(subMenus[j], IDM_EXIT, L"退出(&X)");
@@ -392,10 +628,35 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
             SetTimer(hwnd, ID_TIMER, 1000, nullptr);
+            if (shouldAutoCheckUpdateToday()) {
+                markAutoCheckUpdateToday();
+                SetTimer(hwnd, ID_AUTO_UPDATE_TIMER, 15000, nullptr);
+            }
             return 0;
         }
         case WM_TIMER: {
-            if (wp == ID_TIMER) updateTimePane(hwnd);
+            if (wp == ID_TIMER) {
+                updateTimePane(hwnd);
+            } else if (wp == ID_AUTO_UPDATE_TIMER) {
+                KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
+                startAutoUpdateCheck(hwnd);
+            }
+            return 0;
+        }
+        case WM_AUTO_UPDATE_CHECK_DONE: {
+            std::unique_ptr<AutoUpdateCheckDone> done(
+                reinterpret_cast<AutoUpdateCheckDone*>(lp));
+            if (done) {
+                showAutoUpdateCheckResult(hwnd, *done);
+            }
+            return 0;
+        }
+        case WM_MANUAL_UPDATE_CHECK_DONE: {
+            std::unique_ptr<ManualUpdateCheckDone> done(
+                reinterpret_cast<ManualUpdateCheckDone*>(lp));
+            if (done) {
+                showManualUpdateCheckResult(hwnd, *done);
+            }
             return 0;
         }
         case WM_SIZE: {
@@ -443,6 +704,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 case ID_BTNCLOSE:        closeActiveMdiChild(); return 0;
+                case IDM_CHECK_UPDATE:   startManualUpdateCheck(hwnd); return 0;
                 case IDM_EXIT:           DestroyWindow(hwnd); return 0;
                 case IDM_CASCADE:        SendMessageW(g_ctx.mdiClient, WM_MDICASCADE, 0, 0); return 0;
                 case IDM_TILE_H:         SendMessageW(g_ctx.mdiClient, WM_MDITILE, MDITILE_HORIZONTAL, 0); return 0;
@@ -461,6 +723,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, ID_TIMER);
+            KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
             PostQuitMessage(0);
             return 0;
     }

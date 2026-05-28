@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.05.21`
+当前版本：`v2026.05.28`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -12,7 +12,7 @@
 - 对外项目名和仓库名使用 `lis-workbench`。
 - 用户可见程序名使用 `LIS 工作台`。
 - 配置文件使用 `ClientConfig.ini`；升级时如果只存在旧 `result_search.ini`，程序会自动复制迁移。
-- 主程序输出文件名使用 `lis_workbench.exe`。
+- 主程序输出文件名使用 `lis_workbench.exe`；自动更新替换由独立 `Updater.exe` 执行。
 - 为兼容既有部署，独立检验查询工具 `result_search.exe` 和 `search_*` 内部模块名暂时保留。
 
 ### 架构概要
@@ -87,6 +87,10 @@
 - 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
+- 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
+- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。
+- `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
@@ -129,7 +133,7 @@
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
   - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果，并根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
   - `查询检验结果` 窗口的组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
-- GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.7` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
+- GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.9` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
 
 暂未实现：
 
@@ -221,18 +225,32 @@ cmake --build build/windows-x64 -j
 - [CHANGELOG.md](CHANGELOG.md)
 - [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
 - [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [AUTO_UPDATE_DESIGN.md](AUTO_UPDATE_DESIGN.md)
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
 ## Windows 安装包
 
-主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和菜单栏 `系统 -> 检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 
+常用构建命令已封装到根目录 `lis.ps1`：
+
+```powershell
+.\lis.ps1 build
+.\lis.ps1 run
+.\lis.ps1 clean
+.\lis.ps1 package -LabelPrintSource github
+.\lis.ps1 package -LabelPrintSource local -LabelPrintLocalPath "Z:\Local\Code\020 LabelPrint\LabelPrint"
+.\lis.ps1 rebuild-package -LabelPrintSource github -LabelPrintVersion v1.2.9
+```
+
+`package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包；`build` / `run` 默认使用本地 `..\..\020 LabelPrint\LabelPrint` 源码。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`package` / `rebuild-package` 会同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。
+
 项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
 
-面向 Windows 7 打包时需要安装 VS 2022 Build Tools，并优先使用 LabelPrint 的 `windows-x64-vs2022-win7` release 包，例如 `.\scripts\build_main.ps1 -Clean -Config Release -LabelPrintPackagePath "C:\Deps\LabelPrint\labelprint-v1.2.7-windows-x64-vs2022-win7"`。不要把 VS 2026 的 CRT DLL 打入安装目录，否则可能出现 `GetSystemTimePreciseAsFileTime` 等 Win8+ 入口点缺失。只面向 Windows 10/11 时可以显式使用 `-Generator "Visual Studio 18 2026"` 和对应的 LabelPrint VS2026 release 包。
+面向 Windows 7 打包时需要安装 VS 2022 Build Tools，并优先使用 LabelPrint 的 `windows-x64-vs2022-win7` release 包，例如 `.\lis.ps1 rebuild-package -LabelPrintSource github -LabelPrintVersion v1.2.9`。不要把 VS 2026 的 CRT DLL 打入安装目录，否则可能出现 `GetSystemTimePreciseAsFileTime` 等 Win8+ 入口点缺失。只面向 Windows 10/11 时可以显式使用 `-Generator "Visual Studio 18 2026"` 和对应的 LabelPrint VS2026 release 包。
 
 ## 使用说明
 
