@@ -118,12 +118,12 @@ public:
 ```json
 {
   "appId": "lis-workbench",
-  "version": "v2026.05.25.2",
+  "version": "v2026.05.28",
   "channel": "stable",
   "minUpdaterVersion": "1.0.0",
   "publishedAt": "2026-05-25T10:00:00+08:00",
   "package": {
-    "file": "LISWorkbench-v2026.05.25.2-win7-win11.zip",
+    "file": "LISWorkbench-v2026.05.28-win7-win11.zip",
     "sha256": "0123456789abcdef...",
     "size": 12345678
   },
@@ -150,7 +150,7 @@ public:
 首阶段采用全量 zip 包。
 
 ```text
-LISWorkbench-v2026.05.25.2-win7-win11.zip
+LISWorkbench-v2026.05.28-win7-win11.zip
   lis_workbench.exe
   Updater.exe
   resource files...
@@ -197,7 +197,7 @@ LISWorkbench-v2026.05.25.2-win7-win11.zip
 Updater.exe
   --app-dir "C:\Program Files\LISWorkbench"
   --app-exe "lis_workbench.exe"
-  --package-file "C:\ProgramData\LISWorkbench\UpdateCache\LISWorkbench-v2026.05.25.2-win7-win11.zip"
+  --package-file "C:\ProgramData\LISWorkbench\UpdateCache\LISWorkbench-v2026.05.28-win7-win11.zip"
   --manifest "C:\ProgramData\LISWorkbench\UpdateCache\manifest.json"
   --pid 1234
 ```
@@ -241,7 +241,7 @@ C:\Program Files\LISWorkbench
 ```text
 C:\ProgramData\LISWorkbench\UpdateCache
   manifest.json
-  LISWorkbench-v2026.05.25.2-win7-win11.zip
+  LISWorkbench-v2026.05.28-win7-win11.zip
   expanded\
 ```
 
@@ -293,7 +293,7 @@ GitHub Actions 已新增产物：
 ```text
 updates/
   manifest.json
-  LISWorkbench-v2026.05.25.2-win7-win11.zip
+  LISWorkbench-v2026.05.28-win7-win11.zip
 ```
 
 GitHub Release 会在推送 `v*` 标签时自动创建或更新，并上传安装包、manifest 和更新 zip。普通分支 push 和 PR 只上传 Actions artifact，不发布 Release。内网共享目录直接复制同样结构。manifest 与 zip 保持同目录，这样 GitHub Release asset URL、普通 HTTP 目录和共享文件夹都能使用同一个 `package.file` 相对路径。

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2026.05.28
+
+- **LabelPrint 来源选择**：`lis.ps1` 新增 `-LabelPrintSource github|local|package`，正式打包可默认从 GitHub Release 下载 LabelPrint，本地联调可显式使用本地源码，已有解压包可继续通过 `-LabelPrintPackagePath` 使用。
+- **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.9` release 包。
+- 版本号 v2026.05.28。
+
 ## v2026.05.25.2
 
 - **自动更新基础设施**：新增自动更新设计文档、`update_core` 基础库和独立 `Updater.exe` target；构建脚本会同时构建主程序和更新器，NSIS 安装包会随主程序安装/卸载 `Updater.exe`。首版更新器支持 zip 包和已展开目录两种输入，可解压、备份、替换、失败回滚和重启主程序。
@@ -13,7 +19,7 @@
 - **常规报告布局优化**：左侧区域宽度当前限制为 360 逻辑像素，内容区始终预留垂直滚动条宽度，避免有无滚动条时宽度跳变。
 - **常规报告年龄显示**：左侧年龄回填会拆分年龄数字和单位，单位下拉固定提供 `岁 / 月 / 天 / 小时 / 分` 并按查询结果自动匹配。
 - **常规报告条码打印**：右键 `打印条码` 和 `打印勾选条码` 的组合项目内容改为取右侧报告行 `检验仪器` 列，不再为了条码打印额外查询中间项目明细；开单日期改为 `yyyy/M/d` 仅日期格式。
-- **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.7` release 包，继续跟进 XP-360B 条码布局和文本居中修正。
+- **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint release 包，继续跟进 XP-360B 条码布局和文本居中修正。
 - 版本号 v2026.05.25.2。
 
 ## v2026.05.20

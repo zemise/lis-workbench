@@ -13,6 +13,10 @@ param(
 
     [string]$Config = "Release",
     [string]$Generator = "",
+    [ValidateSet("auto", "github", "local", "package")]
+    [string]$LabelPrintSource = "auto",
+    [string]$LabelPrintVersion = "v1.2.9",
+    [string]$LabelPrintLocalPath = "",
     [string]$LabelPrintPackagePath = "",
     [string]$AppVersion = "",
     [string]$OutputName = "LISWorkbench-Setup.exe",
@@ -24,6 +28,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $BuildDir = Join-Path $Root "build\main-app"
 $InstallerDir = Join-Path $Root "out\windows\installer"
+$LabelPrintDepsDir = Join-Path $Root "build\deps\LabelPrint"
 
 function Show-Help {
     Write-Host "LIS Workbench build helper"
@@ -36,7 +41,11 @@ function Show-Help {
     Write-Host "  rebuild-package  Clean, build Release, create NSIS installer, and create update package"
     Write-Host ""
     Write-Host "Options:"
-    Write-Host "  -LabelPrintPackagePath <path>  LabelPrint release root"
+    Write-Host "  -LabelPrintSource <auto|github|local|package>"
+    Write-Host "                                auto: package uses GitHub, build/run uses local"
+    Write-Host "  -LabelPrintVersion <version>  GitHub LabelPrint release version"
+    Write-Host "  -LabelPrintLocalPath <path>   Local LabelPrint source root"
+    Write-Host "  -LabelPrintPackagePath <path> Extracted LabelPrint release root"
     Write-Host "  -Generator <name>              CMake generator"
     Write-Host "  -Config <Release|Debug>        Build config"
     Write-Host "  -AppVersion <version>          Installer version"
@@ -58,15 +67,122 @@ function Resolve-AppVersion {
     return $value
 }
 
+function Resolve-DefaultLabelPrintSource([string]$CommandName) {
+    if ($LabelPrintSource -ne "auto") {
+        return $LabelPrintSource
+    }
+    if ($LabelPrintPackagePath) {
+        return "package"
+    }
+    if ($CommandName -eq "package" -or $CommandName -eq "rebuild-package") {
+        return "github"
+    }
+    return "local"
+}
+
+function Resolve-DefaultLabelPrintLocalPath {
+    if ($LabelPrintLocalPath) {
+        return $LabelPrintLocalPath
+    }
+    return Join-Path $Root "..\..\020 LabelPrint\LabelPrint"
+}
+
+function Resolve-LabelPrintAssetName {
+    if ($Generator -match "Visual Studio 18 2026") {
+        return "labelprint-$LabelPrintVersion-windows-x64-vs2026.zip"
+    }
+    return "labelprint-$LabelPrintVersion-windows-x64-vs2022-win7.zip"
+}
+
+function Resolve-ExtractedLabelPrintPackageRoot([string]$ExtractRoot) {
+    $config = Get-ChildItem -Path $ExtractRoot -Recurse -Filter LabelPrintConfig.cmake -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $config) {
+        return ""
+    }
+    return Split-Path (Split-Path $config.FullName -Parent) -Parent
+}
+
+function Resolve-GitHubLabelPrintPackage {
+    $asset = Resolve-LabelPrintAssetName
+    $versionDir = Join-Path $LabelPrintDepsDir $LabelPrintVersion
+    $extractRoot = Join-Path $versionDir ([System.IO.Path]::GetFileNameWithoutExtension($asset))
+    $packageRoot = Resolve-ExtractedLabelPrintPackageRoot $extractRoot
+    if ($packageRoot) {
+        Write-Host "LabelPrint GitHub package: $packageRoot"
+        return $packageRoot
+    }
+
+    New-Item -ItemType Directory -Force $versionDir | Out-Null
+    $zipPath = Join-Path $versionDir $asset
+    if (-not (Test-Path $zipPath)) {
+        $url = "https://github.com/zemise/LabelPrint/releases/download/$LabelPrintVersion/$asset"
+        Write-Host "Downloading LabelPrint: $url"
+        Invoke-WebRequest -Uri $url -OutFile $zipPath
+    } else {
+        Write-Host "Using cached LabelPrint zip: $zipPath"
+    }
+
+    Remove-Item -Recurse -Force $extractRoot -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $extractRoot | Out-Null
+    Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+
+    $packageRoot = Resolve-ExtractedLabelPrintPackageRoot $extractRoot
+    if (-not $packageRoot) {
+        throw "LabelPrintConfig.cmake not found in $zipPath"
+    }
+    Write-Host "LabelPrint GitHub package: $packageRoot"
+    return $packageRoot
+}
+
+function Resolve-LabelPrintBuildOptions([string]$CommandName) {
+    $source = Resolve-DefaultLabelPrintSource $CommandName
+    $result = @{
+        Source = $source
+        PackagePath = ""
+        ExtraCMakeArgs = @()
+    }
+
+    switch ($source) {
+        "github" {
+            $result.PackagePath = Resolve-GitHubLabelPrintPackage
+        }
+        "package" {
+            if (-not $LabelPrintPackagePath) {
+                throw "-LabelPrintSource package requires -LabelPrintPackagePath."
+            }
+            $result.PackagePath = $LabelPrintPackagePath
+        }
+        "local" {
+            $localPath = Resolve-DefaultLabelPrintLocalPath
+            if (-not (Test-Path $localPath)) {
+                throw "LabelPrint local source path does not exist: $localPath"
+            }
+            Write-Host "LabelPrint local source: $localPath"
+            $result.ExtraCMakeArgs = @(
+                "-DCMAKE_PREFIX_PATH=",
+                "-DLabelPrint_DIR=LabelPrint_DIR-NOTFOUND",
+                "-DLIS_LABELPRINT_DIR=$localPath"
+            )
+        }
+    }
+
+    return $result
+}
+
 function Invoke-BuildMain([switch]$Clean, [switch]$Run, [string]$BuildConfig) {
+    $labelPrint = Resolve-LabelPrintBuildOptions $Command
     $buildParams = @{
         Config = $BuildConfig
     }
     if ($Clean) { $buildParams.Clean = $true }
     if ($Run) { $buildParams.Run = $true }
     if ($Generator) { $buildParams.Generator = $Generator }
-    if ($LabelPrintPackagePath) { $buildParams.LabelPrintPackagePath = $LabelPrintPackagePath }
-    if ($CMakeArgs.Count -gt 0) { $buildParams.CMakeArgs = $CMakeArgs }
+    if ($labelPrint.PackagePath) { $buildParams.LabelPrintPackagePath = $labelPrint.PackagePath }
+    $mergedCMakeArgs = @()
+    if ($labelPrint.ExtraCMakeArgs.Count -gt 0) { $mergedCMakeArgs += $labelPrint.ExtraCMakeArgs }
+    if ($CMakeArgs.Count -gt 0) { $mergedCMakeArgs += $CMakeArgs }
+    if ($mergedCMakeArgs.Count -gt 0) { $buildParams.CMakeArgs = $mergedCMakeArgs }
     & (Join-Path $PSScriptRoot "build_main.ps1") @buildParams
 }
 
@@ -116,7 +232,7 @@ function Invoke-Package([switch]$CleanFirst) {
 
     Write-Host "==> Installer: out\windows\installer\$OutputName"
     Write-Host "==> Update manifest: out\windows\update\updates\manifest.json"
-    Write-Host "==> Update package: out\windows\update\updates\packages\LISWorkbench-$version-win7-win11.zip"
+    Write-Host "==> Update package: out\windows\update\updates\LISWorkbench-$version-win7-win11.zip"
 }
 
 Push-Location $Root
