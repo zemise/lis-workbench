@@ -533,7 +533,11 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(NULLIF(LTRIM(RTRIM(emp_dean.NAME)),''),isnull(cast(r.DEAN_OPER as varchar(20)),'')),"
         << " isnull(LTRIM(RTRIM(emp_req.NAME)),''),"
         << " isnull(r.DIAG_NAME,''),isnull(r.CREATE_TIME,''),isnull(r.PAT_PHONE,''),"
-        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'')"
+        << " isnull(cast(bar.JZ_FLAG as varchar(20)),''),"
+        << " CASE WHEN EXISTS (SELECT 1 FROM LS_AS_WjzMessage w WITH (NOLOCK)"
+        << " WHERE isnull(w.Delete_Bit,0)=0 AND w.Rep_No=r.REP_NO) THEN '1' ELSE '' END,"
+        << " CASE WHEN EXISTS (SELECT 1 FROM LS_AS_REPENTRY ew WITH (NOLOCK)"
+        << " WHERE ew.DELETE_BIT=0 AND ew.REP_NO=r.REP_NO AND ew.NORMAL_WJ=9) THEN '1' ELSE '' END"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -625,6 +629,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.create_time = fetch_column(stmt, 31);
         row.patient_phone = fetch_column(stmt, 32);
         row.emergency_flag = fetch_column(stmt, 33);
+        row.wjz_message_flag = fetch_column(stmt, 34);
+        row.critical_result_flag = fetch_column(stmt, 35);
         rows.push_back(row);
     }
 
@@ -652,7 +658,9 @@ bool query_results(const std::string& connection_string, const std::string& rep_
     std::ostringstream sql;
     sql << "SELECT isnull(lm.GROUP_NAME,''),isnull(i.ITEM_NAME,e.ITEM_NAME),isnull(e.RESULT,''),isnull(e.UPBOUND,''),"
         << " isnull(e.DOWNBOUND,''),isnull(RTRIM(i.UNIT),''),isnull(i.ENG_NAME,''),"
-        << " isnull(e.NORMAL,''),CAST(e.ITEM_CODE AS varchar(20))"
+        << " isnull(e.NORMAL,''),CAST(e.ITEM_CODE AS varchar(20)),"
+        << " isnull(CAST(e.NORMAL_WJ AS varchar(20)),''),"
+        << " isnull(scope.UPBOUND1,''),isnull(scope.DNBOUND1,'')"
         << " FROM LS_AS_REPENTRY e"
         << " LEFT JOIN LS_AS_ITEM i ON e.ITEM_CODE = i.ITEM_CODE AND i.DELETE_BIT=0"
         << " OUTER APPLY ("
@@ -662,6 +670,26 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         << " AND NULLIF(LTRIM(RTRIM(isnull(m.GROUP_NAME,''))),'') IS NOT NULL"
         << " ORDER BY CASE WHEN isnull(m.DELETE_BIT,0)=0 AND isnull(m.USE_FLAG,0)=0 THEN 0 ELSE 1 END,m.ID"
         << " ) lm"
+        << " OUTER APPLY ("
+        << " SELECT TOP 1 LTRIM(RTRIM(isnull(sx.SEX_NAME,''))) AS SEX_NAME"
+        << " FROM LS_AS_REPORT rr WITH (NOLOCK)"
+        << " LEFT JOIN LS_AS_SEX sx WITH (NOLOCK) ON sx.SEX_CODE=rr.SEX"
+        << " WHERE rr.REP_NO=e.REP_NO ORDER BY rr.ID"
+        << " ) report_sex"
+        << " OUTER APPLY ("
+        << " SELECT TOP 1 s.UPBOUND1,s.DNBOUND1"
+        << " FROM LS_AS_DEF_ITEMSCOPE s WITH (NOLOCK)"
+        << " WHERE s.ITEM_CODE=e.ITEM_CODE"
+        << " AND (LTRIM(RTRIM(isnull(s.SEX,'')))='通用'"
+        << " OR (NULLIF(report_sex.SEX_NAME,'') IS NOT NULL"
+        << " AND LTRIM(RTRIM(isnull(s.SEX,'')))=report_sex.SEX_NAME))"
+        << " ORDER BY CASE"
+        << " WHEN NULLIF(report_sex.SEX_NAME,'') IS NOT NULL"
+        << " AND LTRIM(RTRIM(isnull(s.SEX,'')))=report_sex.SEX_NAME THEN 0"
+        << " WHEN LTRIM(RTRIM(isnull(s.SEX,'')))='通用' THEN 1"
+        << " ELSE 2 END,"
+        << " CASE WHEN isnull(s.DEF_FLAG,'')='1' THEN 0 ELSE 1 END,s.ID"
+        << " ) scope"
         << " WHERE e.DELETE_BIT=0 AND e.REP_NO=" << sql_escape(rep_no)
         << " ORDER BY e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
 
@@ -686,6 +714,9 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         row.item_eng = fetch_column(stmt, 7);
         row.normal = fetch_column(stmt, 8);
         row.item_code = fetch_column(stmt, 9);
+        row.normal_wj = fetch_column(stmt, 10);
+        row.critical_low_bound = fetch_column(stmt, 11);
+        row.critical_high_bound = fetch_column(stmt, 12);
         rows.push_back(row);
     }
 

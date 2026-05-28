@@ -62,6 +62,8 @@ struct ReportRow {
     std::string create_time;
     std::string patient_phone;
     std::string emergency_flag;
+    std::string wjz_message_flag;      // LS_AS_WjzMessage exists for this REP_NO.
+    std::string critical_result_flag;  // Any LS_AS_REPENTRY.NORMAL_WJ=9 for this REP_NO.
 };
 
 struct RoomOption {
@@ -89,6 +91,9 @@ struct ResultRow {
     std::string item_eng;
     std::string normal;
     std::string item_code;
+    std::string normal_wj;            // 9=critical result, 0=has critical rule.
+    std::string critical_low_bound;   // LS_AS_DEF_ITEMSCOPE.UPBOUND1
+    std::string critical_high_bound;  // LS_AS_DEF_ITEMSCOPE.DNBOUND1
 };
 
 struct LisSummary {
