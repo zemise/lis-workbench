@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "barcode_label_printing.h"
 #include "main_app.h"
 #include "resource.h"
 #include "search_controller.h"
@@ -10,10 +11,6 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
-
-#if defined(LIS_HAS_LABELPRINT)
-#include "labelprint/labelprint.h"
-#endif
 
 #include <commctrl.h>
 #include <windows.h>
@@ -43,7 +40,6 @@ constexpr const wchar_t* WINDOW_TITLE = L"常规报告";
 constexpr const wchar_t* PROP_STATE = L"RegularReportSt";
 constexpr const wchar_t* PROP_DATE_FORMAT = L"RegularReportDateFormat";
 constexpr const wchar_t* BLANK_DATE_FORMAT = L" ";
-constexpr const wchar_t* DEFAULT_BARCODE_PRINTER_NAME = L"Xprinter XP-360B #2";
 constexpr UINT WM_REGULAR_REPORTS_LOADED = WM_APP + 171;
 constexpr UINT WM_REGULAR_RESULTS_LOADED = WM_APP + 172;
 constexpr UINT WM_REGULAR_PICTURE_LOADED = WM_APP + 173;
@@ -1616,53 +1612,19 @@ std::string barcodeGroupNameForReport(RegularReportState* st, int reportIndex, s
     return search::trim(row.group_name);
 }
 
-void appendReportBarcodeDetails(std::wstring& message, const search::ReportRow& row,
-                                const std::string& barcodeGroupName) {
-    auto appendLine = [&](const wchar_t* label, const std::string& value) {
-        message += label;
-        message += search::utf8_to_wide(value);
-        message += L"\n";
-    };
-    appendLine(L"样本号：", row.oper_no);
-    appendLine(L"组合项目：", barcodeGroupName);
-    appendLine(L"条码号：", row.txm_no);
-    appendLine(L"姓名：", row.name);
-    appendLine(L"标本：", row.sample_name);
-    appendLine(L"开单日期：", slashDate(row.chk_date));
-    appendLine(L"科室代码：", row.dept_name);
-    message += L"病人号：";
-    message += search::utf8_to_wide(row.reg_no);
+search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& row,
+                                                    const std::string& barcodeGroupName) {
+    search::BarcodeLabelPayload payload;
+    payload.sample_no = row.oper_no;
+    payload.test_item = barcodeGroupName;
+    payload.barcode_value = row.txm_no;
+    payload.patient_name = row.name;
+    payload.specimen_type = row.sample_name;
+    payload.department = row.dept_name;
+    payload.patient_id = row.reg_no;
+    payload.timestamp = slashDate(row.chk_date);
+    return payload;
 }
-
-std::wstring configuredBarcodePrinterName() {
-    std::wstring printer = search::load_module_str(L"RegularReport", L"BarcodePrinterName",
-                                                   DEFAULT_BARCODE_PRINTER_NAME);
-    if (printer.empty()) {
-        printer = DEFAULT_BARCODE_PRINTER_NAME;
-    }
-    return printer;
-}
-
-#if defined(LIS_HAS_LABELPRINT)
-void sendBarcodeLabel(const search::ReportRow& row, const std::string& barcodeGroupName,
-                      const std::wstring& printerName) {
-    labelprint::MedicalLabelData data;
-    data.sampleNo = row.oper_no;
-    data.testItem = barcodeGroupName;
-    data.barcodeValue = row.txm_no;
-    data.patientName = row.name;
-    data.specimenType = row.sample_name;
-    data.department = row.dept_name;
-    data.patientId = row.reg_no;
-    data.timestamp = slashDate(row.chk_date);
-
-    labelprint::MedicalLabelPrintOptions options;
-    options.model = labelprint::MedicalLabelPrinterModel::Auto;
-    options.fallbackModel = labelprint::MedicalLabelPrinterModel::XprinterXp360b;
-    options.quantity = 1;
-    labelprint::printMedicalLabel(printerName, data, options);
-}
-#endif
 
 std::wstring printBarcodeForContext(RegularReportState* st) {
     const search::ReportRow* row = contextReportRow(st);
@@ -1679,13 +1641,18 @@ std::wstring printBarcodeForContext(RegularReportState* st) {
         return message;
     }
 
-    std::wstring details;
-    appendReportBarcodeDetails(details, *row, barcodeGroupName);
+    const auto payload = barcodePayloadForReport(*row, barcodeGroupName);
+    const std::wstring details = search::barcode_label_details(payload);
 
-#if defined(LIS_HAS_LABELPRINT)
+    if (!search::barcode_label_printing_available()) {
+        std::wstring message = L"打印条码功能不可用：构建时未找到 LabelPrint 项目。\n\n";
+        message += details;
+        return message;
+    }
+
     try {
-        const std::wstring printerName = configuredBarcodePrinterName();
-        sendBarcodeLabel(*row, barcodeGroupName, printerName);
+        const std::wstring printerName = search::configured_barcode_printer_name();
+        search::print_barcode_label(payload, printerName);
 
         std::wstring message = L"打印条码已发送。\n打印机：";
         message += printerName;
@@ -1696,17 +1663,12 @@ std::wstring printBarcodeForContext(RegularReportState* st) {
         std::wstring message = L"打印条码失败：";
         message += search::utf8_to_wide(ex.what());
         message += L"\n打印机：";
-        message += configuredBarcodePrinterName();
+        message += search::configured_barcode_printer_name();
         message += L"\n请在系统设置页重新选择条码打印机。";
         message += L"\n\n";
         message += details;
         return message;
     }
-#else
-    std::wstring message = L"打印条码功能不可用：构建时未找到 LabelPrint 项目。\n\n";
-    message += details;
-    return message;
-#endif
 }
 
 std::wstring printCheckedBarcodes(RegularReportState* st) {
@@ -1715,8 +1677,12 @@ std::wstring printCheckedBarcodes(RegularReportState* st) {
         return L"请先勾选需要打印条码的报告记录。";
     }
 
-#if defined(LIS_HAS_LABELPRINT)
-    const std::wstring printerName = configuredBarcodePrinterName();
+    if (!search::barcode_label_printing_available()) {
+        clearReportChecks(st);
+        return L"打印条码功能不可用：构建时未找到 LabelPrint 项目。";
+    }
+
+    const std::wstring printerName = search::configured_barcode_printer_name();
     int sent = 0;
     try {
         for (int index : indexes) {
@@ -1725,7 +1691,8 @@ std::wstring printCheckedBarcodes(RegularReportState* st) {
             if (!groupError.empty()) {
                 throw std::runtime_error("组合项目查询失败: " + groupError);
             }
-            sendBarcodeLabel(st->reportRows[static_cast<size_t>(index)], barcodeGroupName, printerName);
+            const auto payload = barcodePayloadForReport(st->reportRows[static_cast<size_t>(index)], barcodeGroupName);
+            search::print_barcode_label(payload, printerName);
             ++sent;
         }
         clearReportChecks(st);
@@ -1754,10 +1721,6 @@ std::wstring printCheckedBarcodes(RegularReportState* st) {
         clearReportChecks(st);
         return message;
     }
-#else
-    clearReportChecks(st);
-    return L"打印条码功能不可用：构建时未找到 LabelPrint 项目。";
-#endif
 }
 
 void releasePictureImage(RegularReportState* st) {

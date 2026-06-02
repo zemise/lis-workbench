@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 
+#include "barcode_label_printing.h"
+#include "barcode_module.h"
 #include "main_app.h"
 #include "resource.h"
 #include "search_controller.h"
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -218,6 +221,20 @@ std::string dateTimeValue(HWND hwnd) {
     return buf;
 }
 
+std::string slashDate(const std::string& value) {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    if ((std::sscanf(value.c_str(), "%d-%d-%d", &year, &month, &day) == 3 ||
+         std::sscanf(value.c_str(), "%d/%d/%d", &year, &month, &day) == 3) &&
+        year > 0 && month > 0 && day > 0) {
+        char buffer[16]{};
+        std::snprintf(buffer, sizeof(buffer), "%d/%d/%d", year, month, day);
+        return buffer;
+    }
+    return value;
+}
+
 std::wstring barcodeExistsStatusText(const search::SpecimenBarcodeResult& result) {
     std::wstringstream ss;
     if (!search::trim(result.signed_time).empty()) {
@@ -240,6 +257,70 @@ std::wstring barcodeExistsStatusText(const search::SpecimenBarcodeResult& result
         return ss.str();
     }
     return L"";
+}
+
+std::string listCellTextUtf8(HWND list, int row, int col) {
+    if (!list || row < 0) return {};
+    wchar_t buf[1024]{};
+    ListView_GetItemText(list, row, col, buf, static_cast<int>(sizeof(buf) / sizeof(buf[0])));
+    return search::trim(search::wide_to_utf8(buf));
+}
+
+int selectedSignedRow(const SpecimenSignState* st) {
+    if (!st || !st->signedList) return -1;
+    return ListView_GetNextItem(st->signedList, -1, LVNI_SELECTED);
+}
+
+search::BarcodeLabelPayload barcodePayloadForSelectedSignedRow(const SpecimenSignState* st, int row) {
+    search::BarcodeLabelPayload payload;
+    payload.sample_no = "补";
+    payload.test_item = listCellTextUtf8(st ? st->signedList : nullptr, row, 16);
+    payload.barcode_value = listCellTextUtf8(st ? st->signedList : nullptr, row, 1);
+    payload.patient_name = listCellTextUtf8(st ? st->signedList : nullptr, row, 4);
+    payload.specimen_type = listCellTextUtf8(st ? st->signedList : nullptr, row, 15);
+    payload.department = listCellTextUtf8(st ? st->signedList : nullptr, row, 6);
+    payload.patient_id = listCellTextUtf8(st ? st->signedList : nullptr, row, 2);
+    payload.timestamp = slashDate(listCellTextUtf8(st ? st->signedList : nullptr, row, 9));
+    return payload;
+}
+
+std::wstring reprintSelectedBarcode(SpecimenSignState* st) {
+    const int row = selectedSignedRow(st);
+    if (row < 0) {
+        return L"请先在右侧已签收条码列表中选择一行。";
+    }
+
+    const auto payload = barcodePayloadForSelectedSignedRow(st, row);
+    const std::wstring details = search::barcode_label_details(payload);
+    if (search::trim(payload.barcode_value).empty()) {
+        std::wstring message = L"补打条码失败：当前行条码号为空。\n\n";
+        message += details;
+        return message;
+    }
+    if (!search::barcode_label_printing_available()) {
+        std::wstring message = L"补打条码功能不可用：构建时未找到 LabelPrint 项目。\n\n";
+        message += details;
+        return message;
+    }
+
+    try {
+        const std::wstring printerName = search::configured_barcode_printer_name();
+        search::print_barcode_label(payload, printerName);
+        std::wstring message = L"补打条码已发送。\n打印机：";
+        message += printerName;
+        message += L"\n\n";
+        message += details;
+        return message;
+    } catch (const std::exception& ex) {
+        std::wstring message = L"补打条码失败：";
+        message += search::utf8_to_wide(ex.what());
+        message += L"\n打印机：";
+        message += search::configured_barcode_printer_name();
+        message += L"\n请在系统设置页重新选择条码打印机。";
+        message += L"\n\n";
+        message += details;
+        return message;
+    }
 }
 
 std::wstring barcodeQueryStatusText(const search::SpecimenBarcodeResult& result) {
@@ -831,6 +912,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (LOWORD(wp) == IDC_QUERY) {
                 runQueryFromInput(hwnd, st, st ? st->barcode : nullptr);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_MANAGE) {
+                if (st) {
+                    create_barcode_module(st->ctx);
+                }
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_PATCH_BARCODE) {
+                if (st) {
+                    const std::wstring message = reprintSelectedBarcode(st);
+                    setGeneralStatus(st, message);
+                    MessageBoxW(hwnd, message.c_str(), L"补打条码", MB_OK | MB_ICONINFORMATION);
+                }
                 return 0;
             }
             if (LOWORD(wp) == IDC_RESET) {

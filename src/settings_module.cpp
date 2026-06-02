@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "barcode_label_printing.h"
 #include "main_app.h"
 #include "resource.h"
 #include "search_controller.h"
@@ -52,7 +53,6 @@ constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
 constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
-constexpr const wchar_t* DEFAULT_BARCODE_PRINTER_NAME = L"Xprinter XP-360B #2";
 constexpr int PICKER_W = 440;
 constexpr int PICKER_H = 360;
 constexpr int PICKER_PAD = 12;
@@ -215,7 +215,7 @@ void populatePrinterCombo(HWND hwnd) {
 
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
     const std::wstring configured = search::load_module_str(
-        L"RegularReport", L"BarcodePrinterName", DEFAULT_BARCODE_PRINTER_NAME);
+        L"RegularReport", L"BarcodePrinterName", search::default_barcode_printer_name());
     int selected = -1;
     const auto printers = enumPrinterNames();
     for (const auto& printer : printers) {

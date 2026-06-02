@@ -620,6 +620,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 0, 0, hwnd, nullptr, g_ctx.instance, &ccs);
 
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
+            mtAddButton(tb, L"标本签收中心", IDM_TOOL3);
             mtAddButton(tb, L"常规报告", IDM_TOOL2);
             mtAddStretch(tb);
             HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
