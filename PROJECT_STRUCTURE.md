@@ -78,6 +78,7 @@
 | `query_module.cpp/h` | 检验结果查询单实例 MDI 子窗口 |
 | `barcode_module.cpp/h` | 已签收条码查询单实例 MDI 子窗口，按 `LS_AS_BARCODE` 只读检索 |
 | `regular_report_module.cpp/h` | 常规报告单实例 MDI 子窗口，按 `temp/模版2.png` 基本完成报告工作台；按检验日期和检验仪器查询 `LS_AS_REPORT`，右侧选中行回填左侧信息并联动中间项目明细；中间组合项目按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，连续相同项只显示首行，图象页按 `REP_NO` 按需查询 `LS_AS_ITEMPICTURE.PICTURE` 并用滚动视口显示大图；底部 `图形(T)` 打开独立结果图窗口，复用同一图片查询逻辑，跟随右侧选中行刷新，双缓冲绘制并按 `[RegularReport] PicturePopupWidth/Height` 保存尺寸；右侧列表支持本地排序、首末行跳转、今天/前一天/后一天快捷切换检验日期、样本号回车定位、顶部动态统计、保留状态刷新、勾选批量打印；中间/右侧自绘 ListView 会在失焦后保持选中行高亮；底部 `1/2/3` 快捷检验仪器读取 `[RegularReport] QuickMachine*`；右键菜单对接 `LabelPrint` 执行 `打印条码`，条码组合项目来自中间明细 `ResultRow.group_name` 去重拼接，打印机型号和 TSPL/ZPL 后端由 LabelPrint `printMedicalLabel` 统一入口负责；构建时优先 `find_package(LabelPrint 1.2)`，找不到再回退 `LIS_LABELPRINT_DIR` 源码接入；中间/右侧拖条位置按 `[RegularReport] SplitterX` 持久化；左侧长表单用自绘分组框替代真实 `GROUPBOX`，右侧顶部摘要由父面板自绘并自动换行，配合 `WS_CLIPSIBLINGS` 降低拖动/滚动残影 |
+| `specimen_sign_module.cpp/h` | 标本签收中心单实例 MDI 子窗口，替换原 `工具3`；当前按 `temp/模版.png` 完成界面骨架，日期筛选默认当天起止时间并在跨日后自动切换；条码输入框和查询按钮已接入第一版只读查询，有条码时精确查询 `LS_AS_BARCODE / LS_AS_REPORT` 并可选补查 `V_lis_mzinfo_txm / YJ_MZSQ / YJ_ZYSQ` 回填页面，左侧条码为空时按签收日期 `IN_DATE` 和/或申请日期 `REQ_TIME` 查询已签收条码列表；下方列表补充签收时间、送检时间、年龄、签收人、标本类型和检验室，检验室/仪器分别通过 `LS_AS_ROOM`、`LS_AS_MACHINE` 转名称；暂不执行签收、拒签、打印、导出等写入或外部输出业务操作 |
 | `blood_module.cpp/h` | 输血结果查询单实例 MDI 子窗口，按 `LS_XK_BloodRequestApply` 只读检索；LIS 结果弹窗列表与摘要分离后台查询 |
 | `settings_module.cpp/h` | 系统设置单实例 MDI 子窗口，维护数据库、字号、LIS 摘要代码、常规报告条码打印机、底部快捷检验仪器和自动更新源配置 |
 | `search_ui_context.h` | Win32 句柄集合、字体上下文 |

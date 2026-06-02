@@ -1,14 +1,17 @@
 # Changelog
 
-## v2026.05.29
+## v2026.06.02
 
+- **标本签收中心界面**：工具菜单 `标本签收中心` 替换原 `工具3` 占位页，新增 `specimen_sign_module.cpp/h`，按 `temp/模版.png` 完成顶部扫码区、病人信息、医嘱明细、左侧筛选区和右侧已签收条码列表的界面骨架；病人类型下拉框复用 `LS_AS_PATTYPE` 数据源并只显示 `TYPE_NAME`；顶部操作按钮和医嘱明细列表右侧 `- / +` 按钮会随窗口右侧边界移动；左上扫码框增加 `标本签收工作台` 标签，签收日期和申请日期使用日期时间选择器并默认当天起止时间，页面跨过凌晨后自动切换到新一天；按钮完全复用检验结果查询页的公共 `search::create_button` 原生按钮创建逻辑，不额外 owner-draw；当前已接入第一版只读条码查询，按单个条码精确查询 `LS_AS_BARCODE / LS_AS_REPORT` 并可选补查 `V_lis_mzinfo_txm / YJ_MZSQ / YJ_ZYSQ` 回填页面；当左侧条码为空时，支持按签收日期 `IN_DATE` 和/或申请日期 `REQ_TIME` 查询已签收条码列表，不执行签收、拒签、打印或导出操作。
+- **标本签收中心查询细节**：下方已签收列表补充签收时间、送检时间、年龄、签收人、标本类型和检验室，检验室通过 `LS_AS_BARCODE.ROOM_CODE -> LS_AS_ROOM.ROOM_NAME` 转换，字典查不到时回退显示代码；`此条码已存在...` 提示拆分为顶部红色专用标签，普通查询状态移至左下按钮区；已签收提示中的仪器通过 `LS_AS_REPORT.MACH_CODE -> LS_AS_MACHINE.MACH_NAME` 显示，并在任一条码明细 `OPER_STATE=0` 时追加 `未上机检验!`。
+- **标本签收中心文档**：新增 `SPECIMEN_SIGN_MODULE.md`，将标本签收中心的界面结构、复用约定、日期行为和当前边界从 README 中拆出独立维护。
 - **常规报告危急值提示**：中间结果列表优先采用 `LS_AS_REPENTRY.NORMAL_WJ` 的 LIS 判定结果，并保留客户端按 `LS_AS_DEF_ITEMSCOPE.DNBOUND1 / UPBOUND1` 计算危急值的能力，用于当前展示兜底和后续仪器输入后的实时判断。
 - **常规报告报告类型校正**：右侧信息列表的 `急` 标签继续按 `LS_AS_BARCODE.JZ_FLAG=1` 显示；行文字红色由 `LS_AS_REPORT.assaypat_type=0` 或 `JZ_FLAG=1` 触发，报告级危急状态按 `assaypat_type=9` 判断。
 - **常规报告急诊展示**：左侧标本信息区的 `急诊` 标签改为红色，并在前方新增勾选框；当当前右侧选中报告为 `assaypat_type=0` 或 `JZ_FLAG=1` 时自动勾选。
 - **常规报告报告统计**：右侧顶部第二行显示 `危急报告数`、`危急报告已审`、`急诊报告数` 和 `急诊报告已审`；危急报告按 `assaypat_type=9` 统计，急诊报告按 `assaypat_type=0` 或 `JZ_FLAG=1` 合并统计，已审均要求已审核且已发送。
 - **LabelPrint 来源选择**：`lis.ps1` 新增 `-LabelPrintSource github|local|package`，正式打包可默认从 GitHub Release 下载 LabelPrint，本地联调可显式使用本地源码，已有解压包可继续通过 `-LabelPrintPackagePath` 使用。
 - **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.9` release 包。
-- 版本号 v2026.05.29。
+- 版本号 v2026.06.02。
 
 ## v2026.05.25.2
 

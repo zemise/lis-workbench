@@ -8,6 +8,9 @@ Thumbs.db
 /ClientConfig.ini
 /result_search.ini
 
+/SPECIMEN_SIGN_MODULE.md
+/SPECIMEN_SIGN_CENTER_DESIGN.md
+
 *.user
 *.log
 

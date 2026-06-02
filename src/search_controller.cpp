@@ -68,4 +68,29 @@ bool load_result_rows(const std::string& connection_string, const std::string& r
     return query_results(connection_string, rep_no, rows, error);
 }
 
+bool load_specimen_barcode(const DbSettings& settings, const std::string& barcode, SpecimenBarcodeResult& result, std::string& error) {
+    const auto connection_string = make_connection_string_utf8(settings);
+    if (connection_string.empty()) {
+        error = "missing connection string";
+        result = SpecimenBarcodeResult{};
+        return false;
+    }
+    SpecimenBarcodeQuery query;
+    query.connection_string = connection_string;
+    query.barcode = barcode;
+    return query_specimen_barcode(query, result, error);
+}
+
+bool load_specimen_signed_list(const DbSettings& settings, const SpecimenSignedListQuery& input, std::vector<SpecimenSignedListRow>& rows, std::string& error) {
+    const auto connection_string = make_connection_string_utf8(settings);
+    if (connection_string.empty()) {
+        error = "missing connection string";
+        rows.clear();
+        return false;
+    }
+    SpecimenSignedListQuery query = input;
+    query.connection_string = connection_string;
+    return query_specimen_signed_list(query, rows, error);
+}
+
 }  // namespace search

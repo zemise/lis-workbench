@@ -179,6 +179,85 @@ struct BarcodeQueryFilters {
     std::string sort_order;      // receive_asc/receive_desc/request/barcode
 };
 
+struct SpecimenOrderRow {
+    std::string barcode;         // 条码号
+    std::string room_code;       // 检验室/专业组代码
+    std::string order_text;      // 医嘱内容
+    std::string sample_name;     // 标本类型
+    std::string fee;             // 费用
+    std::string request_time;    // 申请时间
+    std::string note;            // 备注
+};
+
+struct SpecimenBarcodeResult {
+    std::string barcode;
+    std::string reg_no;
+    std::string type_code;
+    std::string type_name;
+    std::string name;
+    std::string sex;
+    std::string age;
+    std::string dept_name;
+    std::string bed_no;
+    std::string requester;
+    std::string room_code;
+    std::string fee;
+    std::string signed_time;
+    std::string receiver;
+    std::string collection_time;
+    std::string submit_time;
+    std::string jz_flag;
+    std::string rep_no;
+    std::string oper_no;
+    std::string mach_code;
+    std::string oper_state;
+    std::string group_code;
+    std::string chk_flag;
+    std::string conf;
+    std::string create_time;
+    bool has_barcode_rows = false;
+    bool has_report_rows = false;
+    bool has_outpatient_rows = false;
+    bool has_inpatient_rows = false;
+    std::vector<SpecimenOrderRow> orders;
+};
+
+struct SpecimenBarcodeQuery {
+    std::string connection_string;
+    std::string barcode;
+};
+
+struct SpecimenSignedListRow {
+    std::string barcode;         // 条码号
+    std::string reg_no;          // 病人号
+    std::string type_name;       // 病人类型
+    std::string name;            // 姓名
+    std::string sex;             // 性别
+    std::string dept_name;       // 申请科室
+    std::string order_text;      // 医嘱内容
+    std::string fee;             // 费用
+    std::string request_time;    // 申请时间
+    std::string collection_time; // 采集时间
+    std::string signed_time;     // 签收时间
+    std::string submit_time;     // 送检时间
+    std::string age;             // 年龄
+    std::string receiver;        // 签收人
+    std::string sample_name;     // 标本类型
+    std::string room_code;       // 检验室名称/专业组代码
+};
+
+struct SpecimenSignedListQuery {
+    std::string connection_string;
+    bool use_sign_time = true;
+    bool use_apply_time = false;
+    std::string sign_start;
+    std::string sign_end;
+    std::string apply_start;
+    std::string apply_end;
+    std::string room_code;
+    std::string patient_name;
+};
+
 using LogFn = std::function<void(const std::string&)>;
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
@@ -190,5 +269,7 @@ bool query_report_picture(const std::string& connection_string, const std::strin
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
+bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
+bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search
