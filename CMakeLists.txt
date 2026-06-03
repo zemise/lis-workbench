@@ -120,10 +120,12 @@ add_executable(main_app WIN32
     src/main_frame.cpp
     src/menu_toolbar.cpp
     src/app_settings_io.cpp
+    src/barcode_label_printing.cpp
     src/barcode_module.cpp
     src/blood_module.cpp
     src/query_module.cpp
     src/regular_report_module.cpp
+    src/specimen_sign_module.cpp
     src/settings_module.cpp
     src/search_input_view_model.cpp
     src/search_ui_events.cpp

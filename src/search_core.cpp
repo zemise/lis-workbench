@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -371,6 +372,38 @@ const char* barcode_machine_status_sql() {
            " WHEN 2 THEN '审核完成'"
            " WHEN 3 THEN '发送完成'"
            " ELSE '' END";
+}
+
+void fill_if_empty(std::string& target, const std::string& value) {
+    if (trim(target).empty() && !trim(value).empty()) {
+        target = value;
+    }
+}
+
+bool exec_optional_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, LogFn log) {
+    std::string ignored_error;
+    if (log) log("exec optional sql: " + sql + "\n");
+    return exec_query(dbc, sql, stmt, ignored_error);
+}
+
+std::string specimen_order_key(const SpecimenOrderRow& row) {
+    return trim(row.barcode) + "\n" + trim(row.room_code) + "\n" + trim(row.order_text) + "\n" +
+           trim(row.sample_name) + "\n" + trim(row.fee) + "\n" +
+           trim(row.request_time);
+}
+
+void add_unique_order(std::vector<SpecimenOrderRow>& rows, const SpecimenOrderRow& row) {
+    const auto key = specimen_order_key(row);
+    for (const auto& existing : rows) {
+        if (specimen_order_key(existing) == key) {
+            return;
+        }
+    }
+    rows.push_back(row);
+}
+
+bool should_add_supplemental_orders(const SpecimenBarcodeResult& result) {
+    return !result.has_barcode_rows || result.orders.empty();
 }
 
 #endif
@@ -1085,6 +1118,444 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)query; (void)log;
+    error = "query_specimen_signed_list is only available on Windows";
+    return false;
+#else
+    if (!query.use_sign_time && !query.use_apply_time) {
+        error = "missing date filter";
+        return false;
+    }
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) return false;
+
+    std::ostringstream where;
+    where << " WHERE b.IN_DATE IS NOT NULL"
+          << " AND (b.DELETE_BIT IS NULL OR b.DELETE_BIT=0)"
+          << " AND (b.ZT_FLAG IS NULL OR b.ZT_FLAG<>9)";
+
+    if (query.use_sign_time) {
+        if (!trim(query.sign_start).empty()) {
+            where << " AND b.IN_DATE >= '" << sql_escape(trim(query.sign_start)) << "'";
+        }
+        if (!trim(query.sign_end).empty()) {
+            where << " AND b.IN_DATE < DATEADD(minute,1,'" << sql_escape(trim(query.sign_end)) << "')";
+        }
+    }
+    if (query.use_apply_time) {
+        if (!trim(query.apply_start).empty()) {
+            where << " AND b.REQ_TIME >= '" << sql_escape(trim(query.apply_start)) << "'";
+        }
+        if (!trim(query.apply_end).empty()) {
+            where << " AND b.REQ_TIME < DATEADD(minute,1,'" << sql_escape(trim(query.apply_end)) << "')";
+        }
+    }
+    add_eq(where, "CONVERT(varchar(20),b.ROOM_CODE)", query.room_code);
+    add_like(where, "b.NAME", query.patient_name);
+
+    std::ostringstream sql;
+    sql << "SELECT "
+        << "isnull(LTRIM(RTRIM(b.BARCODE)),''),"
+        << "isnull(LTRIM(RTRIM(b.REG_NO)),''),"
+        << "isnull(LTRIM(RTRIM(b.TYPENAME)),''),"
+        << "isnull(LTRIM(RTRIM(b.NAME)),''),"
+        << "isnull(LTRIM(RTRIM(b.SEX)),''),"
+        << "isnull(LTRIM(RTRIM(b.DEPT_NAME)),''),"
+        << "isnull(LTRIM(RTRIM(b.ORDER_TEXT)),''),"
+        << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),b.FY))),''),"
+        << "isnull(CONVERT(varchar(19),b.REQ_TIME,120),''),"
+        << "isnull(nullif(LTRIM(RTRIM(b.COLLECTION_TIME)),''),isnull(CONVERT(varchar(19),b.SUB_DATE,120),'')),"
+        << "isnull(CONVERT(varchar(19),b.IN_DATE,120),''),"
+        << "isnull(CONVERT(varchar(19),b.SUB_DATE,120),''),"
+        << "isnull(LTRIM(RTRIM(b.AGE)),''),"
+        << "isnull(LTRIM(RTRIM(b.OPER_CODE)),''),"
+        << "isnull(LTRIM(RTRIM(b.SAMP_NAME)),''),"
+        << "isnull(nullif(LTRIM(RTRIM(room.ROOM_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),b.ROOM_CODE))),''))"
+        << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
+        << " LEFT JOIN LS_AS_ROOM room WITH (NOLOCK) ON b.ROOM_CODE=room.ROOM_CODE AND room.DELETE_BIT=0"
+        << where.str()
+        << " ORDER BY b.IN_DATE ASC,b.BARCODE ASC,b.ID ASC";
+
+    if (log) log("exec sql: " + sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        SpecimenSignedListRow row;
+        row.barcode = fetch_column(stmt, 1);
+        row.reg_no = fetch_column(stmt, 2);
+        row.type_name = fetch_column(stmt, 3);
+        row.name = fetch_column(stmt, 4);
+        row.sex = fetch_column(stmt, 5);
+        row.dept_name = fetch_column(stmt, 6);
+        row.order_text = fetch_column(stmt, 7);
+        row.fee = fetch_column(stmt, 8);
+        row.request_time = fetch_column(stmt, 9);
+        row.collection_time = fetch_column(stmt, 10);
+        row.signed_time = fetch_column(stmt, 11);
+        row.submit_time = fetch_column(stmt, 12);
+        row.age = fetch_column(stmt, 13);
+        row.receiver = fetch_column(stmt, 14);
+        row.sample_name = fetch_column(stmt, 15);
+        row.room_code = fetch_column(stmt, 16);
+        rows.push_back(std::move(row));
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log) {
+    result = SpecimenBarcodeResult{};
+#ifndef _WIN32
+    (void)query; (void)log;
+    error = "query_specimen_barcode is only available on Windows";
+    return false;
+#else
+    const auto barcode = trim(query.barcode);
+    if (barcode.empty()) {
+        error = "empty barcode";
+        return false;
+    }
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) return false;
+
+    result.barcode = barcode;
+    const auto escaped = sql_escape(barcode);
+
+    {
+        std::ostringstream sql;
+        sql << "SELECT TOP 200 "
+            << "isnull(LTRIM(RTRIM(b.BARCODE)),''),"
+            << "isnull(LTRIM(RTRIM(b.REG_NO)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),b.TYPE))),''),"
+            << "isnull(LTRIM(RTRIM(b.TYPENAME)),''),"
+            << "isnull(LTRIM(RTRIM(b.NAME)),''),"
+            << "isnull(LTRIM(RTRIM(b.SEX)),''),"
+            << "isnull(LTRIM(RTRIM(b.AGE)),''),"
+            << "isnull(LTRIM(RTRIM(b.DEPT_NAME)),''),"
+            << "isnull(LTRIM(RTRIM(b.BEDNO)),''),"
+            << "isnull(LTRIM(RTRIM(b.REQ_DRN)),''),"
+            << "isnull(nullif(LTRIM(RTRIM(room.ROOM_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),b.ROOM_CODE))),'')),"
+            << "isnull(LTRIM(RTRIM(b.SAMP_NAME)),''),"
+            << "isnull(LTRIM(RTRIM(b.ORDER_TEXT)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),b.FY))),''),"
+            << "isnull(CONVERT(varchar(19),b.REQ_TIME,120),''),"
+            << "isnull(CONVERT(varchar(19),b.IN_DATE,120),''),"
+            << "isnull(LTRIM(RTRIM(b.OPER_CODE)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(10),b.JZ_FLAG))),''),"
+            << "isnull(nullif(LTRIM(RTRIM(CONVERT(varchar(32),b.COLLECTION_TIME))),''),isnull(CONVERT(varchar(19),b.SUB_DATE,120),'')),"
+            << "isnull(CONVERT(varchar(19),b.SUB_DATE,120),''),"
+            << "isnull(LTRIM(RTRIM(b.NOTE)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(10),b.OPER_STATE))),'')"
+            << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
+            << " LEFT JOIN LS_AS_ROOM room WITH (NOLOCK) ON b.ROOM_CODE=room.ROOM_CODE AND room.DELETE_BIT=0"
+            << " WHERE b.BARCODE='" << escaped << "'"
+            << " AND (b.DELETE_BIT IS NULL OR b.DELETE_BIT=0)"
+            << " AND (b.ZT_FLAG IS NULL OR b.ZT_FLAG<>9)"
+            << " ORDER BY b.ID";
+        if (log) log("exec sql: " + sql.str() + "\n");
+
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        while (SQLFetch(stmt) == SQL_SUCCESS) {
+            const auto col_barcode = fetch_column(stmt, 1);
+            const auto col_reg_no = fetch_column(stmt, 2);
+            const auto col_type_code = fetch_column(stmt, 3);
+            const auto col_type_name = fetch_column(stmt, 4);
+            const auto col_name = fetch_column(stmt, 5);
+            const auto col_sex = fetch_column(stmt, 6);
+            const auto col_age = fetch_column(stmt, 7);
+            const auto col_dept_name = fetch_column(stmt, 8);
+            const auto col_bed_no = fetch_column(stmt, 9);
+            const auto col_requester = fetch_column(stmt, 10);
+            const auto col_room_code = fetch_column(stmt, 11);
+            const auto col_sample_name = fetch_column(stmt, 12);
+            const auto col_order_text = fetch_column(stmt, 13);
+            const auto col_fee = fetch_column(stmt, 14);
+            const auto col_request_time = fetch_column(stmt, 15);
+            const auto col_signed_time = fetch_column(stmt, 16);
+            const auto col_receiver = fetch_column(stmt, 17);
+            const auto col_jz_flag = fetch_column(stmt, 18);
+            const auto col_collection_time = fetch_column(stmt, 19);
+            const auto col_submit_time = fetch_column(stmt, 20);
+            const auto col_note = fetch_column(stmt, 21);
+            const auto col_oper_state = fetch_column(stmt, 22);
+
+            result.has_barcode_rows = true;
+            fill_if_empty(result.barcode, col_barcode);
+            fill_if_empty(result.reg_no, col_reg_no);
+            fill_if_empty(result.type_code, col_type_code);
+            fill_if_empty(result.type_name, col_type_name);
+            fill_if_empty(result.name, col_name);
+            fill_if_empty(result.sex, col_sex);
+            fill_if_empty(result.age, col_age);
+            fill_if_empty(result.dept_name, col_dept_name);
+            fill_if_empty(result.bed_no, col_bed_no);
+            fill_if_empty(result.requester, col_requester);
+            fill_if_empty(result.room_code, col_room_code);
+
+            SpecimenOrderRow order;
+            order.barcode = col_barcode;
+            order.room_code = col_room_code;
+            order.sample_name = col_sample_name;
+            order.order_text = col_order_text;
+            order.fee = col_fee;
+            order.request_time = col_request_time;
+            fill_if_empty(result.fee, order.fee);
+            fill_if_empty(result.signed_time, col_signed_time);
+            fill_if_empty(result.receiver, col_receiver);
+            fill_if_empty(result.jz_flag, col_jz_flag);
+            fill_if_empty(result.collection_time, col_collection_time);
+            fill_if_empty(result.submit_time, col_submit_time);
+            if (trim(col_oper_state) == "0" || trim(result.oper_state).empty()) {
+                result.oper_state = col_oper_state;
+            }
+            order.note = col_note;
+            if (!trim(order.order_text).empty() || !trim(order.sample_name).empty()) {
+                add_unique_order(result.orders, order);
+            }
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+
+    {
+        std::ostringstream sql;
+        sql << "SELECT TOP 20 "
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),''),"
+            << "isnull(LTRIM(RTRIM(pt.TYPE_NAME)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(30),r.REP_NO))),''),"
+            << "isnull(LTRIM(RTRIM(r.OPER_NO)),''),"
+            << "isnull(LTRIM(RTRIM(r.REG_NO)),''),"
+            << "isnull(LTRIM(RTRIM(r.NAME)),''),"
+            << "CASE r.SEX WHEN '1' THEN '男' WHEN '2' THEN '女' ELSE isnull(LTRIM(RTRIM(r.SEX)),'') END,"
+            << "isnull(LTRIM(RTRIM(r.AGE)),''),"
+            << "isnull(LTRIM(RTRIM(r.BED_CODE)),''),"
+            << "isnull(LTRIM(RTRIM(dept.NAME)),''),"
+            << "isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.MACH_CODE))),'')),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.GROUP_CODE))),''),"
+            << "isnull(LTRIM(RTRIM(r.CHK_FLAG)),''),"
+            << "isnull(LTRIM(RTRIM(r.CONF)),''),"
+            << "isnull(CONVERT(varchar(19),r.CREATE_TIME,120),'')"
+            << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+            << " LEFT JOIN LS_AS_PATTYPE pt WITH (NOLOCK) ON r.TYPE=pt.TYPE AND pt.DELETE_BIT=0"
+            << " LEFT JOIN JC_DEPT_PROPERTY dept WITH (NOLOCK) ON r.DEPT_CODE=dept.DEPT_ID"
+            << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND mach.DELETE_BIT=0"
+            << " WHERE r.TXM_NO='" << escaped << "'"
+            << " AND (r.DELETE_BIT IS NULL OR r.DELETE_BIT=0)"
+            << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
+        if (log) log("exec sql: " + sql.str() + "\n");
+
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        while (SQLFetch(stmt) == SQL_SUCCESS) {
+            const auto col_type_code = fetch_column(stmt, 1);
+            const auto col_type_name = fetch_column(stmt, 2);
+            const auto col_rep_no = fetch_column(stmt, 3);
+            const auto col_oper_no = fetch_column(stmt, 4);
+            const auto col_reg_no = fetch_column(stmt, 5);
+            const auto col_name = fetch_column(stmt, 6);
+            const auto col_sex = fetch_column(stmt, 7);
+            const auto col_age = fetch_column(stmt, 8);
+            const auto col_bed_no = fetch_column(stmt, 9);
+            const auto col_dept_name = fetch_column(stmt, 10);
+            const auto col_mach_code = fetch_column(stmt, 11);
+            const auto col_group_code = fetch_column(stmt, 12);
+            const auto col_chk_flag = fetch_column(stmt, 13);
+            const auto col_conf = fetch_column(stmt, 14);
+            const auto col_create_time = fetch_column(stmt, 15);
+
+            result.has_report_rows = true;
+            fill_if_empty(result.type_code, col_type_code);
+            fill_if_empty(result.type_name, col_type_name);
+            fill_if_empty(result.rep_no, col_rep_no);
+            fill_if_empty(result.oper_no, col_oper_no);
+            fill_if_empty(result.reg_no, col_reg_no);
+            fill_if_empty(result.name, col_name);
+            fill_if_empty(result.sex, col_sex);
+            fill_if_empty(result.age, col_age);
+            fill_if_empty(result.bed_no, col_bed_no);
+            fill_if_empty(result.dept_name, col_dept_name);
+            fill_if_empty(result.mach_code, col_mach_code);
+            fill_if_empty(result.group_code, col_group_code);
+            fill_if_empty(result.chk_flag, col_chk_flag);
+            fill_if_empty(result.conf, col_conf);
+            fill_if_empty(result.create_time, col_create_time);
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+
+    {
+        std::ostringstream sql;
+        sql << "SELECT TOP 50 "
+            << "isnull(LTRIM(RTRIM(TXM)),''),"
+            << "isnull(LTRIM(RTRIM(blh)),''),"
+            << "isnull(LTRIM(RTRIM(hzxm)),''),"
+            << "CASE CONVERT(varchar(10),xb) WHEN '1' THEN '男' WHEN '2' THEN '女' ELSE isnull(LTRIM(RTRIM(CONVERT(varchar(10),xb))),'') END,"
+            << "isnull(LTRIM(RTRIM(BBMC)),''),"
+            << "isnull(LTRIM(RTRIM(ksname)),''),"
+            << "isnull(LTRIM(RTRIM(kdys)),''),"
+            << "isnull(LTRIM(RTRIM(sqnr)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),ZJE))),''),"
+            << "isnull(CONVERT(varchar(19),lrrq,120),''),"
+            << "isnull(CONVERT(varchar(19),BBCJSJ,120),'')"
+            << " FROM V_lis_mzinfo_txm"
+            << " WHERE TXM='" << escaped << "'";
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (exec_optional_query(db.dbc, sql.str(), stmt, log)) {
+            while (SQLFetch(stmt) == SQL_SUCCESS) {
+                const auto col_txm = fetch_column(stmt, 1);
+                const auto col_blh = fetch_column(stmt, 2);
+                const auto col_name = fetch_column(stmt, 3);
+                const auto col_sex = fetch_column(stmt, 4);
+                const auto col_sample_name = fetch_column(stmt, 5);
+                const auto col_dept_name = fetch_column(stmt, 6);
+                const auto col_requester = fetch_column(stmt, 7);
+                const auto col_order_text = fetch_column(stmt, 8);
+                const auto col_fee = fetch_column(stmt, 9);
+                const auto col_request_time = fetch_column(stmt, 10);
+                const auto col_collection_time = fetch_column(stmt, 11);
+
+                result.has_outpatient_rows = true;
+                fill_if_empty(result.barcode, col_txm);
+                fill_if_empty(result.reg_no, col_blh);
+                fill_if_empty(result.name, col_name);
+                fill_if_empty(result.sex, col_sex);
+                fill_if_empty(result.type_name, "门诊");
+                fill_if_empty(result.dept_name, col_dept_name);
+                fill_if_empty(result.requester, col_requester);
+                SpecimenOrderRow order;
+                order.barcode = col_txm;
+                order.sample_name = col_sample_name;
+                order.order_text = col_order_text;
+                order.fee = col_fee;
+                order.request_time = col_request_time;
+                fill_if_empty(result.fee, order.fee);
+                fill_if_empty(result.collection_time, col_collection_time);
+                if (should_add_supplemental_orders(result) &&
+                    (!trim(order.order_text).empty() || !trim(order.sample_name).empty())) {
+                    add_unique_order(result.orders, order);
+                }
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        }
+    }
+
+    {
+        std::ostringstream sql;
+        sql << "SELECT TOP 50 "
+            << "isnull(LTRIM(RTRIM(TXM)),''),"
+            << "isnull(LTRIM(RTRIM(BLH)),''),"
+            << "isnull(LTRIM(RTRIM(SQNR)),''),"
+            << "isnull(LTRIM(RTRIM(BBMC)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),JE))),''),"
+            << "isnull(CONVERT(varchar(19),SQRQ,120),''),"
+            << "isnull(CONVERT(varchar(19),BBCJSJ,120),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),ZXKS))),'')"
+            << " FROM YJ_MZSQ WITH (NOLOCK)"
+            << " WHERE TXM='" << escaped << "'"
+            << " AND (BSCBZ IS NULL OR BSCBZ=0)"
+            << " ORDER BY YJSQID";
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (exec_optional_query(db.dbc, sql.str(), stmt, log)) {
+            while (SQLFetch(stmt) == SQL_SUCCESS) {
+                const auto col_txm = fetch_column(stmt, 1);
+                const auto col_blh = fetch_column(stmt, 2);
+                const auto col_order_text = fetch_column(stmt, 3);
+                const auto col_sample_name = fetch_column(stmt, 4);
+                const auto col_fee = fetch_column(stmt, 5);
+                const auto col_request_time = fetch_column(stmt, 6);
+                const auto col_collection_time = fetch_column(stmt, 7);
+                const auto col_room_code = fetch_column(stmt, 8);
+
+                result.has_outpatient_rows = true;
+                fill_if_empty(result.barcode, col_txm);
+                fill_if_empty(result.reg_no, col_blh);
+                fill_if_empty(result.type_name, "门诊");
+                SpecimenOrderRow order;
+                order.barcode = col_txm;
+                order.room_code = col_room_code;
+                order.order_text = col_order_text;
+                order.sample_name = col_sample_name;
+                order.fee = col_fee;
+                order.request_time = col_request_time;
+                fill_if_empty(result.room_code, order.room_code);
+                fill_if_empty(result.fee, order.fee);
+                fill_if_empty(result.collection_time, col_collection_time);
+                if (should_add_supplemental_orders(result) &&
+                    (!trim(order.order_text).empty() || !trim(order.sample_name).empty())) {
+                    add_unique_order(result.orders, order);
+                }
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        }
+    }
+
+    {
+        std::ostringstream sql;
+        sql << "SELECT TOP 50 "
+            << "isnull(LTRIM(RTRIM(TXM)),''),"
+            << "isnull(LTRIM(RTRIM(SQNR)),''),"
+            << "isnull(LTRIM(RTRIM(BBMC)),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),JE))),''),"
+            << "isnull(CONVERT(varchar(19),SQRQ,120),''),"
+            << "isnull(CONVERT(varchar(19),BBCJSJ,120),''),"
+            << "isnull(CONVERT(varchar(19),JSSJ,120),''),"
+            << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),JSKS))),'')"
+            << " FROM YJ_ZYSQ WITH (NOLOCK)"
+            << " WHERE TXM='" << escaped << "'"
+            << " AND (BSCBZ IS NULL OR BSCBZ=0)"
+            << " ORDER BY YJSQID";
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (exec_optional_query(db.dbc, sql.str(), stmt, log)) {
+            while (SQLFetch(stmt) == SQL_SUCCESS) {
+                const auto col_txm = fetch_column(stmt, 1);
+                const auto col_order_text = fetch_column(stmt, 2);
+                const auto col_sample_name = fetch_column(stmt, 3);
+                const auto col_fee = fetch_column(stmt, 4);
+                const auto col_request_time = fetch_column(stmt, 5);
+                const auto col_collection_time = fetch_column(stmt, 6);
+                const auto col_signed_time = fetch_column(stmt, 7);
+                const auto col_room_code = fetch_column(stmt, 8);
+
+                result.has_inpatient_rows = true;
+                fill_if_empty(result.barcode, col_txm);
+                fill_if_empty(result.type_name, "住院");
+                SpecimenOrderRow order;
+                order.barcode = col_txm;
+                order.order_text = col_order_text;
+                order.sample_name = col_sample_name;
+                order.fee = col_fee;
+                order.request_time = col_request_time;
+                fill_if_empty(result.fee, order.fee);
+                fill_if_empty(result.collection_time, col_collection_time);
+                fill_if_empty(result.signed_time, col_signed_time);
+                order.room_code = col_room_code;
+                fill_if_empty(result.room_code, order.room_code);
+                if (should_add_supplemental_orders(result) &&
+                    (!trim(order.order_text).empty() || !trim(order.sample_name).empty())) {
+                    add_unique_order(result.orders, order);
+                }
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        }
+    }
+
     disconnect(db);
     error.clear();
     return true;
