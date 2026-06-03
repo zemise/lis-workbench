@@ -258,6 +258,43 @@ struct SpecimenSignedListQuery {
     std::string patient_name;
 };
 
+struct HivStatSummary {
+    int screening_count = 0;
+    int positive_count = 0;
+    int sti_clinic_screening_count = 0;
+    int sti_clinic_positive_count = 0;
+    int prenatal_screening_count = 0;
+    int prenatal_positive_count = 0;
+    int other_visit_screening_count = 0;
+    int other_visit_positive_count = 0;
+};
+
+struct HivStatDetailRow {
+    std::string mach_code;
+    std::string machine_name;
+    std::string lab_department;
+    std::string item_code;
+    std::string item_name;
+    std::string rep_no;
+    std::string txm_no;
+    std::string oper_no;
+    std::string name;
+    std::string patient_type;
+    std::string dept_name;
+    std::string result;
+    std::string lower_bound;
+    std::string upper_bound;
+    std::string positive;
+    std::string report_time;
+};
+
+struct HivStatQuery {
+    std::string connection_string;
+    int year = 0;
+    int month = 0;
+    std::string lab_department;
+};
+
 using LogFn = std::function<void(const std::string&)>;
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
@@ -271,5 +308,6 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});
+bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search

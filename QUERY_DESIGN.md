@@ -115,8 +115,21 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | `LS_AS_ROOM` | 检验科室字典 | `ROOM_CODE`, `ROOM_NAME` |
 | `LS_AS_MACHINE` | 检验仪器字典，筛选 `RUL='启用'` | `MACH_CODE`, `MACH_NAME`, `ROOM_CODE`, `RUL` |
 | `LS_AS_BARCODE` | 条码/病人号关联表，用于“病人号”和已签收条码查询 | `BARCODE`, `REG_NO`, `OPER_STATE`, `CANCEL_DATE`, `CANCEL_OPER` |
+| `JC_DEPT_PROPERTY` | 科室字典，覆盖率更高，当前优先用于报告表 `DEPT_CODE -> 科室名称` | `DEPT_ID`, `NAME`, `DELETED` |
+| `JC_dept_mz_zy` | 临床申请科室字典，根据 `TYPE / TYPENAME` 区分门诊或住院后解析 `DEPT_CODE -> DEPT_NAME` | 门诊：`mzksid`, `mzksmc`；住院：`zyksid`, `zyksmc`；`delete_bit` |
 | `JC_EMPLOYEE_PROPERTY` | 人员字典，用于“检验者”和“审核者”显示 | `EMPLOYEE_ID`, `NAME`, `D_CODE`, `YS_CODE`, `TYPENAME` |
 | `LS_AS_RESULTP` | 原候选检验者来源，但实测覆盖率低，当前不作为主来源 | `REP_NO`, `EditName`, `ChkNAME`, `TXM_NO` |
+
+### 临床申请科室映射
+
+`LS_AS_BARCODE.DEPT_CODE / DEPT_NAME` 表示临床申请科室，不是检验科室、签收科室或仪器科室。当前默认优先用覆盖率更高的 `JC_DEPT_PROPERTY.DEPT_ID -> NAME` 补全科室名称，查询时应排除 `DELETED=1` 的科室记录。
+
+当确实需要按门诊/住院来源分别确认条码表申请科室时，再使用 `JC_dept_mz_zy` 作为辅助关系：
+
+- 门诊：`DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid`，显示 `JC_dept_mz_zy.mzksmc`。
+- 住院：`DEPT_CODE` 对应 `JC_dept_mz_zy.zyksid`，显示 `JC_dept_mz_zy.zyksmc`。
+
+如果 `LS_AS_BARCODE.DEPT_NAME` 已有值，当前查询展示可优先直接使用；当需要修正空值、代码值或重新计算申请科室名称时，再按上述字典关系补全。当前 `HIV 抗体检测统计` 明细的“科室”列不再依赖 `LS_AS_BARCODE.DEPT_NAME`，而是直接按 `LS_AS_REPORT.DEPT_CODE -> JC_DEPT_PROPERTY.DEPT_ID -> NAME` 取值；字典缺失时回退显示 `LS_AS_REPORT.DEPT_CODE`。
 
 ## 已签收条码查询
 
@@ -154,7 +167,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 类型 | `LS_AS_BARCODE.TYPENAME` |
 | 姓名 | `LS_AS_BARCODE.NAME` |
 | 性别 | `LS_AS_BARCODE.SEX` |
-| 申请科室 | `LS_AS_BARCODE.DEPT_NAME` |
+| 申请科室 | 优先 `LS_AS_BARCODE.DEPT_NAME`；需要从代码补全时，根据 `TYPE / TYPENAME` 区分门诊/住院后，用 `DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid / zyksid` 取得 `mzksmc / zyksmc` |
 | 床号 | `LS_AS_BARCODE.BEDNO` |
 | 签收人 | `LS_AS_BARCODE.OPER_CODE` |
 | 签收时间 | `LS_AS_BARCODE.IN_DATE` |
@@ -200,7 +213,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 性别 | `LS_AS_REPORT.SEX = LS_AS_SEX.SEX_CODE`，显示 `SEX_NAME` |
 | 年龄 | `LS_AS_REPORT.AGE` |
 | 医嘱内容 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后聚合 `ORDER_TEXT`，多行用 `/` 分隔 |
-| 科室代码 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后取 `DEPT_NAME` |
+| 科室代码 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后优先取 `DEPT_NAME`；需要从代码补全时，根据 `LS_AS_BARCODE.TYPE / TYPENAME` 区分门诊/住院后，用 `DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid / zyksid` 取得 `mzksmc / zyksmc` |
 | 床号 | `LS_AS_REPORT.BED_CODE` |
 | 打印 | `LS_AS_REPORT.ZYMZ_PRINT` |
 | 病人类型 | `LS_AS_REPORT.TYPE = LS_AS_PATTYPE.TYPE`，显示 `TYPE_NAME` |

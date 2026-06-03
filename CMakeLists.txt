@@ -123,6 +123,7 @@ add_executable(main_app WIN32
     src/barcode_label_printing.cpp
     src/barcode_module.cpp
     src/blood_module.cpp
+    src/hiv_statistics_module.cpp
     src/query_module.cpp
     src/regular_report_module.cpp
     src/specimen_sign_module.cpp

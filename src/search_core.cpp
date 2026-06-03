@@ -42,6 +42,35 @@ std::string upper_ascii(std::string text) {
     return text;
 }
 
+bool contains_text(const std::string& text, const char* needle) {
+    return text.find(needle) != std::string::npos;
+}
+
+void add_count(int& screening_count, int& positive_count, bool is_positive) {
+    ++screening_count;
+    if (is_positive) {
+        ++positive_count;
+    }
+}
+
+bool is_hiv_sti_clinic_dept(const std::string& dept_name) {
+    return contains_text(dept_name, "皮肤科门诊");
+}
+
+bool is_hiv_other_visit_dept(const std::string& dept_name) {
+    const std::string normalized = trim(dept_name);
+    return normalized.empty() || normalized == "0" ||
+           contains_text(normalized, "体检") ||
+           contains_text(normalized, "儿童保健") ||
+           contains_text(normalized, "健康管理") ||
+           contains_text(normalized, "GCP");
+}
+
+bool is_hiv_prenatal_dept(const std::string& dept_name) {
+    return contains_text(dept_name, "产科门诊") ||
+           contains_text(dept_name, "早孕关爱门诊");
+}
+
 std::string sql_item_code_list(const std::string& text, const char* fallback) {
     const std::string source = trim(text).empty() ? fallback : text;
     std::vector<std::string> codes;
@@ -1556,6 +1585,166 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         }
     }
 
+    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log) {
+    summary = HivStatSummary{};
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_hiv_statistics is only available on Windows";
+    return false;
+#else
+    if (query.year < 1900 || query.year > 9999 || query.month < 1 || query.month > 12) {
+        error = "invalid year or month";
+        return false;
+    }
+
+    char start_date[16]{};
+    char end_date[16]{};
+    const int next_year = query.month == 12 ? query.year + 1 : query.year;
+    const int next_month = query.month == 12 ? 1 : query.month + 1;
+    sprintf_s(start_date, "%04d-%02d-01", query.year, query.month);
+    sprintf_s(end_date, "%04d-%02d-01", next_year, next_month);
+    const std::string lab_department = trim(query.lab_department);
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) {
+        return false;
+    }
+
+    const char* dept_name_expr =
+        "isnull(nullif(LTRIM(RTRIM(dept.NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),''))";
+
+    std::ostringstream sql;
+    sql << ";WITH raw AS ("
+        << " SELECT"
+        << " r.REP_NO,"
+        << " r.MACH_CODE,"
+        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.MACH_CODE))),'')) AS MACHINE_NAME,"
+        << " CASE WHEN " << dept_name_expr << " LIKE '%滨水新城%' THEN '新院' ELSE '老院' END AS LAB_DEPARTMENT,"
+        << " e.ITEM_CODE,"
+        << " isnull(LTRIM(RTRIM(e.ITEM_NAME)),'') AS ITEM_NAME,"
+        << " isnull(LTRIM(RTRIM(r.TXM_NO)),'') AS TXM_NO,"
+        << " isnull(LTRIM(RTRIM(r.OPER_NO)),'') AS OPER_NO,"
+        << " isnull(LTRIM(RTRIM(r.NAME)),'') AS NAME,"
+        << " isnull(nullif(LTRIM(RTRIM(pt.TYPE_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),'')) AS PAT_TYPE,"
+        << " " << dept_name_expr << " AS DEPT_NAME,"
+        << " isnull(LTRIM(RTRIM(e.RESULT)),'') AS RESULT_VALUE,"
+        << " isnull(LTRIM(RTRIM(e.UPBOUND)),'') AS LOWER_BOUND,"
+        << " isnull(LTRIM(RTRIM(e.DOWNBOUND)),'') AS UPPER_BOUND,"
+        << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME_TEXT"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK)"
+        << " ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND mach.DELETE_BIT=0"
+        << " LEFT JOIN LS_AS_PATTYPE pt WITH (NOLOCK) ON r.TYPE=pt.TYPE AND pt.DELETE_BIT=0"
+        << " LEFT JOIN JC_DEPT_PROPERTY dept WITH (NOLOCK) ON r.DEPT_CODE=dept.DEPT_ID AND isnull(dept.DELETED,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND r.REP_TIME>='" << start_date << "'"
+        << " AND r.REP_TIME<'" << end_date << "'"
+        << " AND r.CHK_FLAG='T'"
+        << " AND r.CONF='S'"
+        << " AND NULLIF(LTRIM(RTRIM(r.NAME)),'') IS NOT NULL"
+        << " AND ("
+        << " (r.MACH_CODE=4005 AND e.ITEM_CODE=91593)"
+        << " OR (r.MACH_CODE=914 AND e.ITEM_CODE=93053)"
+        << " OR (r.MACH_CODE=4008 AND e.ITEM_CODE=91442)"
+        << " )";
+    if (lab_department == "新院") {
+        sql << " AND " << dept_name_expr << " LIKE '%滨水新城%'";
+    } else if (lab_department == "老院") {
+        sql << " AND " << dept_name_expr << " NOT LIKE '%滨水新城%'";
+    }
+    sql
+        << "), marked AS ("
+        << " SELECT *,"
+        << " CASE WHEN RESULT_VALUE LIKE '%待确认%' THEN 1"
+        << " WHEN RESULT_VALUE LIKE '%阳性%' OR RESULT_VALUE LIKE '%+%' THEN 1"
+        << " ELSE 0 END AS POSITIVE_FLAG"
+        << " FROM raw"
+        << "), grouped AS ("
+        << " SELECT"
+        << " REP_NO,MACH_CODE,ITEM_CODE,"
+        << " MAX(MACHINE_NAME) AS MACHINE_NAME,"
+        << " MAX(LAB_DEPARTMENT) AS LAB_DEPARTMENT,"
+        << " MAX(ITEM_NAME) AS ITEM_NAME,"
+        << " MAX(TXM_NO) AS TXM_NO,"
+        << " MAX(OPER_NO) AS OPER_NO,"
+        << " MAX(NAME) AS NAME,"
+        << " MAX(PAT_TYPE) AS PAT_TYPE,"
+        << " MAX(DEPT_NAME) AS DEPT_NAME,"
+        << " MAX(RESULT_VALUE) AS RESULT_VALUE,"
+        << " MAX(LOWER_BOUND) AS LOWER_BOUND,"
+        << " MAX(UPPER_BOUND) AS UPPER_BOUND,"
+        << " MAX(REP_TIME_TEXT) AS REP_TIME_TEXT,"
+        << " MAX(POSITIVE_FLAG) AS POSITIVE_FLAG"
+        << " FROM marked"
+        << " GROUP BY REP_NO,MACH_CODE,ITEM_CODE"
+        << ")"
+        << " SELECT"
+        << " CONVERT(varchar(20),MACH_CODE),"
+        << " MACHINE_NAME,"
+        << " LAB_DEPARTMENT,"
+        << " CONVERT(varchar(20),ITEM_CODE),"
+        << " ITEM_NAME,"
+        << " CONVERT(varchar(30),REP_NO),"
+        << " TXM_NO,OPER_NO,NAME,PAT_TYPE,DEPT_NAME,RESULT_VALUE,LOWER_BOUND,UPPER_BOUND,"
+        << " CASE WHEN POSITIVE_FLAG=1 THEN '是' ELSE '否' END,"
+        << " REP_TIME_TEXT"
+        << " FROM grouped"
+        << " ORDER BY MACH_CODE,ITEM_CODE,REP_NO";
+
+    if (log) log("exec sql: " + sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        disconnect(db);
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        HivStatDetailRow row;
+        row.mach_code = fetch_column(stmt, 1);
+        row.machine_name = fetch_column(stmt, 2);
+        row.lab_department = fetch_column(stmt, 3);
+        row.item_code = fetch_column(stmt, 4);
+        row.item_name = fetch_column(stmt, 5);
+        row.rep_no = fetch_column(stmt, 6);
+        row.txm_no = fetch_column(stmt, 7);
+        row.oper_no = fetch_column(stmt, 8);
+        row.name = fetch_column(stmt, 9);
+        row.patient_type = fetch_column(stmt, 10);
+        row.dept_name = fetch_column(stmt, 11);
+        row.result = fetch_column(stmt, 12);
+        row.lower_bound = fetch_column(stmt, 13);
+        row.upper_bound = fetch_column(stmt, 14);
+        row.positive = fetch_column(stmt, 15);
+        row.report_time = fetch_column(stmt, 16);
+
+        ++summary.screening_count;
+        const bool is_positive = trim(row.positive) == "是";
+        if (is_positive) {
+            ++summary.positive_count;
+        }
+        if (is_hiv_sti_clinic_dept(row.dept_name)) {
+            add_count(summary.sti_clinic_screening_count, summary.sti_clinic_positive_count, is_positive);
+        }
+        if (is_hiv_other_visit_dept(row.dept_name)) {
+            add_count(summary.other_visit_screening_count, summary.other_visit_positive_count, is_positive);
+        }
+        if (is_hiv_prenatal_dept(row.dept_name)) {
+            add_count(summary.prenatal_screening_count, summary.prenatal_positive_count, is_positive);
+        }
+        rows.push_back(std::move(row));
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     disconnect(db);
     error.clear();
     return true;

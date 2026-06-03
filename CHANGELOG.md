@@ -1,7 +1,9 @@
 # Changelog
 
-## v2026.06.02
+## v2026.06.03
 
+- **数据库关系补充**：补充 `JC_DEPT_PROPERTY` 和 `JC_dept_mz_zy` 临床申请科室字典说明；`LS_AS_BARCODE.DEPT_CODE / DEPT_NAME` 属于申请科室，后续需要从代码补全名称时，优先使用覆盖率更高的 `JC_DEPT_PROPERTY.DEPT_ID -> NAME`，`JC_dept_mz_zy.mzksid/mzksmc` 或 `zyksid/zyksmc` 作为门诊/住院辅助关系，不与 `SIGN_DEPT`、检验科室或仪器科室混用。
+- **统计分析管理**：新增 `统计分析管理` 顶级菜单，预留 5 个统计分析入口；`统计分析1` 替换为 `HIV 抗体检测统计` 页面，第一版按 `LS_AS_REPORT.REP_TIME` 月份只读统计三组已确认 HIV 初筛候选项目，只纳入已审核 `CHK_FLAG='T'`、已发送 `CONF='S'` 且姓名非空的报告，按 `REP_NO + MACH_CODE + ITEM_CODE` 去重生成合计行的初筛检测数和初筛阳性数；`性病门诊` 行暂按明细 `科室` 包含 `皮肤科门诊` 的文字口径生成，`其他就诊检测` 行暂按明细 `科室` 包含 `体检`、`儿童保健`、`健康管理`、`GCP` 或科室为空/`0` 的文字口径生成，`孕产期检查` 行暂按明细 `科室` 包含 `产科门诊` 或 `早孕关爱门诊` 的文字口径生成，后续再考虑改为 `DEPT_ID` 精确口径；阳性按结果文本判断，`待确认` 优先，其次为 `阳性` 或 `+`，不做结果值与上下限的数值比较；顶部新增 `全部 / 新院 / 老院` 检验科来源筛选；明细中的仪器、病人类型和科室分别通过 `LS_AS_MACHINE`、`LS_AS_PATTYPE`、`JC_DEPT_PROPERTY` 转名称，科室按 `LS_AS_REPORT.DEPT_CODE -> JC_DEPT_PROPERTY.DEPT_ID -> NAME` 显示，检验科按科室名称是否包含 `滨水新城` 显示 `新院/老院`，报告时间按 `LS_AS_REPORT.REP_TIME` 显示，阳性行用红色背景提示；下方明细列表支持点击任意表头进行本地内存排序，不额外查询数据库；WB 检测数、复检、本年度累计和 Word 自动填表暂未接入。
 - **标本签收中心界面**：工具菜单 `标本签收中心` 替换原 `工具3` 占位页，新增 `specimen_sign_module.cpp/h`，按 `temp/模版.png` 完成顶部扫码区、病人信息、医嘱明细、左侧筛选区和右侧已签收条码列表的界面骨架；病人类型下拉框复用 `LS_AS_PATTYPE` 数据源并只显示 `TYPE_NAME`；顶部操作按钮和医嘱明细列表右侧 `- / +` 按钮会随窗口右侧边界移动；左上扫码框增加 `标本签收工作台` 标签，签收日期和申请日期使用日期时间选择器并默认当天起止时间，页面跨过凌晨后自动切换到新一天；按钮完全复用检验结果查询页的公共 `search::create_button` 原生按钮创建逻辑，不额外 owner-draw；当前已接入第一版只读条码查询，按单个条码精确查询 `LS_AS_BARCODE / LS_AS_REPORT` 并可选补查 `V_lis_mzinfo_txm / YJ_MZSQ / YJ_ZYSQ` 回填页面；当左侧条码为空时，支持按签收日期 `IN_DATE` 和/或申请日期 `REQ_TIME` 查询已签收条码列表，不执行签收、拒签、打印或导出操作。
 - **标本签收中心查询细节**：下方已签收列表补充签收时间、送检时间、年龄、签收人、标本类型和检验室，检验室通过 `LS_AS_BARCODE.ROOM_CODE -> LS_AS_ROOM.ROOM_NAME` 转换，字典查不到时回退显示代码；`此条码已存在...` 提示拆分为顶部红色专用标签，普通查询状态移至左下按钮区；已签收提示中的仪器通过 `LS_AS_REPORT.MACH_CODE -> LS_AS_MACHINE.MACH_NAME` 显示，并在任一条码明细 `OPER_STATE=0` 时追加 `未上机检验!`。
 - **标本签收中心补打条码**：新增 `barcode_label_printing.cpp/h` 共享条码打印 helper，常规报告和标本签收中心共用 LabelPrint `printMedicalLabel` 入口；标本签收中心 `补打条码` 以右侧已签收列表当前选中行为输入，样本号固定为 `补`，组合项目固定取当前行 `检验室` 内容。
@@ -14,7 +16,7 @@
 - **常规报告报告统计**：右侧顶部第二行显示 `危急报告数`、`危急报告已审`、`急诊报告数` 和 `急诊报告已审`；危急报告按 `assaypat_type=9` 统计，急诊报告按 `assaypat_type=0` 或 `JZ_FLAG=1` 合并统计，已审均要求已审核且已发送。
 - **LabelPrint 来源选择**：`lis.ps1` 新增 `-LabelPrintSource github|local|package`，正式打包可默认从 GitHub Release 下载 LabelPrint，本地联调可显式使用本地源码，已有解压包可继续通过 `-LabelPrintPackagePath` 使用。
 - **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.9` release 包。
-- 版本号 v2026.06.02。
+- 版本号 v2026.06.03。
 
 ## v2026.05.25.2
 
