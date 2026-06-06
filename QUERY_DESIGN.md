@@ -119,6 +119,9 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | `JC_dept_mz_zy` | 临床申请科室字典，根据 `TYPE / TYPENAME` 区分门诊或住院后解析 `DEPT_CODE -> DEPT_NAME` | 门诊：`mzksid`, `mzksmc`；住院：`zyksid`, `zyksmc`；`delete_bit` |
 | `JC_EMPLOYEE_PROPERTY` | 人员字典，用于“检验者”和“审核者”显示 | `EMPLOYEE_ID`, `NAME`, `D_CODE`, `YS_CODE`, `TYPENAME` |
 | `LS_AS_RESULTP` | 原候选检验者来源，但实测覆盖率低，当前不作为主来源 | `REP_NO`, `EditName`, `ChkNAME`, `TXM_NO` |
+| `LS_XK_BloodRequestApply` | 输血申请主表，输血结果查询列表主来源 | `ApplyFormNO`, `Apply_Time`, `Plan_Date`, `ApplyForm_Statue`, `Patient_NO`, `Patient_NOType`, `Patient_Name`, `TranProperty` |
+| `LS_XK_BloodRequestApplySon` | 输血申请子表，用于按申请单聚合申请成分 | `ApplyFormNO`, `ApplyComposition`, `ApplyNum`, `ApplyUnit` |
+| `LS_XK_BloodCrossMatch` | 交叉配血记录表，用于按输血申请号关联病人和配血审核信息 | `ApplyFormNO`, `Patient_NO`, `Patient_NOType`, `Patient_Name`, `VerifyState`, `Match_Date` |
 
 ### 临床申请科室映射
 
@@ -130,6 +133,75 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 - 住院：`DEPT_CODE` 对应 `JC_dept_mz_zy.zyksid`，显示 `JC_dept_mz_zy.zyksmc`。
 
 如果 `LS_AS_BARCODE.DEPT_NAME` 已有值，当前查询展示可优先直接使用；当需要修正空值、代码值或重新计算申请科室名称时，再按上述字典关系补全。当前 `HIV 抗体检测统计` 明细的“科室”列不再依赖 `LS_AS_BARCODE.DEPT_NAME`，而是直接按 `LS_AS_REPORT.DEPT_CODE -> JC_DEPT_PROPERTY.DEPT_ID -> NAME` 取值；字典缺失时回退显示 `LS_AS_REPORT.DEPT_CODE`。
+
+## 输血结果查询
+
+`输血结果查询` 当前以 `LS_XK_BloodRequestApply` 为申请主表做只读检索，并通过 `LS_XK_BloodRequestApplySon.ApplyFormNO` 聚合申请成分。
+
+### 申请主表
+
+| 界面/含义 | 数据库字段 |
+| --- | --- |
+| 申请单号 | `LS_XK_BloodRequestApply.ApplyFormNO` |
+| 输血申请时间 | `Apply_Time` |
+| 输血计划时间 | `Plan_Date` |
+| 申请状态 | `ApplyForm_Statue`，当前已确认值为 `已审核`、`未审核`、`已完结` |
+| 病人号 | `Patient_NO` |
+| 病人类型 | `Patient_NOType` |
+| 病人姓名 | `Patient_Name` |
+| 紧急程度/输血性质 | `TranProperty` |
+
+### 申请成分
+
+`LS_XK_BloodRequestApplySon` 通过 `ApplyFormNO` 与申请主表关联。当前“申请成分”显示格式为：
+
+```text
+ApplyCompositionApplyNumApplyUnit;
+```
+
+如果同一申请单对应多行子表记录，则在同一列表单元格中用分号拼接。
+
+### 交叉配血记录
+
+`LS_XK_BloodCrossMatch` 是交叉配血记录表，表内 `ApplyFormNO` 对应输血申请号，并有索引 `ApplyFormNO + Delete_Bit` 可用于按申请单关联查询。当前已确认字段含义：
+
+| 含义 | 数据库字段 |
+| --- | --- |
+| 输血申请单号 | `ApplyFormNO` |
+| 病人号 | `Patient_NO` |
+| 患者类型 | `Patient_NOType` |
+| 病人姓名 | `Patient_Name` |
+| 审核状态 | `VerifyState`，常见值为 `已审核`、`未审核` |
+| 配血时间 | `Match_Date` |
+
+后续如果输血页面需要展示交叉配血状态或配血时间，可优先按 `ApplyFormNO` 关联 `LS_XK_BloodCrossMatch`，并过滤 `Delete_Bit=0`。
+
+### HIV 统计中的已完结输血单申请号
+
+`HIV 抗体检测统计` 下方明细列表中的“病人号”列直接显示 `LS_AS_REPORT.REG_NO`。“已完结输血单申请号”列用于辅助核对 HIV 明细是否存在已完结输血申请。当前改为直接使用输血申请主表 `LS_XK_BloodRequestApply`，不再绕行 `LS_XK_BloodCrossMatch` 交叉配血表；申请主表自身包含唯一病人号 `Patient_NO`，因此匹配逻辑可简化为按病人号匹配，不再依赖姓名。为避免对每条 HIV 明细逐行扫描输血申请表，当前先按统计月份一次性取出当月已完结输血申请，再在 C++ 内存中按病人号匹配到明细行。当前匹配规则：
+
+```text
+LS_XK_BloodRequestApply.Apply_Time >= 当前统计月第一天
+LS_XK_BloodRequestApply.Apply_Time <  下月第一天
+LS_AS_REPORT.REG_NO = LS_XK_BloodRequestApply.Patient_NO
+LS_XK_BloodRequestApply.ApplyForm_Statue = '已完结'
+LS_XK_BloodRequestApply.Delete_Bit = 0
+```
+
+匹配后显示 `LS_XK_BloodRequestApply.ApplyFormNO`。如果同一病人匹配到多个已完结申请单号，则在同一单元格中用分号拼接。该列只读展示，不修改输血表数据。
+
+上方汇总表中的“受血（制品）前检测”行按下方明细“已完结输血单申请号”列是否非空统计：初筛检测数为该列非空的明细行数，初筛阳性数为这些明细行中 `阳性='是'` 的行数。
+
+上方汇总表中的“术前检测”行按剩余量统计：初筛检测数为总初筛检测数减去“受血（制品）前检测 / 性病门诊 / 其他就诊检测 / 孕产期检查”的初筛检测数，初筛阳性数同理用总初筛阳性数减去这些来源的初筛阳性数；如果分类之间未来出现交叉导致结果为负，则按 0 显示。
+
+HIV 明细查询的性能策略：
+
+- 第一步只查 `LS_AS_REPORT`：按月份、审核状态、发送状态、姓名非空、三组 `MACH_CODE` 和可选 `DEPT_CODE IN (...)` 筛出候选 `REP_NO`。
+- 第二步按候选 `REP_NO` 分批查询 `LS_AS_REPENTRY` 中三个目标 `ITEM_CODE`，每批最多 500 个 `REP_NO`，再在 C++ 中按报告仪器匹配对应 HIV 项目。
+- 三组候选报告按 `MACH_CODE` 拆成三段 `UNION ALL`，避免一个大 `OR` 条件影响 SQL Server 执行计划。
+- 报告主表查询不直接 JOIN `LS_AS_REPENTRY`，避免在月度范围上直接联查大明细表。
+- `LS_AS_MACHINE`、`LS_AS_PATTYPE`、`JC_DEPT_PROPERTY` 先作为小字典查询到 C++ 内存中，再对明细行做名称映射。
+- `全部 / 新院 / 老院` 来源筛选先根据 `JC_DEPT_PROPERTY.NAME` 分出新院/老院 `DEPT_ID` 集合，再把 `r.DEPT_CODE IN (...)` 下推到三段 HIV 主查询中；C++ 侧仍保留映射后校验，避免主 SQL 使用 `LIKE '%滨水新城%'`。
 
 ## 已签收条码查询
 

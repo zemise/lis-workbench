@@ -261,6 +261,10 @@ struct SpecimenSignedListQuery {
 struct HivStatSummary {
     int screening_count = 0;
     int positive_count = 0;
+    int preoperative_screening_count = 0;
+    int preoperative_positive_count = 0;
+    int transfusion_screening_count = 0;
+    int transfusion_positive_count = 0;
     int sti_clinic_screening_count = 0;
     int sti_clinic_positive_count = 0;
     int prenatal_screening_count = 0;
@@ -278,7 +282,9 @@ struct HivStatDetailRow {
     std::string rep_no;
     std::string txm_no;
     std::string oper_no;
+    std::string patient_no;
     std::string name;
+    std::string completed_blood_apply_forms;
     std::string patient_type;
     std::string dept_name;
     std::string result;

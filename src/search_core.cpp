@@ -53,6 +53,10 @@ void add_count(int& screening_count, int& positive_count, bool is_positive) {
     }
 }
 
+int non_negative_difference(int total, int used) {
+    return total > used ? total - used : 0;
+}
+
 bool is_hiv_sti_clinic_dept(const std::string& dept_name) {
     return contains_text(dept_name, "皮肤科门诊");
 }
@@ -1618,115 +1622,276 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         return false;
     }
 
-    const char* dept_name_expr =
-        "isnull(nullif(LTRIM(RTRIM(dept.NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),''))";
+    auto load_lookup = [&](const std::string& lookup_sql, std::map<std::string, std::string>& out) {
+        if (log) log("exec sql: " + lookup_sql + "\n");
+        SQLHSTMT lookup_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, lookup_sql, lookup_stmt, error)) {
+            return false;
+        }
+        while (SQLFetch(lookup_stmt) == SQL_SUCCESS) {
+            const std::string code = fetch_column(lookup_stmt, 1);
+            const std::string name = fetch_column(lookup_stmt, 2);
+            if (!code.empty()) {
+                out[code] = name;
+            }
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, lookup_stmt);
+        return true;
+    };
 
-    std::ostringstream sql;
-    sql << ";WITH raw AS ("
-        << " SELECT"
-        << " r.REP_NO,"
-        << " r.MACH_CODE,"
-        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.MACH_CODE))),'')) AS MACHINE_NAME,"
-        << " CASE WHEN " << dept_name_expr << " LIKE '%滨水新城%' THEN '新院' ELSE '老院' END AS LAB_DEPARTMENT,"
-        << " e.ITEM_CODE,"
-        << " isnull(LTRIM(RTRIM(e.ITEM_NAME)),'') AS ITEM_NAME,"
-        << " isnull(LTRIM(RTRIM(r.TXM_NO)),'') AS TXM_NO,"
-        << " isnull(LTRIM(RTRIM(r.OPER_NO)),'') AS OPER_NO,"
-        << " isnull(LTRIM(RTRIM(r.NAME)),'') AS NAME,"
-        << " isnull(nullif(LTRIM(RTRIM(pt.TYPE_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),'')) AS PAT_TYPE,"
-        << " " << dept_name_expr << " AS DEPT_NAME,"
-        << " isnull(LTRIM(RTRIM(e.RESULT)),'') AS RESULT_VALUE,"
-        << " isnull(LTRIM(RTRIM(e.UPBOUND)),'') AS LOWER_BOUND,"
-        << " isnull(LTRIM(RTRIM(e.DOWNBOUND)),'') AS UPPER_BOUND,"
-        << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME_TEXT"
-        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
-        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK)"
-        << " ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
-        << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND mach.DELETE_BIT=0"
-        << " LEFT JOIN LS_AS_PATTYPE pt WITH (NOLOCK) ON r.TYPE=pt.TYPE AND pt.DELETE_BIT=0"
-        << " LEFT JOIN JC_DEPT_PROPERTY dept WITH (NOLOCK) ON r.DEPT_CODE=dept.DEPT_ID AND isnull(dept.DELETED,0)=0"
-        << " WHERE isnull(r.DELETE_BIT,0)=0"
-        << " AND r.REP_TIME>='" << start_date << "'"
-        << " AND r.REP_TIME<'" << end_date << "'"
-        << " AND r.CHK_FLAG='T'"
-        << " AND r.CONF='S'"
-        << " AND NULLIF(LTRIM(RTRIM(r.NAME)),'') IS NOT NULL"
-        << " AND ("
-        << " (r.MACH_CODE=4005 AND e.ITEM_CODE=91593)"
-        << " OR (r.MACH_CODE=914 AND e.ITEM_CODE=93053)"
-        << " OR (r.MACH_CODE=4008 AND e.ITEM_CODE=91442)"
-        << " )";
-    if (lab_department == "新院") {
-        sql << " AND " << dept_name_expr << " LIKE '%滨水新城%'";
-    } else if (lab_department == "老院") {
-        sql << " AND " << dept_name_expr << " NOT LIKE '%滨水新城%'";
-    }
-    sql
-        << "), marked AS ("
-        << " SELECT *,"
-        << " CASE WHEN RESULT_VALUE LIKE '%待确认%' THEN 1"
-        << " WHEN RESULT_VALUE LIKE '%阳性%' OR RESULT_VALUE LIKE '%+%' THEN 1"
-        << " ELSE 0 END AS POSITIVE_FLAG"
-        << " FROM raw"
-        << "), grouped AS ("
-        << " SELECT"
-        << " REP_NO,MACH_CODE,ITEM_CODE,"
-        << " MAX(MACHINE_NAME) AS MACHINE_NAME,"
-        << " MAX(LAB_DEPARTMENT) AS LAB_DEPARTMENT,"
-        << " MAX(ITEM_NAME) AS ITEM_NAME,"
-        << " MAX(TXM_NO) AS TXM_NO,"
-        << " MAX(OPER_NO) AS OPER_NO,"
-        << " MAX(NAME) AS NAME,"
-        << " MAX(PAT_TYPE) AS PAT_TYPE,"
-        << " MAX(DEPT_NAME) AS DEPT_NAME,"
-        << " MAX(RESULT_VALUE) AS RESULT_VALUE,"
-        << " MAX(LOWER_BOUND) AS LOWER_BOUND,"
-        << " MAX(UPPER_BOUND) AS UPPER_BOUND,"
-        << " MAX(REP_TIME_TEXT) AS REP_TIME_TEXT,"
-        << " MAX(POSITIVE_FLAG) AS POSITIVE_FLAG"
-        << " FROM marked"
-        << " GROUP BY REP_NO,MACH_CODE,ITEM_CODE"
-        << ")"
-        << " SELECT"
-        << " CONVERT(varchar(20),MACH_CODE),"
-        << " MACHINE_NAME,"
-        << " LAB_DEPARTMENT,"
-        << " CONVERT(varchar(20),ITEM_CODE),"
-        << " ITEM_NAME,"
-        << " CONVERT(varchar(30),REP_NO),"
-        << " TXM_NO,OPER_NO,NAME,PAT_TYPE,DEPT_NAME,RESULT_VALUE,LOWER_BOUND,UPPER_BOUND,"
-        << " CASE WHEN POSITIVE_FLAG=1 THEN '是' ELSE '否' END,"
-        << " REP_TIME_TEXT"
-        << " FROM grouped"
-        << " ORDER BY MACH_CODE,ITEM_CODE,REP_NO";
+    std::map<std::string, std::string> machine_names;
+    std::map<std::string, std::string> patient_type_names;
+    std::map<std::string, std::string> dept_names;
 
-    if (log) log("exec sql: " + sql.str() + "\n");
-
-    SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+    if (!load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),MACH_CODE))),''),"
+            " isnull(LTRIM(RTRIM(MACH_NAME)),'')"
+            " FROM LS_AS_MACHINE WITH (NOLOCK)"
+            " WHERE isnull(DELETE_BIT,0)=0",
+            machine_names) ||
+        !load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(TYPE)),''),"
+            " isnull(LTRIM(RTRIM(TYPE_NAME)),'')"
+            " FROM LS_AS_PATTYPE WITH (NOLOCK)"
+            " WHERE isnull(DELETE_BIT,0)=0",
+            patient_type_names) ||
+        !load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),DEPT_ID))),''),"
+            " isnull(LTRIM(RTRIM(NAME)),'')"
+            " FROM JC_DEPT_PROPERTY WITH (NOLOCK)"
+            " WHERE isnull(DELETED,0)=0",
+            dept_names)) {
         disconnect(db);
         return false;
     }
 
-    while (SQLFetch(stmt) == SQL_SUCCESS) {
-        HivStatDetailRow row;
-        row.mach_code = fetch_column(stmt, 1);
-        row.machine_name = fetch_column(stmt, 2);
-        row.lab_department = fetch_column(stmt, 3);
-        row.item_code = fetch_column(stmt, 4);
-        row.item_name = fetch_column(stmt, 5);
-        row.rep_no = fetch_column(stmt, 6);
-        row.txm_no = fetch_column(stmt, 7);
-        row.oper_no = fetch_column(stmt, 8);
-        row.name = fetch_column(stmt, 9);
-        row.patient_type = fetch_column(stmt, 10);
-        row.dept_name = fetch_column(stmt, 11);
-        row.result = fetch_column(stmt, 12);
-        row.lower_bound = fetch_column(stmt, 13);
-        row.upper_bound = fetch_column(stmt, 14);
-        row.positive = fetch_column(stmt, 15);
-        row.report_time = fetch_column(stmt, 16);
+    const auto lookup_name = [](const std::map<std::string, std::string>& values,
+                                const std::string& code,
+                                const std::string& fallback) {
+        const auto it = values.find(code);
+        if (it != values.end() && !trim(it->second).empty()) {
+            return it->second;
+        }
+        return fallback;
+    };
 
+    const auto lab_department_for_dept = [](const std::string& dept_name) {
+        return contains_text(dept_name, "滨水新城") ? std::string("新院") : std::string("老院");
+    };
+
+    std::vector<std::string> lab_department_dept_codes;
+    if (lab_department == "新院" || lab_department == "老院") {
+        for (const auto& [dept_code, dept_name] : dept_names) {
+            if (!std::all_of(dept_code.begin(), dept_code.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            if (lab_department_for_dept(dept_name) == lab_department) {
+                lab_department_dept_codes.push_back(dept_code);
+            }
+        }
+    }
+
+    const auto append_dept_code_filter = [&](std::ostringstream& target) {
+        if (lab_department != "新院" && lab_department != "老院") {
+            return;
+        }
+        if (lab_department_dept_codes.empty()) {
+            target << " AND 1=0";
+            return;
+        }
+        target << " AND r.DEPT_CODE IN (";
+        for (size_t i = 0; i < lab_department_dept_codes.size(); ++i) {
+            if (i > 0) {
+                target << ",";
+            }
+            target << lab_department_dept_codes[i];
+        }
+        target << ")";
+    };
+
+    struct HivReportCandidate {
+        std::string rep_no;
+        std::string mach_code;
+        std::string txm_no;
+        std::string oper_no;
+        std::string patient_no;
+        std::string name;
+        std::string patient_type_code;
+        std::string dept_code;
+        std::string report_time;
+    };
+
+    std::ostringstream report_sql;
+    auto append_report_branch = [&](int mach_code, bool first) {
+        if (!first) {
+            report_sql << " UNION ALL ";
+        }
+        report_sql << " SELECT"
+            << " CONVERT(varchar(30),r.REP_NO),"
+            << " CONVERT(varchar(20),r.MACH_CODE),"
+            << " isnull(LTRIM(RTRIM(r.TXM_NO)),'') AS TXM_NO,"
+            << " isnull(LTRIM(RTRIM(r.OPER_NO)),'') AS OPER_NO,"
+            << " isnull(LTRIM(RTRIM(r.REG_NO)),'') AS PATIENT_NO,"
+            << " isnull(LTRIM(RTRIM(r.NAME)),'') AS NAME,"
+            << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),'') AS PAT_TYPE_CODE,"
+            << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),'') AS DEPT_CODE,"
+            << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME_TEXT"
+            << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+            << " WHERE isnull(r.DELETE_BIT,0)=0"
+            << " AND r.REP_TIME>='" << start_date << "'"
+            << " AND r.REP_TIME<'" << end_date << "'"
+            << " AND r.CHK_FLAG='T'"
+            << " AND r.CONF='S'"
+            << " AND r.MACH_CODE=" << mach_code
+            << " AND NULLIF(LTRIM(RTRIM(r.NAME)),'') IS NOT NULL";
+        append_dept_code_filter(report_sql);
+    };
+
+    append_report_branch(4005, true);
+    append_report_branch(914, false);
+    append_report_branch(4008, false);
+    report_sql << " ORDER BY 2,1";
+
+    if (log) log("exec sql: " + report_sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, report_sql.str(), stmt, error)) {
+        disconnect(db);
+        return false;
+    }
+
+    std::map<std::string, HivReportCandidate> reports_by_rep_no;
+    std::vector<std::string> rep_nos;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        HivReportCandidate report;
+        report.rep_no = fetch_column(stmt, 1);
+        report.mach_code = fetch_column(stmt, 2);
+        report.txm_no = fetch_column(stmt, 3);
+        report.oper_no = fetch_column(stmt, 4);
+        report.patient_no = fetch_column(stmt, 5);
+        report.name = fetch_column(stmt, 6);
+        report.patient_type_code = fetch_column(stmt, 7);
+        report.dept_code = fetch_column(stmt, 8);
+        report.report_time = fetch_column(stmt, 9);
+        if (report.rep_no.empty() || reports_by_rep_no.find(report.rep_no) != reports_by_rep_no.end()) {
+            continue;
+        }
+        rep_nos.push_back(report.rep_no);
+        reports_by_rep_no[report.rep_no] = std::move(report);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+
+    const auto expected_hiv_item_code = [](const std::string& mach_code) -> const char* {
+        if (mach_code == "4005") return "91593";
+        if (mach_code == "914") return "93053";
+        if (mach_code == "4008") return "91442";
+        return "";
+    };
+    const auto max_text = [](const std::string& a, const std::string& b) {
+        if (a.empty()) return b;
+        if (b.empty()) return a;
+        return (std::max)(a, b);
+    };
+    const auto padded_number = [](std::string value) {
+        value = trim(value);
+        if (value.size() >= 20) {
+            return value;
+        }
+        return std::string(20 - value.size(), '0') + value;
+    };
+    const auto grouped_key = [&](const HivReportCandidate& report, const std::string& item_code) {
+        return padded_number(report.mach_code) + "\x1f" + padded_number(item_code) + "\x1f" + padded_number(report.rep_no);
+    };
+
+    std::map<std::string, HivStatDetailRow> grouped_rows;
+    constexpr size_t REP_NO_BATCH_SIZE = 500;
+    for (size_t offset = 0; offset < rep_nos.size(); offset += REP_NO_BATCH_SIZE) {
+        const size_t end = (std::min)(rep_nos.size(), offset + REP_NO_BATCH_SIZE);
+        std::ostringstream entry_sql;
+        entry_sql
+            << "SELECT"
+            << " CONVERT(varchar(30),e.REP_NO),"
+            << " CONVERT(varchar(20),e.ITEM_CODE),"
+            << " isnull(LTRIM(RTRIM(e.ITEM_NAME)),''),"
+            << " isnull(LTRIM(RTRIM(e.RESULT)),''),"
+            << " isnull(LTRIM(RTRIM(e.UPBOUND)),''),"
+            << " isnull(LTRIM(RTRIM(e.DOWNBOUND)),'')"
+            << " FROM LS_AS_REPENTRY e WITH (NOLOCK)"
+            << " WHERE isnull(e.DELETE_BIT,0)=0"
+            << " AND e.ITEM_CODE IN (91593,93053,91442)"
+            << " AND e.REP_NO IN (";
+        bool has_rep_no = false;
+        for (size_t i = offset; i < end; ++i) {
+            const std::string rep_no = trim(rep_nos[i]);
+            if (!std::all_of(rep_no.begin(), rep_no.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            if (has_rep_no) {
+                entry_sql << ",";
+            }
+            entry_sql << rep_no;
+            has_rep_no = true;
+        }
+        if (!has_rep_no) {
+            continue;
+        }
+        entry_sql << ") ORDER BY e.REP_NO,e.ITEM_CODE";
+
+        if (log) log("exec sql: " + entry_sql.str() + "\n");
+
+        SQLHSTMT entry_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, entry_sql.str(), entry_stmt, error)) {
+            disconnect(db);
+            return false;
+        }
+
+        while (SQLFetch(entry_stmt) == SQL_SUCCESS) {
+            const std::string rep_no = fetch_column(entry_stmt, 1);
+            const std::string item_code = fetch_column(entry_stmt, 2);
+            const auto report_it = reports_by_rep_no.find(rep_no);
+            if (report_it == reports_by_rep_no.end()) {
+                continue;
+            }
+            const HivReportCandidate& report = report_it->second;
+            if (item_code != expected_hiv_item_code(report.mach_code)) {
+                continue;
+            }
+
+            HivStatDetailRow& row = grouped_rows[grouped_key(report, item_code)];
+            if (row.rep_no.empty()) {
+                row.mach_code = report.mach_code;
+                row.machine_name = lookup_name(machine_names, report.mach_code, report.mach_code);
+                row.lab_department = lab_department_for_dept(lookup_name(dept_names, report.dept_code, report.dept_code));
+                row.item_code = item_code;
+                row.rep_no = report.rep_no;
+                row.txm_no = report.txm_no;
+                row.oper_no = report.oper_no;
+                row.patient_no = report.patient_no;
+                row.name = report.name;
+                row.patient_type = lookup_name(patient_type_names, report.patient_type_code, report.patient_type_code);
+                row.dept_name = lookup_name(dept_names, report.dept_code, report.dept_code);
+                row.report_time = report.report_time;
+                row.positive = "否";
+            }
+
+            const std::string item_name = fetch_column(entry_stmt, 3);
+            const std::string result = fetch_column(entry_stmt, 4);
+            const std::string lower_bound = fetch_column(entry_stmt, 5);
+            const std::string upper_bound = fetch_column(entry_stmt, 6);
+            row.item_name = max_text(row.item_name, item_name);
+            row.result = max_text(row.result, result);
+            row.lower_bound = max_text(row.lower_bound, lower_bound);
+            row.upper_bound = max_text(row.upper_bound, upper_bound);
+            if (contains_text(result, "待确认") || contains_text(result, "阳性") || contains_text(result, "+")) {
+                row.positive = "是";
+            }
+        }
+
+        SQLFreeHandle(SQL_HANDLE_STMT, entry_stmt);
+    }
+
+    for (auto& [_, row] : grouped_rows) {
         ++summary.screening_count;
         const bool is_positive = trim(row.positive) == "是";
         if (is_positive) {
@@ -1744,7 +1909,79 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         rows.push_back(std::move(row));
     }
 
-    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    if (!rows.empty()) {
+        std::ostringstream completed_apply_sql;
+        completed_apply_sql
+            << ";WITH completed_apply_distinct AS ("
+            << " SELECT DISTINCT"
+            << " LTRIM(RTRIM(a.Patient_NO)) AS PATIENT_NO,"
+            << " LTRIM(RTRIM(a.ApplyFormNO)) AS ApplyFormNO"
+            << " FROM LS_XK_BloodRequestApply a WITH (NOLOCK)"
+            << " WHERE isnull(a.Delete_Bit,0)=0"
+            << " AND a.Apply_Time>='" << start_date << "'"
+            << " AND a.Apply_Time<'" << end_date << "'"
+            << " AND LTRIM(RTRIM(a.ApplyForm_Statue))='已完结'"
+            << " AND NULLIF(LTRIM(RTRIM(a.Patient_NO)),'') IS NOT NULL"
+            << " AND NULLIF(LTRIM(RTRIM(a.ApplyFormNO)),'') IS NOT NULL"
+            << "), completed_apply_forms AS ("
+            << " SELECT bd.PATIENT_NO,"
+            << " STUFF(("
+            << " SELECT ';' + x.ApplyFormNO"
+            << " FROM completed_apply_distinct x"
+            << " WHERE x.PATIENT_NO=bd.PATIENT_NO"
+            << " ORDER BY x.ApplyFormNO"
+            << " FOR XML PATH(''),TYPE).value('.','varchar(max)'),1,1,'') AS COMPLETED_APPLY_FORMS"
+            << " FROM completed_apply_distinct bd"
+            << " GROUP BY bd.PATIENT_NO"
+            << ")"
+            << " SELECT PATIENT_NO,COMPLETED_APPLY_FORMS FROM completed_apply_forms";
+
+        if (log) log("exec sql: " + completed_apply_sql.str() + "\n");
+
+        SQLHSTMT completed_apply_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, completed_apply_sql.str(), completed_apply_stmt, error)) {
+            disconnect(db);
+            return false;
+        }
+
+        std::map<std::string, std::string> completed_forms_by_patient;
+        while (SQLFetch(completed_apply_stmt) == SQL_SUCCESS) {
+            const std::string patient_no = fetch_column(completed_apply_stmt, 1);
+            completed_forms_by_patient[patient_no] = fetch_column(completed_apply_stmt, 2);
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, completed_apply_stmt);
+
+        for (auto& row : rows) {
+            const auto it = completed_forms_by_patient.find(row.patient_no);
+            if (it != completed_forms_by_patient.end()) {
+                row.completed_blood_apply_forms = it->second;
+            }
+        }
+    }
+
+    for (const auto& row : rows) {
+        if (!trim(row.completed_blood_apply_forms).empty()) {
+            add_count(summary.transfusion_screening_count,
+                      summary.transfusion_positive_count,
+                      trim(row.positive) == "是");
+        }
+    }
+
+    const int classified_screening_count =
+        summary.transfusion_screening_count +
+        summary.sti_clinic_screening_count +
+        summary.other_visit_screening_count +
+        summary.prenatal_screening_count;
+    const int classified_positive_count =
+        summary.transfusion_positive_count +
+        summary.sti_clinic_positive_count +
+        summary.other_visit_positive_count +
+        summary.prenatal_positive_count;
+    summary.preoperative_screening_count =
+        non_negative_difference(summary.screening_count, classified_screening_count);
+    summary.preoperative_positive_count =
+        non_negative_difference(summary.positive_count, classified_positive_count);
+
     disconnect(db);
     error.clear();
     return true;

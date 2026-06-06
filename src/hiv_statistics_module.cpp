@@ -39,7 +39,9 @@ enum DetailColumn {
     DetailReportNo,
     DetailBarcode,
     DetailSampleNo,
+    DetailPatientNo,
     DetailName,
+    DetailCompletedBloodApplyForms,
     DetailPatientType,
     DetailDept,
     DetailResult,
@@ -72,7 +74,9 @@ constexpr ListColumn DETAIL_COLUMNS[] = {
     {L"报告号", 130},
     {L"条码号", 150},
     {L"样本号", 118},
+    {L"病人号", 130},
     {L"姓名", 120},
+    {L"已完结输血单申请号", 190},
     {L"病人类型", 120},
     {L"科室", 220},
     {L"结果", 170},
@@ -105,6 +109,8 @@ constexpr const wchar_t* SUMMARY_ROWS[] = {
     L"合计",
 };
 
+constexpr int SUMMARY_ROW_PREOPERATIVE = 0;
+constexpr int SUMMARY_ROW_TRANSFUSION = 1;
 constexpr int SUMMARY_ROW_STI_CLINIC = 2;
 constexpr int SUMMARY_ROW_OTHER_VISIT = 3;
 constexpr int SUMMARY_ROW_PRENATAL = 5;
@@ -230,7 +236,9 @@ std::string detailSortValue(const search::HivStatDetailRow& row, int col) {
         case DetailReportNo: return row.rep_no;
         case DetailBarcode: return row.txm_no;
         case DetailSampleNo: return row.oper_no;
+        case DetailPatientNo: return row.patient_no;
         case DetailName: return row.name;
+        case DetailCompletedBloodApplyForms: return row.completed_blood_apply_forms;
         case DetailPatientType: return row.patient_type;
         case DetailDept: return row.dept_name;
         case DetailResult: return row.result;
@@ -340,7 +348,15 @@ void populateSummary(HivStatisticsState* st) {
         item.iItem = i;
         item.pszText = const_cast<wchar_t*>(SUMMARY_ROWS[i]);
         ListView_InsertItem(st->summary, &item);
-        if (i == SUMMARY_ROW_STI_CLINIC) {
+        if (i == SUMMARY_ROW_PREOPERATIVE) {
+            setSummaryCounts(st->summary, i,
+                             st->statSummary.preoperative_screening_count,
+                             st->statSummary.preoperative_positive_count);
+        } else if (i == SUMMARY_ROW_TRANSFUSION) {
+            setSummaryCounts(st->summary, i,
+                             st->statSummary.transfusion_screening_count,
+                             st->statSummary.transfusion_positive_count);
+        } else if (i == SUMMARY_ROW_STI_CLINIC) {
             setSummaryCounts(st->summary, i,
                              st->statSummary.sti_clinic_screening_count,
                              st->statSummary.sti_clinic_positive_count);
@@ -376,14 +392,16 @@ void populateDetails(HivStatisticsState* st) {
         setCellUtf8(st->details, i, 4, row.rep_no);
         setCellUtf8(st->details, i, 5, row.txm_no);
         setCellUtf8(st->details, i, 6, row.oper_no);
-        setCellUtf8(st->details, i, 7, row.name);
-        setCellUtf8(st->details, i, 8, row.patient_type);
-        setCellUtf8(st->details, i, 9, row.dept_name);
-        setCellUtf8(st->details, i, 10, row.result);
-        setCellUtf8(st->details, i, 11, row.lower_bound);
-        setCellUtf8(st->details, i, 12, row.upper_bound);
-        setCellUtf8(st->details, i, 13, row.positive);
-        setCellUtf8(st->details, i, 14, row.report_time);
+        setCellUtf8(st->details, i, 7, row.patient_no);
+        setCellUtf8(st->details, i, 8, row.name);
+        setCellUtf8(st->details, i, 9, row.completed_blood_apply_forms);
+        setCellUtf8(st->details, i, 10, row.patient_type);
+        setCellUtf8(st->details, i, 11, row.dept_name);
+        setCellUtf8(st->details, i, 12, row.result);
+        setCellUtf8(st->details, i, 13, row.lower_bound);
+        setCellUtf8(st->details, i, 14, row.upper_bound);
+        setCellUtf8(st->details, i, 15, row.positive);
+        setCellUtf8(st->details, i, 16, row.report_time);
     }
 }
 
