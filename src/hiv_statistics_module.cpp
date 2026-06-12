@@ -10,12 +10,16 @@
 #include "win32_control_id.h"
 
 #include <commctrl.h>
+#include <commdlg.h>
 #include <windows.h>
 #include <windowsx.h>
+#include <shlobj.h>
+
+#include "tinf.h"
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <iterator>
 #include <memory>
@@ -28,11 +32,14 @@ namespace {
 constexpr const wchar_t* WND_CLASS = L"HivStatisticsModuleChild";
 constexpr const wchar_t* WINDOW_TITLE = L"HIV 抗体检测统计";
 constexpr const wchar_t* PROP_STATE = L"HivStatisticsSt";
+constexpr const wchar_t* HIV_TEMPLATE_FILE = L"HIVStatisticsTemplate.docx";
+constexpr int HIV_TEMPLATE_PLACEHOLDER_COUNT = 46;
 constexpr UINT WM_HIV_STATS_LOADED = WM_APP + 0x551;
 const COLORREF COLOR_POSITIVE_ROW = RGB(0xFA, 0xC0, 0xCB);
 
 enum DetailColumn {
     DetailMachine = 0,
+    DetailMethodology,
     DetailLabDepartment,
     DetailItemCode,
     DetailItemName,
@@ -68,6 +75,7 @@ constexpr ListColumn SUMMARY_COLUMNS[] = {
 
 constexpr ListColumn DETAIL_COLUMNS[] = {
     {L"仪器", 240},
+    {L"方法学", 120},
     {L"检验科", 92},
     {L"项目代码", 112},
     {L"项目名称", 300},
@@ -123,6 +131,8 @@ enum ControlId {
     IDC_DETAILS = 6405,
     IDC_STATUS = 6406,
     IDC_SOURCE = 6407,
+    IDC_EXPORT = 6408,
+    IDC_UPLOAD_TEMPLATE = 6409,
 };
 
 struct HivStatisticsState {
@@ -131,11 +141,14 @@ struct HivStatisticsState {
     HWND month = nullptr;
     HWND source = nullptr;
     HWND query = nullptr;
+    HWND exportButton = nullptr;
+    HWND uploadTemplateButton = nullptr;
     HWND summary = nullptr;
     HWND details = nullptr;
     HWND status = nullptr;
     HBRUSH bgBrush = nullptr;
     bool querying = false;
+    bool hasLoadedResult = false;
     int detailSortColumn = -1;
     bool detailSortAscending = true;
     search::HivStatSummary statSummary;
@@ -147,6 +160,22 @@ struct HivQueryResult {
     std::string error;
     search::HivStatSummary summary;
     std::vector<search::HivStatDetailRow> rows;
+};
+
+class ScopedComInit {
+public:
+    ScopedComInit() : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~ScopedComInit() {
+        if (SUCCEEDED(result_)) {
+            CoUninitialize();
+        }
+    }
+
+    ScopedComInit(const ScopedComInit&) = delete;
+    ScopedComInit& operator=(const ScopedComInit&) = delete;
+
+private:
+    HRESULT result_ = E_FAIL;
 };
 
 int S(HWND hwnd, int value) {
@@ -199,6 +228,540 @@ void setStatus(HivStatisticsState* st, const std::wstring& text) {
     if (st && st->status) SetWindowTextW(st->status, text.c_str());
 }
 
+int summaryScreeningCount(const search::HivStatSummary& summary, int row) {
+    switch (row) {
+        case SUMMARY_ROW_PREOPERATIVE: return summary.preoperative_screening_count;
+        case SUMMARY_ROW_TRANSFUSION: return summary.transfusion_screening_count;
+        case SUMMARY_ROW_STI_CLINIC: return summary.sti_clinic_screening_count;
+        case SUMMARY_ROW_OTHER_VISIT: return summary.other_visit_screening_count;
+        case SUMMARY_ROW_PRENATAL: return summary.prenatal_screening_count;
+        default:
+            return row == static_cast<int>(std::size(SUMMARY_ROWS)) - 1 ? summary.screening_count : 0;
+    }
+}
+
+int summaryPositiveCount(const search::HivStatSummary& summary, int row) {
+    switch (row) {
+        case SUMMARY_ROW_PREOPERATIVE: return summary.preoperative_positive_count;
+        case SUMMARY_ROW_TRANSFUSION: return summary.transfusion_positive_count;
+        case SUMMARY_ROW_STI_CLINIC: return summary.sti_clinic_positive_count;
+        case SUMMARY_ROW_OTHER_VISIT: return summary.other_visit_positive_count;
+        case SUMMARY_ROW_PRENATAL: return summary.prenatal_positive_count;
+        default:
+            return row == static_cast<int>(std::size(SUMMARY_ROWS)) - 1 ? summary.positive_count : 0;
+    }
+}
+
+bool chooseFolder(HWND owner, std::wstring& folder) {
+    ScopedComInit com;
+    BROWSEINFOW bi{};
+    bi.hwndOwner = owner;
+    bi.lpszTitle = L"请选择 HIV 统计表导出文件夹";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return false;
+    wchar_t path[MAX_PATH]{};
+    const BOOL ok = SHGetPathFromIDListW(pidl, path);
+    CoTaskMemFree(pidl);
+    if (!ok || !path[0]) return false;
+    folder = path;
+    return true;
+}
+
+std::wstring moduleDirectory() {
+    wchar_t path[MAX_PATH]{};
+    const DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return {};
+    std::wstring dir(path);
+    const size_t pos = dir.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        dir.resize(pos);
+    }
+    return dir;
+}
+
+std::wstring joinPath(const std::wstring& dir, const std::wstring& name) {
+    if (dir.empty()) return name;
+    if (dir.back() == L'\\' || dir.back() == L'/') return dir + name;
+    return dir + L"\\" + name;
+}
+
+bool fileExists(const std::wstring& path) {
+    const DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring hivTemplateDirectory() {
+    return joinPath(moduleDirectory(), L"templates");
+}
+
+std::wstring hivDocxTemplatePath() {
+    return joinPath(hivTemplateDirectory(), HIV_TEMPLATE_FILE);
+}
+
+bool readFileBytes(const std::wstring& path, std::vector<unsigned char>& bytes) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 0x7fffffff) {
+        CloseHandle(file);
+        return false;
+    }
+    bytes.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    const BOOL ok = bytes.empty() ||
+                    ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr);
+    CloseHandle(file);
+    return ok && read == bytes.size();
+}
+
+bool writeFileBytes(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const BOOL ok = bytes.empty() ||
+                    WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+    CloseHandle(file);
+    return ok && written == bytes.size();
+}
+
+uint16_t readLe16(const std::vector<unsigned char>& bytes, size_t pos) {
+    return static_cast<uint16_t>(bytes[pos] | (bytes[pos + 1] << 8));
+}
+
+uint32_t readLe32(const std::vector<unsigned char>& bytes, size_t pos) {
+    return static_cast<uint32_t>(bytes[pos]) |
+           (static_cast<uint32_t>(bytes[pos + 1]) << 8) |
+           (static_cast<uint32_t>(bytes[pos + 2]) << 16) |
+           (static_cast<uint32_t>(bytes[pos + 3]) << 24);
+}
+
+void appendLe16(std::vector<unsigned char>& out, uint16_t value) {
+    out.push_back(static_cast<unsigned char>(value & 0xff));
+    out.push_back(static_cast<unsigned char>((value >> 8) & 0xff));
+}
+
+void appendLe32(std::vector<unsigned char>& out, uint32_t value) {
+    appendLe16(out, static_cast<uint16_t>(value & 0xffff));
+    appendLe16(out, static_cast<uint16_t>((value >> 16) & 0xffff));
+}
+
+uint32_t crc32Bytes(const std::vector<unsigned char>& bytes) {
+    uint32_t crc = 0xffffffffu;
+    for (unsigned char byte : bytes) {
+        crc ^= byte;
+        for (int i = 0; i < 8; ++i) {
+            crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc ^ 0xffffffffu;
+}
+
+std::vector<unsigned char> bytesFromString(const std::string& text) {
+    return std::vector<unsigned char>(text.begin(), text.end());
+}
+
+struct ZipEntry {
+    std::string name;
+    uint16_t versionMadeBy = 20;
+    uint16_t versionNeeded = 20;
+    uint16_t flags = 0;
+    uint16_t method = 0;
+    uint16_t modTime = 0;
+    uint16_t modDate = 0;
+    uint16_t internalAttr = 0;
+    uint32_t crc = 0;
+    uint32_t compressedSize = 0;
+    uint32_t uncompressedSize = 0;
+    uint32_t externalAttr = 0;
+    uint32_t localOffset = 0;
+    std::vector<unsigned char> data;
+};
+
+// Decompress raw DEFLATE data (RFC 1951) using tinf.
+// Returns true on success; out receives the uncompressed bytes.
+bool tinflateBytes(const unsigned char* src, size_t srcLen, std::vector<unsigned char>& out, size_t expectedSize) {
+    if (srcLen == 0) { out.clear(); return true; }
+    out.resize(expectedSize > 0 ? expectedSize : srcLen * 4);
+    unsigned int dstLen = static_cast<unsigned int>(out.size());
+    int rc = tinf_uncompress(out.data(), &dstLen, src, static_cast<unsigned int>(srcLen));
+    if (rc == TINF_DATA_ERROR && dstLen > 0 && expectedSize > 0) {
+        // Retry with exact size if the buffer was too small
+        out.resize(expectedSize);
+        dstLen = static_cast<unsigned int>(out.size());
+        rc = tinf_uncompress(out.data(), &dstLen, src, static_cast<unsigned int>(srcLen));
+    }
+    if (rc != TINF_OK) return false;
+    out.resize(dstLen);
+    return true;
+}
+
+bool readZipEntries(const std::vector<unsigned char>& zip, std::vector<ZipEntry>& entries) {
+    if (zip.size() < 22) return false;
+    size_t eocd = std::string::npos;
+    const size_t minPos = zip.size() > 0xffff + 22 ? zip.size() - (0xffff + 22) : 0;
+    for (size_t pos = zip.size() - 22; pos >= minPos; --pos) {
+        if (readLe32(zip, pos) == 0x06054b50u) {
+            eocd = pos;
+            break;
+        }
+        if (pos == 0) break;
+    }
+    if (eocd == std::string::npos) return false;
+    const uint16_t count = readLe16(zip, eocd + 10);
+    const uint32_t centralOffset = readLe32(zip, eocd + 16);
+    size_t pos = centralOffset;
+    for (uint16_t i = 0; i < count; ++i) {
+        if (pos + 46 > zip.size() || readLe32(zip, pos) != 0x02014b50u) return false;
+        ZipEntry entry;
+        entry.versionMadeBy = readLe16(zip, pos + 4);
+        entry.versionNeeded = readLe16(zip, pos + 6);
+        entry.flags = readLe16(zip, pos + 8) & static_cast<uint16_t>(~0x0008u);
+        entry.method = readLe16(zip, pos + 10);
+        entry.modTime = readLe16(zip, pos + 12);
+        entry.modDate = readLe16(zip, pos + 14);
+        entry.crc = readLe32(zip, pos + 16);
+        entry.compressedSize = readLe32(zip, pos + 20);
+        entry.uncompressedSize = readLe32(zip, pos + 24);
+        const uint16_t nameLen = readLe16(zip, pos + 28);
+        const uint16_t extraLen = readLe16(zip, pos + 30);
+        const uint16_t commentLen = readLe16(zip, pos + 32);
+        entry.internalAttr = readLe16(zip, pos + 36);
+        entry.externalAttr = readLe32(zip, pos + 38);
+        entry.localOffset = readLe32(zip, pos + 42);
+        if (pos + 46 + nameLen + extraLen + commentLen > zip.size()) return false;
+        entry.name.assign(reinterpret_cast<const char*>(zip.data() + pos + 46), nameLen);
+
+        const size_t local = entry.localOffset;
+        if (local + 30 > zip.size() || readLe32(zip, local) != 0x04034b50u) return false;
+        const uint16_t localNameLen = readLe16(zip, local + 26);
+        const uint16_t localExtraLen = readLe16(zip, local + 28);
+        const size_t dataOffset = local + 30 + localNameLen + localExtraLen;
+        if (dataOffset + entry.compressedSize > zip.size()) return false;
+        if (entry.method == 8 && entry.uncompressedSize > 0) {
+            // DEFLATE compressed — decompress to get actual XML content
+            std::vector<unsigned char> inflated;
+            if (!tinflateBytes(zip.data() + dataOffset, entry.compressedSize,
+                               inflated, entry.uncompressedSize)) {
+                return false;
+            }
+            entry.data = std::move(inflated);
+            entry.method = 0;
+            entry.compressedSize = static_cast<uint32_t>(entry.data.size());
+        } else {
+            entry.data.assign(zip.begin() + dataOffset, zip.begin() + dataOffset + entry.compressedSize);
+        }
+        entries.push_back(std::move(entry));
+        pos += 46 + nameLen + extraLen + commentLen;
+    }
+    return !entries.empty();
+}
+
+int countSubstrings(const std::string& text, const std::string& needle) {
+    if (needle.empty()) return 0;
+    int count = 0;
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
+}
+
+bool isUsableHivDocxTemplate(const std::wstring& path, std::wstring* error = nullptr) {
+    std::vector<unsigned char> zip;
+    if (!readFileBytes(path, zip)) {
+        if (error) *error = L"无法读取模版文件。";
+        return false;
+    }
+
+    std::vector<ZipEntry> entries;
+    if (!readZipEntries(zip, entries)) {
+        if (error) *error = L"模版不是有效的 DOCX 文件。";
+        return false;
+    }
+
+    for (const auto& entry : entries) {
+        if (entry.name == "word/document.xml") {
+            const std::string documentXml(entry.data.begin(), entry.data.end());
+            const int placeholders = countSubstrings(documentXml, "{}");
+            if (placeholders != HIV_TEMPLATE_PLACEHOLDER_COUNT) {
+                if (error) {
+                    wchar_t msg[160]{};
+                    swprintf(msg, 160, L"模版占位符数量不匹配：当前 %d 个，应为 %d 个。",
+                             placeholders, HIV_TEMPLATE_PLACEHOLDER_COUNT);
+                    *error = msg;
+                }
+                return false;
+            }
+            return true;
+        }
+    }
+
+    if (error) *error = L"模版缺少 word/document.xml。";
+    return false;
+}
+
+std::wstring findHivDocxTemplate() {
+    const std::wstring path = hivDocxTemplatePath();
+    if (fileExists(path) && isUsableHivDocxTemplate(path)) return path;
+    return {};
+}
+
+void updateExportButton(HivStatisticsState* st) {
+    if (!st || !st->exportButton) return;
+    EnableWindow(st->exportButton, st->hasLoadedResult && !findHivDocxTemplate().empty());
+}
+
+bool ensureDirectory(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES) {
+        return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+    return CreateDirectoryW(path.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+bool chooseDocxTemplate(HWND owner, std::wstring& file) {
+    wchar_t path[MAX_PATH]{};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Word 模版 (*.docx)\0*.docx\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"请选择 HIV 统计表 DOCX 模版";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    file = path;
+    return true;
+}
+
+void uploadTemplate(HWND hwnd, HivStatisticsState* st) {
+    std::wstring source;
+    if (!chooseDocxTemplate(hwnd, source)) return;
+
+    std::wstring error;
+    if (!isUsableHivDocxTemplate(source, &error)) {
+        MessageBoxW(hwnd, error.c_str(), WINDOW_TITLE, MB_ICONERROR);
+        return;
+    }
+
+    const std::wstring dir = hivTemplateDirectory();
+    if (!ensureDirectory(dir)) {
+        MessageBoxW(hwnd, L"无法创建 templates 目录，请确认程序目录可写。", WINDOW_TITLE, MB_ICONERROR);
+        return;
+    }
+
+    const std::wstring target = hivDocxTemplatePath();
+    if (source != target && !CopyFileW(source.c_str(), target.c_str(), FALSE)) {
+        MessageBoxW(hwnd, L"复制模版失败，请确认程序目录可写。", WINDOW_TITLE, MB_ICONERROR);
+        return;
+    }
+
+    updateExportButton(st);
+    setStatus(st, L"已上传 HIV 统计表模版：" + target);
+    MessageBoxW(hwnd, L"模版已上传。", WINDOW_TITLE, MB_ICONINFORMATION);
+}
+
+void appendBytes(std::vector<unsigned char>& out, const std::string& text) {
+    out.insert(out.end(), text.begin(), text.end());
+}
+
+void appendZipLocalHeader(std::vector<unsigned char>& out, const ZipEntry& entry) {
+    appendLe32(out, 0x04034b50u);
+    appendLe16(out, entry.versionNeeded);
+    appendLe16(out, entry.flags);
+    appendLe16(out, entry.method);
+    appendLe16(out, entry.modTime);
+    appendLe16(out, entry.modDate);
+    appendLe32(out, entry.crc);
+    appendLe32(out, entry.compressedSize);
+    appendLe32(out, entry.uncompressedSize);
+    appendLe16(out, static_cast<uint16_t>(entry.name.size()));
+    appendLe16(out, 0);
+    appendBytes(out, entry.name);
+    out.insert(out.end(), entry.data.begin(), entry.data.end());
+}
+
+void appendZipCentralHeader(std::vector<unsigned char>& out, const ZipEntry& entry) {
+    appendLe32(out, 0x02014b50u);
+    appendLe16(out, entry.versionMadeBy);
+    appendLe16(out, entry.versionNeeded);
+    appendLe16(out, entry.flags);
+    appendLe16(out, entry.method);
+    appendLe16(out, entry.modTime);
+    appendLe16(out, entry.modDate);
+    appendLe32(out, entry.crc);
+    appendLe32(out, entry.compressedSize);
+    appendLe32(out, entry.uncompressedSize);
+    appendLe16(out, static_cast<uint16_t>(entry.name.size()));
+    appendLe16(out, 0);
+    appendLe16(out, 0);
+    appendLe16(out, 0);
+    appendLe16(out, entry.internalAttr);
+    appendLe32(out, entry.externalAttr);
+    appendLe32(out, entry.localOffset);
+    appendBytes(out, entry.name);
+}
+
+std::string xmlEscapedUtf8(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+std::string docxCountText(int value, bool forceZero) {
+    if (value == 0 && !forceZero) return {};
+    return std::to_string(value);
+}
+
+std::vector<std::string> buildDocxPlaceholderValues(const HivStatisticsState* st, int year, int month) {
+    std::vector<std::string> values;
+    values.reserve(46);
+    values.push_back(std::to_string(year));
+    values.push_back(std::to_string(month));
+    values.push_back(search::wide_to_utf8(selectedComboText(st->source)));
+
+    const int totalRow = static_cast<int>(std::size(SUMMARY_ROWS)) - 1;
+    for (int i = 0; i <= totalRow; ++i) {
+        const bool isTotal = i == totalRow;
+        values.push_back(docxCountText(summaryScreeningCount(st->statSummary, i), isTotal));
+        values.push_back(docxCountText(summaryPositiveCount(st->statSummary, i), isTotal));
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    values.push_back(std::to_string(now.wYear));
+    values.push_back(std::to_string(now.wMonth));
+    values.push_back(std::to_string(now.wDay));
+    return values;
+}
+
+std::string replaceDocxPlaceholders(const std::string& documentXml, const std::vector<std::string>& values) {
+    std::string out;
+    out.reserve(documentXml.size() + values.size() * 8);
+    size_t pos = 0;
+    size_t index = 0;
+    while (true) {
+        const size_t found = documentXml.find("{}", pos);
+        if (found == std::string::npos) {
+            out.append(documentXml, pos, std::string::npos);
+            break;
+        }
+        out.append(documentXml, pos, found - pos);
+        if (index < values.size()) {
+            out += xmlEscapedUtf8(values[index]);
+        }
+        ++index;
+        pos = found + 2;
+    }
+    return out;
+}
+
+bool writeDocxFromTemplate(const std::wstring& templatePath, const std::wstring& outputPath,
+                           const std::vector<std::string>& placeholderValues) {
+    std::vector<unsigned char> zip;
+    if (!readFileBytes(templatePath, zip)) return false;
+
+    std::vector<ZipEntry> entries;
+    if (!readZipEntries(zip, entries)) return false;
+
+    bool replaced = false;
+    for (auto& entry : entries) {
+        if (entry.name == "word/document.xml") {
+            const std::string documentXml(entry.data.begin(), entry.data.end());
+            const auto replacement = bytesFromString(replaceDocxPlaceholders(documentXml, placeholderValues));
+            entry.flags = 0;
+            entry.method = 0;
+            entry.versionNeeded = 20;
+            entry.data = replacement;
+            entry.compressedSize = static_cast<uint32_t>(entry.data.size());
+            entry.uncompressedSize = static_cast<uint32_t>(entry.data.size());
+            entry.crc = crc32Bytes(entry.data);
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) return false;
+
+    std::vector<unsigned char> out;
+    for (auto& entry : entries) {
+        entry.localOffset = static_cast<uint32_t>(out.size());
+        appendZipLocalHeader(out, entry);
+    }
+    const uint32_t centralOffset = static_cast<uint32_t>(out.size());
+    for (const auto& entry : entries) {
+        appendZipCentralHeader(out, entry);
+    }
+    const uint32_t centralSize = static_cast<uint32_t>(out.size() - centralOffset);
+    appendLe32(out, 0x06054b50u);
+    appendLe16(out, 0);
+    appendLe16(out, 0);
+    appendLe16(out, static_cast<uint16_t>(entries.size()));
+    appendLe16(out, static_cast<uint16_t>(entries.size()));
+    appendLe32(out, centralSize);
+    appendLe32(out, centralOffset);
+    appendLe16(out, 0);
+    return writeFileBytes(outputPath, out);
+}
+
+void exportStatistics(HWND hwnd, HivStatisticsState* st) {
+    if (!st || !st->hasLoadedResult) {
+        MessageBoxW(hwnd, L"请先查询统计数据后再导出。", WINDOW_TITLE, MB_ICONWARNING);
+        return;
+    }
+    std::wstring folder;
+    if (!chooseFolder(hwnd, folder)) return;
+
+    const int year = intText(st->year, 0);
+    const int month = selectedMonth(st->month);
+    // Build filename with location suffix: 2026年4月HIV检测表 - 全部.docx
+    wchar_t suffix[16] = L"";
+    const std::wstring sourceLabel = selectedComboText(st->source);
+    if (sourceLabel == L"新院") {
+        swprintf(suffix, 16, L" - 新院");
+    } else if (sourceLabel == L"老院") {
+        swprintf(suffix, 16, L" - 老院");
+    } else {
+        swprintf(suffix, 16, L" - 全部");
+    }
+    wchar_t name[160]{};
+    swprintf(name, 160, L"%04d年%d月HIV检测表%s.docx", year, month, suffix);
+    std::wstring path = folder;
+    if (!path.empty() && path.back() != L'\\' && path.back() != L'/') {
+        path += L"\\";
+    }
+    path += name;
+
+    const std::wstring templatePath = findHivDocxTemplate();
+    if (templatePath.empty()) {
+        MessageBoxW(hwnd, L"未找到匹配的 HIV 统计表 DOCX 模版，请先点击“上传模版”。",
+                    WINDOW_TITLE, MB_ICONWARNING);
+        return;
+    }
+
+    const auto placeholderValues = buildDocxPlaceholderValues(st, year, month);
+    if (!writeDocxFromTemplate(templatePath, path, placeholderValues)) {
+        MessageBoxW(hwnd, L"导出统计表失败，请确认目标文件夹可写。", WINDOW_TITLE, MB_ICONERROR);
+        return;
+    }
+    setStatus(st, L"已导出统计表：" + path);
+    MessageBoxW(hwnd, (L"已导出统计表：\n" + path).c_str(), WINDOW_TITLE, MB_ICONINFORMATION);
+}
+
 template <size_t N>
 void addColumns(HWND list, const ListColumn (&columns)[N]) {
     for (int i = 0; i < static_cast<int>(N); ++i) {
@@ -220,6 +783,7 @@ void populateDetails(HivStatisticsState* st);
 std::string detailSortValue(const search::HivStatDetailRow& row, int col) {
     switch (col) {
         case DetailMachine: return row.machine_name.empty() ? row.mach_code : row.machine_name;
+        case DetailMethodology: return row.methodology;
         case DetailLabDepartment: return row.lab_department;
         case DetailItemCode: return row.item_code;
         case DetailItemName: return row.item_name;
@@ -376,22 +940,23 @@ void populateDetails(HivStatisticsState* st) {
         auto first = search::utf8_to_wide(row.machine_name.empty() ? row.mach_code : row.machine_name);
         item.pszText = const_cast<wchar_t*>(first.c_str());
         ListView_InsertItem(st->details, &item);
-        setCellUtf8(st->details, i, 1, row.lab_department);
-        setCellUtf8(st->details, i, 2, row.item_code);
-        setCellUtf8(st->details, i, 3, row.item_name);
-        setCellUtf8(st->details, i, 4, row.rep_no);
-        setCellUtf8(st->details, i, 5, row.txm_no);
-        setCellUtf8(st->details, i, 6, row.oper_no);
-        setCellUtf8(st->details, i, 7, row.patient_no);
-        setCellUtf8(st->details, i, 8, row.name);
-        setCellUtf8(st->details, i, 9, row.completed_blood_apply_forms);
-        setCellUtf8(st->details, i, 10, row.patient_type);
-        setCellUtf8(st->details, i, 11, row.dept_name);
-        setCellUtf8(st->details, i, 12, row.result);
-        setCellUtf8(st->details, i, 13, row.lower_bound);
-        setCellUtf8(st->details, i, 14, row.upper_bound);
-        setCellUtf8(st->details, i, 15, row.positive);
-        setCellUtf8(st->details, i, 16, row.report_time);
+        setCellUtf8(st->details, i, 1, row.methodology);
+        setCellUtf8(st->details, i, 2, row.lab_department);
+        setCellUtf8(st->details, i, 3, row.item_code);
+        setCellUtf8(st->details, i, 4, row.item_name);
+        setCellUtf8(st->details, i, 5, row.rep_no);
+        setCellUtf8(st->details, i, 6, row.txm_no);
+        setCellUtf8(st->details, i, 7, row.oper_no);
+        setCellUtf8(st->details, i, 8, row.patient_no);
+        setCellUtf8(st->details, i, 9, row.name);
+        setCellUtf8(st->details, i, 10, row.completed_blood_apply_forms);
+        setCellUtf8(st->details, i, 11, row.patient_type);
+        setCellUtf8(st->details, i, 12, row.dept_name);
+        setCellUtf8(st->details, i, 13, row.result);
+        setCellUtf8(st->details, i, 14, row.lower_bound);
+        setCellUtf8(st->details, i, 15, row.upper_bound);
+        setCellUtf8(st->details, i, 16, row.positive);
+        setCellUtf8(st->details, i, 17, row.report_time);
     }
 }
 
@@ -428,7 +993,9 @@ void runQuery(HWND hwnd, HivStatisticsState* st) {
     }
 
     st->querying = true;
+    st->hasLoadedResult = false;
     EnableWindow(st->query, FALSE);
+    EnableWindow(st->exportButton, FALSE);
     setStatus(st, L"正在查询 HIV 抗体检测统计...");
 
     search::HivStatQuery query;
@@ -479,8 +1046,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(st->source, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"老院"));
             SendMessageW(st->source, CB_SETCURSEL, 0, 0);
             st->query = search::create_button(hwnd, IDC_QUERY, L"查询", S(hwnd, 456), S(hwnd, 9), S(hwnd, 86), S(hwnd, 26));
-            label(hwnd, L"第一版仅统计合计行的初筛检测数和初筛阳性数；来源分类、复检和自动填表暂未启用。",
-                  S(hwnd, 556), S(hwnd, 12), S(hwnd, 650), S(hwnd, 24), SS_LEFT);
+            st->exportButton = search::create_button(hwnd, IDC_EXPORT, L"导出统计表", S(hwnd, 548), S(hwnd, 9), S(hwnd, 112), S(hwnd, 26));
+            st->uploadTemplateButton = search::create_button(hwnd, IDC_UPLOAD_TEMPLATE, L"上传模版",
+                                                              S(hwnd, 666), S(hwnd, 9), S(hwnd, 112), S(hwnd, 26));
+            updateExportButton(st);
+            label(hwnd, L"导出统计表仅使用当前页面汇总结果。",
+                  S(hwnd, 792), S(hwnd, 12), S(hwnd, 520), S(hwnd, 24), SS_LEFT);
 
             st->summary = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                           WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
@@ -494,7 +1065,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ListView_SetExtendedListViewStyle(st->details, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             initDetailList(st->details);
 
-            st->status = label(hwnd, L"请选择年份和月份后查询。", 0, 0, 0, 0, SS_LEFT);
+            st->status = label(hwnd, L"请选择年份和月份后查询；未上传匹配模版时导出不可用。", 0, 0, 0, 0, SS_LEFT);
             search::apply_font_to_children(hwnd, st->ctx.uiFont);
             populateSummary(st);
             resizeLayout(hwnd, st);
@@ -506,6 +1077,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             if (LOWORD(wp) == IDC_QUERY) {
                 runQuery(hwnd, st);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_EXPORT) {
+                exportStatistics(hwnd, st);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_UPLOAD_TEMPLATE) {
+                uploadTemplate(hwnd, st);
                 return 0;
             }
             break;
@@ -535,11 +1114,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!st) return 0;
             st->querying = false;
             EnableWindow(st->query, TRUE);
+            st->hasLoadedResult = false;
+            updateExportButton(st);
             if (!result->ok) {
                 setStatus(st, L"查询失败：" + search::utf8_to_wide(result->error));
                 MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), WINDOW_TITLE, MB_ICONERROR);
                 return 0;
             }
+            st->hasLoadedResult = true;
             st->statSummary = result->summary;
             st->rows = std::move(result->rows);
             sortDetailRowsForDisplay(st);
@@ -549,7 +1131,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             swprintf(status, 160, L"查询完成：初筛检测数 %d，初筛阳性数 %d，明细 %d 行。",
                      st->statSummary.screening_count, st->statSummary.positive_count,
                      static_cast<int>(st->rows.size()));
-            setStatus(st, status);
+            updateExportButton(st);
+            std::wstring statusText = status;
+            if (findHivDocxTemplate().empty()) {
+                statusText += L" 未上传匹配模版，导出不可用。";
+            }
+            setStatus(st, statusText);
             return 0;
         }
         case app::WM_APP_SETTINGS_CHANGED:

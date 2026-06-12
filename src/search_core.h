@@ -276,6 +276,7 @@ struct HivStatSummary {
 struct HivStatDetailRow {
     std::string mach_code;
     std::string machine_name;
+    std::string methodology;
     std::string lab_department;
     std::string item_code;
     std::string item_name;

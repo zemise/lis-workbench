@@ -4,7 +4,7 @@ Unicode false
 !define APP_NAME "LIS Workbench"
 !endif
 !ifndef APP_VERSION
-!define APP_VERSION "v2026.06.06"
+!define APP_VERSION "v2026.06.12"
 !endif
 !ifndef APP_PUBLISHER
 !define APP_PUBLISHER "Zhao Wang"
@@ -99,6 +99,8 @@ Section "Uninstall"
   Delete "$INSTDIR\CONCRT*.dll"
   Delete "$INSTDIR\ucrtbase.dll"
   Delete "$INSTDIR\api-ms-win-crt-*.dll"
+  Delete "$INSTDIR\templates\HIVStatisticsTemplate.docx"
+  RMDir "$INSTDIR\templates"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

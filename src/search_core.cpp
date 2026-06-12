@@ -1781,6 +1781,11 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         if (mach_code == "4008") return "91442";
         return "";
     };
+    const auto hiv_methodology = [](const std::string& mach_code) -> const char* {
+        if (mach_code == "4005" || mach_code == "914") return "化学发光法";
+        if (mach_code == "4008") return "酶免法";
+        return "";
+    };
     const auto max_text = [](const std::string& a, const std::string& b) {
         if (a.empty()) return b;
         if (b.empty()) return a;
@@ -1854,6 +1859,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
             if (row.rep_no.empty()) {
                 row.mach_code = report.mach_code;
                 row.machine_name = lookup_name(machine_names, report.mach_code, report.mach_code);
+                row.methodology = hiv_methodology(report.mach_code);
                 row.lab_department = lab_department_for_dept(lookup_name(dept_names, report.dept_code, report.dept_code));
                 row.item_code = item_code;
                 row.rep_no = report.rep_no;

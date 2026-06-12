@@ -150,6 +150,7 @@ add_executable(main_app WIN32
     src/specimen_sign_module.cpp
     src/settings_module.cpp
     src/search_splitter.cpp
+    src/tinflate.cpp
     src/crash_handler.cpp
     resource/app.rc
 )
