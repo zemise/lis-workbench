@@ -6,6 +6,7 @@
 #include "app_settings_io.h"
 #include "barcode_label_printing.h"
 #include "main_app.h"
+#include "log.h"
 #include "resource.h"
 #include "search_controller.h"
 #include "search_splitter.h"
@@ -2149,6 +2150,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
             st = reinterpret_cast<RegularReportState*>(mcs->lParam);
+            if (!st) {
+                LOG_ERROR("WM_CREATE: lpCreateParams is null (RegularReportState)");
+                return -1;
+            }
             SetPropW(hwnd, REGULAR_REPORT_PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->hwnd = hwnd;
             st->bgBrush = CreateSolidBrush(RGB(0xB8, 0xB8, 0xB8));

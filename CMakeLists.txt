@@ -128,7 +128,7 @@ add_executable(result_search WIN32
     resource/app.rc
 )
 target_include_directories(result_search PRIVATE src resource)
-target_compile_definitions(result_search PRIVATE UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
+target_compile_definitions(result_search PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
 target_link_libraries(result_search PRIVATE search_ui_core search_core comctl32 comdlg32 gdiplus shell32 ole32)
 
 if(MINGW)
