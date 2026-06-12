@@ -12,6 +12,8 @@
 - **编译警告与清理**：启用 `/W3` 编译警告，添加 `/wd4996` 抑制已知安全的 `sscanf` 警告；修复 `hiv_statistics_module.cpp` 使用过时 `WNDCLASSW`/`RegisterClassW` 的问题；修复 2 处 GDI 画刷泄漏（`blood_module.cpp`）；移除 `search_text.cpp` 死 `#else` 分支；移除未使用的 `app::ModuleDef` 结构体；修复 `query_module.cpp` 设置按钮先创建后销毁的浪费。
 - **日志与崩溃诊断系统**：新增 `log.h/cpp` 线程安全文件日志（按天滚动 `log/YYYY-MM-DD.log` + `OutputDebugString` 同步输出）；新增 `crash_handler.cpp` 崩溃转储（`crash_YYYYMMDD_HHMMSS.dmp`）；激活 `search_core` 休眠的 `LogFn` 基础设施；为查询线程添加 `try/catch` 保护（`PostMessageW` 失败记录日志、`WM_CREATE` lpCreateParams null 守卫）。
 - **打包文件更新**：NSIS 安装脚本 `LISWorkbench.nsi` 和打包文档 `packaging/README_windows_installer.md` 与当前构建产物保持一致。
+- **macOS 交叉编译 Makefile**：新增根目录 `Makefile`，支持 macOS 上通过 MinGW-w64 toolchain 交叉编译 Windows 版本；提供 Maven 风格目标（clean / compile / test / package / verify / install），生命周期链 compile → test → package → verify → install；package 目标生成 NSIS 安装包、自动更新 zip 和 `manifest.json`，产物与 Windows `lis.ps1 package` 保持一致。
+- **交叉编译兼容修复**：`/GL` + `/LTCG` 标志用 `if(MSVC)` 包裹，MinGW 交叉编译正常；`regular_report_utils.cpp` 和 `regular_report_picture.cpp` 补全 `<cstring>` include，消除 MinGW GCC `std::strlen`/`std::memcpy` 缺失错误。
 - 版本号 v2026.06.12。
 
 ## v2026.06.06

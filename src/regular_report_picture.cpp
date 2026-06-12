@@ -11,6 +11,7 @@
 #include <gdiplus.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cwctype>
 #include <memory>
 #include <string>

@@ -216,17 +216,26 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 - 这是一条基于现场实测得到的显示规则。
 - 如果后续现场验证结论变化，同步修改 `main.cpp` 中的 `result_row_color()`。
 
-## Windows 交叉编译
+## Windows 交叉编译 (macOS)
+
+macOS 可通过 MinGW-w64 toolchain 交叉编译 Windows 版本，使用项目根目录的 `Makefile`：
 
 ```bash
-cmake -S . -B build/windows-x64 \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
-  -DCMAKE_BUILD_TYPE=Release
+# 安装 toolchain
+brew install mingw-w64
 
-cmake --build build/windows-x64 -j
+# Maven 风格构建目标
+make              # 帮助（默认）
+make compile      # 交叉编译 lis_workbench.exe + Updater.exe
+make clean compile  # 清除后编译
+make package      # 编译 + NSIS 安装包 + 更新 zip + manifest.json
+make verify       # 效验二进制和版本一致性
+make install      # 完整发布流程 → out/windows/dist/
 ```
 
-输出：`build/windows-x64/result_search.exe`
+要求环境：`cmake`、`make`、`x86_64-w64-mingw32-g++`、`makensis`（Homebrew），LabelPrint 本地源码目录需存在。
+
+编译产物：`build/windows-x64/lis_workbench.exe` 等。`make package` 生成的 NSIS 安装包和更新包结构与 Windows `lis.ps1` 产物路径一致，适用于同一个 CI 流水线的 GitHub Release 发布。
 
 ## 项目文件
 
@@ -238,21 +247,30 @@ cmake --build build/windows-x64 -j
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
-## Windows 安装包
+## Windows 安装包（Windows / macOS 通用）
 
 主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和菜单栏 `系统 -> 检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 
-常用构建命令已封装到根目录 `lis.ps1`：
+常用构建命令已封装：
+
+**Windows** — 根目录 `lis.ps1`：
 
 ```powershell
 .\lis.ps1 build
 .\lis.ps1 run
 .\lis.ps1 clean
 .\lis.ps1 package -LabelPrintSource github
-.\lis.ps1 package -LabelPrintSource local -LabelPrintLocalPath "Z:\Local\Code\020 LabelPrint\LabelPrint"
 .\lis.ps1 rebuild-package -LabelPrintSource github -LabelPrintVersion v1.2.9
+```
+
+**macOS** — 根目录 `Makefile`（MinGW 交叉编译）：
+
+```bash
+make compile
+make package
+make install
 ```
 
 `package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包；`build` / `run` 默认使用本地 `..\..\020 LabelPrint\LabelPrint` 源码。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`package` / `rebuild-package` 会同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。
