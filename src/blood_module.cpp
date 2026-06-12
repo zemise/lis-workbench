@@ -7,6 +7,7 @@
 #include "resource.h"
 #include "search_app.h"
 #include "search_core.h"
+#include "log.h"
 #include "search_text.h"
 #include "search_ui_columns.h"
 #include "search_ui_layout.h"
@@ -152,8 +153,6 @@ struct BloodState {
     HBRUSH searchBrush = nullptr;
 };
 
-BloodState* g_pending = nullptr;
-
 struct LisState {
     ModuleContext ctx;
     HWND patientNo = nullptr;
@@ -197,7 +196,6 @@ struct LisState {
     int resultGeneration = 0;
 };
 
-LisState* g_pendingLis = nullptr;
 
 void layoutLisWindow(HWND hwnd, LisState* st);
 
@@ -304,14 +302,6 @@ HFONT createScaledFont(HFONT base, double scale, LONG weight) {
     lf.lfHeight = lf.lfHeight == 0 ? -14 : static_cast<LONG>(lf.lfHeight * scale);
     lf.lfWeight = weight;
     return CreateFontIndirectW(&lf);
-}
-
-void applyFontToChildren(HWND root, HFONT font) {
-    if (!root || !font) return;
-    EnumChildWindows(root, [](HWND child, LPARAM p) -> BOOL {
-        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(font));
 }
 
 void applyLisSummaryFonts(HWND hwnd, LisState* st) {
@@ -1324,8 +1314,9 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<LisState*>(GetPropW(hwnd, PROP_LIS_STATE));
     switch (msg) {
         case WM_CREATE: {
-            st = g_pendingLis;
-            g_pendingLis = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            st = reinterpret_cast<LisState*>(cs->lpCreateParams);
+            if (!st) { LOG_ERROR("WM_CREATE: lpCreateParams is null (LisState)"); return -1; }
             SetPropW(hwnd, PROP_LIS_STATE, reinterpret_cast<HANDLE>(st));
 
             st->bgBrush = CreateSolidBrush(COLOR_PAGE_BG);
@@ -1401,7 +1392,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFontToChildren(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 applyLisSummaryFonts(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1535,15 +1526,7 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
 
     static bool registered = false;
     if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = lisWndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = CreateSolidBrush(COLOR_PAGE_BG);
-        wc.lpszClassName = LIS_WND_CLASS;
-        RegisterClassExW(&wc);
+        REGISTER_MDI_CHILD_CLASS(ctx.instance, lisWndProc, LIS_WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
         registered = true;
     }
 
@@ -1553,7 +1536,6 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
     st->patient_name = row.patient_name;
     st->patient_age = row.patient_age;
     st->patient_sex = row.patient_sex;
-    g_pendingLis = st;
 
     constexpr int windowW = 2240;
     constexpr int windowH = 1440;
@@ -1568,12 +1550,11 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, LIS_WND_CLASS, L"LIS检验信息",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         x, y, windowW, windowH,
-        ownerRoot ? ownerRoot : owner, nullptr, ctx.instance, nullptr);
+        ownerRoot ? ownerRoot : owner, nullptr, ctx.instance, st);
     if (hwnd) {
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
     } else {
-        g_pendingLis = nullptr;
         delete st;
     }
 }
@@ -1583,8 +1564,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
         case WM_CREATE: {
-            st = g_pending;
-            g_pending = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            st = reinterpret_cast<BloodState*>(mcs->lParam);
+            if (!st) { LOG_ERROR("WM_CREATE: lpCreateParams is null (BloodState)"); return -1; }
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->bgBrush = CreateSolidBrush(COLOR_PAGE_BG);
             st->searchBrush = CreateSolidBrush(COLOR_SEARCH_BUTTON);
@@ -1603,7 +1586,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFontToChildren(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 layoutBloodWindow(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1749,19 +1732,7 @@ HWND create_blood_module(const ModuleContext& ctx) {
         return existing;
     }
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = CreateSolidBrush(COLOR_PAGE_BG);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
 
     auto* st = new BloodState;
     st->ctx = ctx;
@@ -1772,10 +1743,14 @@ HWND create_blood_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = st;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    if (child) {
+        SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    } else {
+        delete st;
+    }
     return child;
 }
 

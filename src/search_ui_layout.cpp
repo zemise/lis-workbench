@@ -27,6 +27,21 @@ float dpi_scale_factor(HWND hwnd) {
     return std::max(1, dpi) / 96.0f;
 }
 
+int clamp_font_size(int value) {
+    return std::max(8, std::min(24, value));
+}
+
+HFONT create_ui_font(int pointSize) {
+    NONCLIENTMETRICSW nm{};
+    nm.cbSize = sizeof(nm);
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
+    LOGFONTW lf = nm.lfMessageFont;
+    HDC screen = GetDC(nullptr);
+    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
+    ReleaseDC(nullptr, screen);
+    return CreateFontIndirectW(&lf);
+}
+
 HWND create_label(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_RIGHT,
                            x, y, w, h, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -254,6 +269,15 @@ void layout_main_window(HWND hwnd, MainUiHandles& ui, int& splitter_x) {
     SendMessageW(ui.results, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(ui.reports, nullptr, FALSE);
     InvalidateRect(ui.results, nullptr, FALSE);
+}
+
+void apply_font_to_children(HWND root, HFONT font) {
+    if (!root || !font) return;
+    SendMessageW(root, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    EnumChildWindows(root, [](HWND child, LPARAM p) -> BOOL {
+        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(font));
 }
 
 }  // namespace search

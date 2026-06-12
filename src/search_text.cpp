@@ -21,7 +21,7 @@ std::string wide_to_utf8(const std::wstring& text) {
     if (text.empty()) {
         return {};
     }
-#ifdef _WIN32
+
     const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
     if (size <= 0) {
         return {};
@@ -32,9 +32,6 @@ std::string wide_to_utf8(const std::wstring& text) {
         out.pop_back();
     }
     return out;
-#else
-    return std::string(text.begin(), text.end());
-#endif
 }
 
 // Qt migration: replace with QString::fromUtf8(text).toStdWString()
@@ -42,7 +39,7 @@ std::wstring utf8_to_wide(const std::string& text) {
     if (text.empty()) {
         return {};
     }
-#ifdef _WIN32
+
     const int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
     if (size <= 0) {
         return {};
@@ -53,9 +50,6 @@ std::wstring utf8_to_wide(const std::string& text) {
         out.pop_back();
     }
     return out;
-#else
-    return std::wstring(text.begin(), text.end());
-#endif
 }
 
 }  // namespace search

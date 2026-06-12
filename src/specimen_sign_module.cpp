@@ -113,20 +113,10 @@ struct QueryPayload {
     std::vector<search::SpecimenSignedListRow> signedRows;
 };
 
-SpecimenSignState* g_pending = nullptr;
-
 int S(HWND hwnd, int value) {
     return static_cast<int>(value * search::dpi_scale_factor(hwnd));
 }
 
-void applyFont(HWND hwnd, HFONT font) {
-    if (!font) return;
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    EnumChildWindows(hwnd, [](HWND child, LPARAM p) -> BOOL {
-        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(font));
-}
 
 HWND label(HWND parent, const wchar_t* text, int x, int y, int w, int h, DWORD align = SS_RIGHT) {
     return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | align,
@@ -804,7 +794,7 @@ void createControls(HWND hwnd, SpecimenSignState* st) {
                   S(hwnd, signedColumns[static_cast<size_t>(i)].second));
     }
 
-    applyFont(hwnd, st->ctx.uiFont);
+    search::apply_font_to_children(hwnd, st->ctx.uiFont);
 }
 
 void layout(HWND hwnd, SpecimenSignState* st) {
@@ -840,9 +830,10 @@ void paintVerticalLine(HDC dc, int x, int top, int bottom) {
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<SpecimenSignState*>(GetPropW(hwnd, PROP_STATE));
     switch (msg) {
-        case WM_CREATE:
-            st = g_pending;
-            g_pending = nullptr;
+        case WM_CREATE: {
+            auto* cs2 = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs2->lpCreateParams);
+            st = reinterpret_cast<SpecimenSignState*>(mcs->lParam);
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->bgBrush = CreateSolidBrush(COLOR_BG);
             st->scanBrush = CreateSolidBrush(COLOR_SCAN);
@@ -850,6 +841,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             layout(hwnd, st);
             SetTimer(hwnd, IDT_ROLLOVER_DATES, 60 * 1000, nullptr);
             return 0;
+        }
         case WM_SIZE:
             layout(hwnd, st);
             InvalidateRect(hwnd, nullptr, TRUE);
@@ -870,7 +862,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFont(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 layout(hwnd, st);
             }
             return 0;
@@ -986,19 +978,7 @@ HWND create_specimen_sign_module(const ModuleContext& ctx) {
         return existing;
     }
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
 
     auto* st = new SpecimenSignState;
     st->ctx = ctx;
@@ -1009,12 +989,11 @@ HWND create_specimen_sign_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = st;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0, reinterpret_cast<LPARAM>(&mcs)));
     if (child) {
         SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
     } else {
-        g_pending = nullptr;
         delete st;
     }
     return child;

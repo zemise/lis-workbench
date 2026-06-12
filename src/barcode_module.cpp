@@ -5,6 +5,7 @@
 #include "main_app.h"
 #include "resource.h"
 #include "search_core.h"
+#include "log.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
@@ -72,6 +73,7 @@ struct BarcodeState {
     HBRUSH bgBrush = nullptr;
     std::vector<search::RoomOption> rooms;
     std::vector<search::BarcodeQueryRow> rows;
+    std::thread bgThread;
 };
 
 struct BarcodeQueryResult {
@@ -85,8 +87,6 @@ struct ListColumn {
     const wchar_t* title;
     int width;
 };
-
-BarcodeState* g_pending = nullptr;
 
 std::string textOf(HWND hwnd) {
     wchar_t buf[512]{};
@@ -114,16 +114,6 @@ void setToday(HWND hwnd) {
     SYSTEMTIME st{};
     GetLocalTime(&st);
     DateTime_SetSystemtime(hwnd, GDT_VALID, &st);
-}
-
-void applyFont(HWND hwnd, HFONT font) {
-    if (!font) return;
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    HWND child = GetWindow(hwnd, GW_CHILD);
-    while (child) {
-        SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        child = GetWindow(child, GW_HWNDNEXT);
-    }
 }
 
 void setStatus(BarcodeState* st, const std::wstring& text) {
@@ -269,7 +259,7 @@ void createControls(HWND hwnd, BarcodeState* st) {
     setToday(st->startDate);
     setToday(st->endDate);
     loadRooms(st);
-    applyFont(hwnd, st->ctx.uiFont);
+    search::apply_font_to_children(hwnd, st->ctx.uiFont);
 }
 
 void layout(HWND hwnd, BarcodeState* st) {
@@ -369,11 +359,19 @@ void runQuery(HWND hwnd, BarcodeState* st) {
     ListView_DeleteAllItems(st->list);
     setStatus(st, L"正在查询...");
 
-    std::thread([hwnd, filters]() {
-        auto* result = new BarcodeQueryResult;
-        result->ok = search::query_barcodes(filters, result->rows, result->error);
-        PostMessageW(hwnd, WM_BARCODE_LOADED, 0, reinterpret_cast<LPARAM>(result));
-    }).detach();
+    if (st->bgThread.joinable()) st->bgThread.join();
+    st->bgThread = std::thread([hwnd, filters]() {
+        try {
+            auto* result = new BarcodeQueryResult;
+            result->ok = search::query_barcodes(filters, result->rows, result->error);
+            if (!PostMessageW(hwnd, WM_BARCODE_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+                LOG_WARN("PostMessageW WM_BARCODE_LOADED failed");
+                delete result;
+            }
+        } catch (...) {
+            LOG_ERROR("Barcode query thread crashed");
+        }
+    });
 }
 
 void finishQuery(HWND hwnd, BarcodeState* st, std::unique_ptr<BarcodeQueryResult> result) {
@@ -400,21 +398,27 @@ COLORREF rowColor(const search::BarcodeQueryRow& row) {
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<BarcodeState*>(GetPropW(hwnd, PROP_STATE));
     switch (msg) {
-        case WM_CREATE:
-            st = g_pending;
-            g_pending = nullptr;
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            st = reinterpret_cast<BarcodeState*>(mcs->lParam);
+            if (!st) {
+                LOG_ERROR("WM_CREATE: lpCreateParams is null (BarcodeState)");
+                return -1;
+            }
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->bgBrush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
             createControls(hwnd, st);
             layout(hwnd, st);
             return 0;
+        }
         case WM_SIZE:
             layout(hwnd, st);
             return 0;
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFont(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 layout(hwnd, st);
             }
             return 0;
@@ -461,6 +465,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             RemovePropW(hwnd, PROP_STATE);
             if (st) {
+                if (st->bgThread.joinable()) st->bgThread.join();
                 if (st->bgBrush) DeleteObject(st->bgBrush);
                 delete st;
             }
@@ -476,19 +481,7 @@ HWND create_barcode_module(const ModuleContext& ctx) {
         return existing;
     }
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
 
     auto* st = new BarcodeState;
     st->ctx = ctx;
@@ -499,12 +492,11 @@ HWND create_barcode_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = st;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0, reinterpret_cast<LPARAM>(&mcs)));
     if (child) {
         SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
     } else {
-        g_pending = nullptr;
         delete st;
     }
     return child;

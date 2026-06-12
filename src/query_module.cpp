@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "log.h"
 #include "resource.h"
 #include "search_app.h"
 #include "search_controller.h"
@@ -56,19 +57,6 @@ constexpr const wchar_t* WINDOW_TITLE = L"检验结果查询";
 constexpr UINT WM_QUERY_LOADED = WM_APP + 71;
 constexpr UINT WM_QUERY_RESULT_LOADED = WM_APP + 72;
 
-int clampFontSize(int value) { return value < 8 ? 8 : (value > 24 ? 24 : value); }
-
-HFONT createUiFont(int pointSize) {
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    LOGFONTW lf = nm.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
-}
-
 struct QueryState {
     ModuleContext ctx;
     search::MainUiIds ids{IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER,
@@ -84,6 +72,8 @@ struct QueryState {
     int queryGeneration = 0;
     int resultGeneration = 0;
     bool queryLoading = false;
+    std::thread bgThread;
+    std::thread bgResultThread;
 };
 
 struct QueryLoadResult {
@@ -101,8 +91,6 @@ struct ResultLoadResult {
     std::vector<search::ResultRow> rows;
     std::string error;
 };
-
-QueryState* g_pending = nullptr;
 
 search::DbSettings& db(QueryState* q)  { return q->viewState.settings.db; }
 int& fontSize(QueryState* q)          { return q->viewState.settings.ui.font_size; }
@@ -183,15 +171,21 @@ void runQuery(QueryState* q) {
     const search::DbSettings settings = db(q);
     const HWND hwnd = GetParent(q->ui.reports);
     EnableWindow(q->ui.query_button, FALSE);
-    std::thread([hwnd, settings, input, generation]() {
-        auto* result = new QueryLoadResult;
-        result->generation = generation;
-        result->input = input;
-        result->ok = search::run_report_query(settings, input, result->rows, result->connection_string, result->error);
-        if (!PostMessageW(hwnd, WM_QUERY_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
+    if (q->bgThread.joinable()) q->bgThread.join();
+    q->bgThread = std::thread([hwnd, settings, input, generation]() {
+        try {
+            auto* result = new QueryLoadResult;
+            result->generation = generation;
+            result->input = input;
+            result->ok = search::run_report_query(settings, input, result->rows, result->connection_string, result->error);
+            if (!PostMessageW(hwnd, WM_QUERY_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+                LOG_WARN("PostMessageW WM_QUERY_LOADED failed");
+                delete result;
+            }
+        } catch (...) {
+            LOG_ERROR("Background query thread crashed");
         }
-    }).detach();
+    });
 }
 
 void finishRunQuery(QueryState* q, HWND hwnd, std::unique_ptr<QueryLoadResult> result) {
@@ -223,14 +217,15 @@ void querySelectedResults(QueryState* q, int selected) {
     const std::string connection = connStr(q);
     const std::string repNo = reportRows(q)[static_cast<size_t>(selected)].rep_no;
     const HWND hwnd = GetParent(q->ui.results);
-    std::thread([hwnd, connection, repNo, generation]() {
+    if (q->bgResultThread.joinable()) q->bgResultThread.join();
+    q->bgResultThread = std::thread([hwnd, connection, repNo, generation]() {
         auto* result = new ResultLoadResult;
         result->generation = generation;
         result->ok = search::load_result_rows(connection, repNo, result->rows, result->error);
         if (!PostMessageW(hwnd, WM_QUERY_RESULT_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
             delete result;
         }
-    }).detach();
+    });
 }
 
 void finishQuerySelectedResults(QueryState* q, HWND hwnd, std::unique_ptr<ResultLoadResult> result) {
@@ -267,16 +262,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
         case WM_CREATE: {
-            q = g_pending;
-            g_pending = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            q = reinterpret_cast<QueryState*>(mcs->lParam);
+            if (!q) {
+                LOG_ERROR("WM_CREATE: lpCreateParams is null");
+                return -1;
+            }
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(q));
 
-            q->uiFont = createUiFont(fontSize(q));
+            q->uiFont = search::create_ui_font(fontSize(q));
             HFONT font = q->uiFont ? q->uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
             search::register_splitter_class(q->ctx.instance);
             search::create_main_controls(hwnd, font, q->ids, q->ui);
-            DestroyWindow(q->ui.settings_button);
-            q->ui.settings_button = nullptr;
+            ShowWindow(q->ui.settings_button, SW_HIDE);
             search::set_date_picker_today(q->ui.start);
             search::set_date_picker_today(q->ui.end);
             search::initialize_report_status_combo(q->ui.report_status);
@@ -361,6 +360,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_DESTROY: {
+            if (q->bgThread.joinable()) q->bgThread.join();
+            if (q->bgResultThread.joinable()) q->bgResultThread.join();
             delete q;
             RemovePropW(hwnd, PROP_STATE);
             break;
@@ -378,15 +379,7 @@ HWND create_query_module(const ModuleContext& ctx) {
 
     static bool classesRegistered = false;
     if (!classesRegistered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
+        REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
         search::register_splitter_class(ctx.instance);
         classesRegistered = true;
     }
@@ -394,7 +387,7 @@ HWND create_query_module(const ModuleContext& ctx) {
     auto* q = new QueryState;
     q->ctx = ctx;
     q->viewState.settings.db = ctx.dbSettings;
-    fontSize(q) = clampFontSize(ctx.fontSize);
+    fontSize(q) = search::clamp_font_size(ctx.fontSize);
 
     MDICREATESTRUCTW mcs{};
     mcs.szClass = WND_CLASS;
@@ -402,10 +395,14 @@ HWND create_query_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = q;
+    mcs.lParam = reinterpret_cast<LPARAM>(q);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    if (child) {
+        SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    } else {
+        delete q;
+    }
     return child;
 }
 

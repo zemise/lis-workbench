@@ -18,6 +18,9 @@
 
 #include "app_settings.h"
 #include "app_settings_io.h"
+#include "crash_handler.h"
+#include "log.h"
+#include "search_ui_layout.h"
 #include "barcode_module.h"
 #include "blood_module.h"
 #include "hiv_statistics_module.h"
@@ -101,21 +104,6 @@ MenuDrawText* addMenuDrawText(const wchar_t* text, bool topLevel) {
     return g_menuDrawTexts.back().get();
 }
 
-int clampFontSize(int value) {
-    return value < 8 ? 8 : (value > 24 ? 24 : value);
-}
-
-HFONT createUiFont(int pointSize) {
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    LOGFONTW lf = nm.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
-}
-
 HFONT createMenuFont(int pointSize) {
     NONCLIENTMETRICSW nm{};
     nm.cbSize = sizeof(nm);
@@ -162,8 +150,8 @@ void broadcastSettingsChangedToMdiChildren() {
 }
 
 void rebuildUiFont(int fontSize) {
-    g_ctx.fontSize = clampFontSize(fontSize);
-    HFONT newFont = createUiFont(g_ctx.fontSize);
+    g_ctx.fontSize = search::clamp_font_size(fontSize);
+    HFONT newFont = search::create_ui_font(g_ctx.fontSize);
     HFONT newMenuFont = createMenuFont(g_ctx.fontSize);
     if (!newFont || !newMenuFont) {
         if (newFont) DeleteObject(newFont);
@@ -749,11 +737,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    install_crash_handler();
+    applog::init(L"log");
+    LOG_INFO("LIS 工作台 starting");
+
     g_ctx.instance = instance;
     auto iniSettings = search::load_settings(search::default_ini_path());
     g_ctx.dbSettings = iniSettings.db;
-    g_ctx.fontSize = clampFontSize(iniSettings.ui.font_size);
-    g_ctx.uiFont = createUiFont(g_ctx.fontSize);
+    g_ctx.fontSize = search::clamp_font_size(iniSettings.ui.font_size);
+    g_ctx.uiFont = search::create_ui_font(g_ctx.fontSize);
     g_ctx.menuFont = createMenuFont(g_ctx.fontSize);
 
     INITCOMMONCONTROLSEX icc{};

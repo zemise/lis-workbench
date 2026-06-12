@@ -9,6 +9,7 @@
 #include "search_controller.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
+#include "quick_machine_keys.h"
 #include "update_config.h"
 #include "win32_control_id.h"
 #include <commctrl.h>
@@ -60,13 +61,6 @@ constexpr int PICKER_COMBO_H = 180;
 constexpr int PICKER_LIST_Y = 48;
 constexpr int PICKER_CODE_W = 92;
 constexpr int PICKER_NAME_W = 300;
-constexpr int QUICK_MACHINE_COUNT = 3;
-constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_CODE_KEYS = {
-    L"QuickMachine1Code", L"QuickMachine2Code", L"QuickMachine3Code"};
-constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_NAME_KEYS = {
-    L"QuickMachine1Name", L"QuickMachine2Name", L"QuickMachine3Name"};
-constexpr std::array<const wchar_t*, QUICK_MACHINE_COUNT> QUICK_MACHINE_ROOM_KEYS = {
-    L"QuickMachine1RoomCode", L"QuickMachine2RoomCode", L"QuickMachine3RoomCode"};
 
 struct SettingsState {
     ModuleContext ctx;
@@ -91,22 +85,6 @@ struct SettingsUpdateConfig {
     std::wstring manifestUrl;
     std::wstring folderPath;
 };
-
-SettingsState* g_pending = nullptr;
-
-int clampFontSize(int v) { return v < 8 ? 8 : (v > 24 ? 24 : v); }
-
-const wchar_t* quickMachineCodeKey(int slot) {
-    return QUICK_MACHINE_CODE_KEYS[static_cast<size_t>(std::clamp(slot, 0, QUICK_MACHINE_COUNT - 1))];
-}
-
-const wchar_t* quickMachineNameKey(int slot) {
-    return QUICK_MACHINE_NAME_KEYS[static_cast<size_t>(std::clamp(slot, 0, QUICK_MACHINE_COUNT - 1))];
-}
-
-const wchar_t* quickMachineRoomKey(int slot) {
-    return QUICK_MACHINE_ROOM_KEYS[static_cast<size_t>(std::clamp(slot, 0, QUICK_MACHINE_COUNT - 1))];
-}
 
 int quickMachineEditId(int slot) {
     return slot == 0 ? IDC_SET_QUICK_MACHINE_1 : (slot == 1 ? IDC_SET_QUICK_MACHINE_2 : IDC_SET_QUICK_MACHINE_3);
@@ -400,18 +378,7 @@ LRESULT CALLBACK pickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void showSettingsMachinePicker(HWND owner, SettingsState* st, int slot, HWND anchor) {
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = pickerProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = PICKER_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(GetModuleHandleW(nullptr), pickerProc, PICKER_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
     RECT rc{};
     GetWindowRect(anchor ? anchor : owner, &rc);
     auto* ps = new SettingsMachinePickerState;
@@ -435,8 +402,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
         case WM_CREATE: {
-            st = g_pending;
-            g_pending = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            st = reinterpret_cast<SettingsState*>(mcs->lParam);
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(st));
 
             const float s = search::dpi_scale_factor(hwnd);
@@ -522,11 +490,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_PLT_CODES), app.lis.plt_codes.c_str());
             for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
                 st->quickMachineCodes[static_cast<size_t>(i)] =
-                    search::wide_to_utf8(search::load_module_str(L"RegularReport", quickMachineCodeKey(i), L""));
+                    search::wide_to_utf8(search::load_module_str(L"RegularReport", quick_machine_code_key(i), L""));
                 st->quickMachineRoomCodes[static_cast<size_t>(i)] =
-                    search::wide_to_utf8(search::load_module_str(L"RegularReport", quickMachineRoomKey(i), L""));
+                    search::wide_to_utf8(search::load_module_str(L"RegularReport", quick_machine_room_key(i), L""));
                 st->quickMachineNames[static_cast<size_t>(i)] =
-                    search::load_module_str(L"RegularReport", quickMachineNameKey(i), L"");
+                    search::load_module_str(L"RegularReport", quick_machine_name_key(i), L"");
                 SetWindowTextW(GetDlgItem(hwnd, quickMachineEditId(i)),
                                st->quickMachineNames[static_cast<size_t>(i)].c_str());
                 SendMessageW(GetDlgItem(hwnd, quickMachineEditId(i)), EM_SETREADONLY, TRUE, 0);
@@ -582,7 +550,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (id == IDC_SET_SAVE) {
                 st->app.db = collectForm(hwnd);
-                st->app.ui.font_size = clampFontSize(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
+                st->app.ui.font_size = search::clamp_font_size(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
                 st->app.lis.abo_codes = readEdit(hwnd, IDC_SET_LIS_ABO_CODES);
                 st->app.lis.rhd_codes = readEdit(hwnd, IDC_SET_LIS_RHD_CODES);
                 st->app.lis.hgb_codes = readEdit(hwnd, IDC_SET_LIS_HGB_CODES);
@@ -591,11 +559,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 search::save_module_str(L"RegularReport", L"BarcodePrinterName",
                                         readCombo(hwnd, IDC_SET_BARCODE_PRINTER));
                 for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
-                    search::save_module_str(L"RegularReport", quickMachineCodeKey(i),
+                    search::save_module_str(L"RegularReport", quick_machine_code_key(i),
                                             search::utf8_to_wide(st->quickMachineCodes[static_cast<size_t>(i)]));
-                    search::save_module_str(L"RegularReport", quickMachineRoomKey(i),
+                    search::save_module_str(L"RegularReport", quick_machine_room_key(i),
                                             search::utf8_to_wide(st->quickMachineRoomCodes[static_cast<size_t>(i)]));
-                    search::save_module_str(L"RegularReport", quickMachineNameKey(i),
+                    search::save_module_str(L"RegularReport", quick_machine_name_key(i),
                                             st->quickMachineNames[static_cast<size_t>(i)]);
                 }
                 saveUpdateConfig(collectUpdateConfig(hwnd));
@@ -631,19 +599,7 @@ HWND create_settings_module(const ModuleContext& ctx) {
         return existing;
     }
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
 
     auto* st = new SettingsState;
     st->ctx = ctx;
@@ -655,10 +611,14 @@ HWND create_settings_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = st;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    if (child) {
+        SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    } else {
+        delete st;
+    }
     return child;
 }
 

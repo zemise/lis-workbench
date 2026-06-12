@@ -149,20 +149,10 @@ struct HivQueryResult {
     std::vector<search::HivStatDetailRow> rows;
 };
 
-HivStatisticsState* g_pending = nullptr;
-
 int S(HWND hwnd, int value) {
     return static_cast<int>(value * search::dpi_scale_factor(hwnd));
 }
 
-void applyFont(HWND hwnd, HFONT font) {
-    if (!font) return;
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    EnumChildWindows(hwnd, [](HWND child, LPARAM p) -> BOOL {
-        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(font));
-}
 
 HWND label(HWND parent, const wchar_t* text, int x, int y, int w, int h, DWORD align = SS_RIGHT) {
     return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | align,
@@ -461,8 +451,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-            st = g_pending ? g_pending : reinterpret_cast<HivStatisticsState*>(cs->lpCreateParams);
-            g_pending = nullptr;
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            st = reinterpret_cast<HivStatisticsState*>(mcs->lParam);
             SetPropW(hwnd, PROP_STATE, st);
 
             st->bgBrush = CreateSolidBrush(RGB(0xF0, 0xF0, 0xF0));
@@ -505,7 +495,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             initDetailList(st->details);
 
             st->status = label(hwnd, L"请选择年份和月份后查询。", 0, 0, 0, 0, SS_LEFT);
-            applyFont(hwnd, st->ctx.uiFont);
+            search::apply_font_to_children(hwnd, st->ctx.uiFont);
             populateSummary(st);
             resizeLayout(hwnd, st);
             return 0;
@@ -564,7 +554,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case app::WM_APP_SETTINGS_CHANGED:
             if (st) {
-                applyFont(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
@@ -591,14 +581,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 void registerClass(HINSTANCE inst) {
     static bool registered = false;
     if (registered) return;
-    WNDCLASSW wc{};
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.lpszClassName = WND_CLASS;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP),
+                                               IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
     registered = true;
 }
 
@@ -612,8 +605,6 @@ HWND create_hiv_statistics_module(const ModuleContext& ctx) {
     registerClass(ctx.instance);
     auto* st = new HivStatisticsState();
     st->ctx = ctx;
-    g_pending = st;
-
     MDICREATESTRUCTW mcs{};
     mcs.szClass = WND_CLASS;
     mcs.szTitle = WINDOW_TITLE;
@@ -622,9 +613,9 @@ HWND create_hiv_statistics_module(const ModuleContext& ctx) {
     mcs.y = CW_USEDEFAULT;
     mcs.cx = CW_USEDEFAULT;
     mcs.cy = CW_USEDEFAULT;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0, reinterpret_cast<LPARAM>(&mcs)));
     if (!child) {
-        g_pending = nullptr;
         delete st;
         return nullptr;
     }

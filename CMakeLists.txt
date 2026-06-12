@@ -12,7 +12,10 @@ project(lis_workbench LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-option(LIS_STATIC_MSVC_RUNTIME "Link MSVC runtime statically for portable Win32 deployment" ON)
+# Enable whole-program optimization and link-time code generation for Release builds.
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL")
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /LTCG")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG")
 
 if(MSVC AND LIS_STATIC_MSVC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -21,7 +24,7 @@ endif()
 # MSVC defaults to system locale (e.g. GBK/936) for source encoding.
 # Force UTF-8 so Chinese string literals survive compilation.
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /MP /W3 /wd4996)
 endif()
 
 if(WIN32)
@@ -41,6 +44,7 @@ add_library(search_core STATIC
     src/search_text.cpp
     src/app_settings.cpp
     src/trend_core.cpp
+    src/log.cpp
 )
 target_include_directories(search_core PUBLIC src)
 target_compile_definitions(search_core PUBLIC UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
@@ -58,6 +62,28 @@ target_compile_definitions(update_core PUBLIC UNICODE _UNICODE NOMINMAX ${LIS_WI
 if(WIN32)
     target_link_libraries(update_core PUBLIC advapi32 urlmon)
 endif()
+
+# ── Shared UI library ──────────────────────────────────────────
+# Compiled once, linked by both result_search and main_app.
+add_library(search_ui_core STATIC
+    src/app_settings_io.cpp
+    src/search_input_view_model.cpp
+    src/search_ui_events.cpp
+    src/search_ui_presenter.cpp
+    src/search_settings_dialog.cpp
+    src/search_ui_layout.cpp
+    src/trend_window.cpp
+    src/trend_chart_renderer.cpp
+)
+target_include_directories(search_ui_core PUBLIC src resource)
+target_compile_definitions(search_ui_core PUBLIC UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
+target_link_libraries(search_ui_core PUBLIC search_core comctl32 comdlg32 gdiplus shell32 ole32)
+target_precompile_headers(search_ui_core PRIVATE
+    <windows.h>
+    <commctrl.h>
+    <string>
+    <vector>
+)
 
 set(LIS_LABELPRINT_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../020 LabelPrint/LabelPrint"
@@ -97,19 +123,11 @@ endif()
 # ── Win32 frontend ────────────────────────────────────────────
 add_executable(result_search WIN32
     src/main.cpp
-    src/app_settings_io.cpp
-    src/search_input_view_model.cpp
-    src/search_ui_events.cpp
-    src/search_ui_presenter.cpp
-    src/search_settings_dialog.cpp
-    src/search_ui_layout.cpp
-    src/trend_window.cpp
-    src/trend_chart_renderer.cpp
     resource/app.rc
 )
 target_include_directories(result_search PRIVATE src resource)
 target_compile_definitions(result_search PRIVATE UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(result_search PRIVATE search_core comctl32 comdlg32 gdiplus shell32 ole32)
+target_link_libraries(result_search PRIVATE search_ui_core search_core comctl32 comdlg32 gdiplus shell32 ole32)
 
 if(MINGW)
     target_link_options(result_search PRIVATE -municode -static -static-libgcc -static-libstdc++)
@@ -119,29 +137,24 @@ endif()
 add_executable(main_app WIN32
     src/main_frame.cpp
     src/menu_toolbar.cpp
-    src/app_settings_io.cpp
     src/barcode_label_printing.cpp
     src/barcode_module.cpp
     src/blood_module.cpp
     src/hiv_statistics_module.cpp
     src/query_module.cpp
     src/regular_report_module.cpp
+    src/regular_report_utils.cpp
+    src/regular_report_picture.cpp
     src/specimen_sign_module.cpp
     src/settings_module.cpp
-    src/search_input_view_model.cpp
-    src/search_ui_events.cpp
-    src/search_ui_presenter.cpp
-    src/search_settings_dialog.cpp
     src/search_splitter.cpp
-    src/search_ui_layout.cpp
-    src/trend_window.cpp
-    src/trend_chart_renderer.cpp
+    src/crash_handler.cpp
     resource/app.rc
 )
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE search_core update_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool)
+target_link_libraries(main_app PRIVATE search_ui_core search_core update_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool dbghelp)
 if(LIS_HAS_LABELPRINT)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)

@@ -172,6 +172,21 @@ std::vector<std::string> odbc_candidates(const std::string& input) {
 struct DbContext {
     SQLHENV env = SQL_NULL_HENV;
     SQLHDBC dbc = SQL_NULL_HDBC;
+
+    ~DbContext() {
+        if (dbc != SQL_NULL_HDBC) {
+            SQLDisconnect(dbc);
+            SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+        }
+        if (env != SQL_NULL_HENV) {
+            SQLFreeHandle(SQL_HANDLE_ENV, env);
+        }
+    }
+
+    // Non-copyable
+    DbContext() = default;
+    DbContext(const DbContext&) = delete;
+    DbContext& operator=(const DbContext&) = delete;
 };
 
 std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle);
@@ -465,7 +480,6 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql, stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -477,7 +491,6 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -505,7 +518,6 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql, stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -517,7 +529,6 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -548,7 +559,6 @@ bool query_machines(const std::string& connection_string, const std::string& roo
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -560,7 +570,6 @@ bool query_machines(const std::string& connection_string, const std::string& roo
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -653,7 +662,6 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -697,7 +705,6 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -761,7 +768,6 @@ bool query_results(const std::string& connection_string, const std::string& rep_
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -783,7 +789,6 @@ bool query_results(const std::string& connection_string, const std::string& rep_
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -825,20 +830,17 @@ bool query_report_picture(const std::string& connection_string, const std::strin
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
     if (SQLFetch(stmt) == SQL_SUCCESS) {
         if (!fetch_binary_column(stmt, 1, picture, error)) {
             SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-            disconnect(db);
             return false;
         }
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -881,63 +883,60 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
     const std::string blood_codes = abo_codes + "," + rhd_codes;
     const std::string cbc_codes = hgb_codes + "," + plt_codes;
 
-    std::ostringstream blood_sql;
-    blood_sql
+    // Single round-trip via OUTER APPLY: blood and CBC are independent subqueries
+    // from the same base tables, executed together to avoid two network round-trips.
+    std::ostringstream sql;
+    sql
+        << "SELECT b.abo,b.rhd,b.blood_type_date,c.hgb,c.plt,c.cbc_date"
+        << " FROM (VALUES(1)) AS _(d)"
+        << " OUTER APPLY ("
         << "SELECT TOP 1"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'')"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS abo,"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS rhd,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS blood_type_date"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND e.ITEM_CODE IN (" << blood_codes << ")";
-    add_lis_patient_filters(blood_sql, filters, "r");
-    blood_sql
+    add_lis_patient_filters(sql, filters, "r");
+    sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"
         << " HAVING MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
         << " AND MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
-        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
-
-    std::vector<std::string> blood_cols(3);
-    if (!exec_one(blood_sql, blood_cols)) {
-        disconnect(db);
-        return false;
-    }
-    summary.abo = blood_cols[0];
-    summary.rhd = blood_cols[1];
-    summary.blood_type_date = blood_cols[2];
-
-    std::ostringstream cbc_sql;
-    cbc_sql
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC"
+        << ") b"
+        << " OUTER APPLY ("
         << "SELECT TOP 1"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'')"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS hgb,"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS plt,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS cbc_date"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND e.ITEM_CODE IN (" << cbc_codes << ")";
-    add_lis_patient_filters(cbc_sql, filters, "r");
-    cbc_sql
+    add_lis_patient_filters(sql, filters, "r");
+    sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"
         << " HAVING MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
         << " AND MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
-        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC"
+        << ") c";
 
-    std::vector<std::string> cbc_cols(3);
-    if (!exec_one(cbc_sql, cbc_cols)) {
-        disconnect(db);
+    std::vector<std::string> cols(6);
+    if (!exec_one(sql, cols)) {
         return false;
     }
-    summary.hgb = cbc_cols[0];
-    summary.plt = cbc_cols[1];
-    summary.cbc_date = cbc_cols[2];
+    summary.abo = cols[0];
+    summary.rhd = cols[1];
+    summary.blood_type_date = cols[2];
+    summary.hgb = cols[3];
+    summary.plt = cols[4];
+    summary.cbc_date = cols[5];
 
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1003,7 +1002,7 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         BloodRequestRow row;
@@ -1030,7 +1029,6 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1118,7 +1116,7 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         BarcodeQueryRow row;
@@ -1151,7 +1149,6 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1222,7 +1219,7 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         SpecimenSignedListRow row;
@@ -1246,7 +1243,6 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1305,7 +1301,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         if (log) log("exec sql: " + sql.str() + "\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
-        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
         while (SQLFetch(stmt) == SQL_SUCCESS) {
             const auto col_barcode = fetch_column(stmt, 1);
             const auto col_reg_no = fetch_column(stmt, 2);
@@ -1395,7 +1391,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         if (log) log("exec sql: " + sql.str() + "\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
-        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
         while (SQLFetch(stmt) == SQL_SUCCESS) {
             const auto col_type_code = fetch_column(stmt, 1);
             const auto col_type_name = fetch_column(stmt, 2);
@@ -1589,7 +1585,6 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         }
     }
 
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1661,7 +1656,6 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
             " FROM JC_DEPT_PROPERTY WITH (NOLOCK)"
             " WHERE isnull(DELETED,0)=0",
             dept_names)) {
-        disconnect(db);
         return false;
     }
 
@@ -1756,7 +1750,6 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, report_sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -1842,7 +1835,6 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
 
         SQLHSTMT entry_stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, entry_sql.str(), entry_stmt, error)) {
-            disconnect(db);
             return false;
         }
 
@@ -1940,7 +1932,6 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
 
         SQLHSTMT completed_apply_stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, completed_apply_sql.str(), completed_apply_stmt, error)) {
-            disconnect(db);
             return false;
         }
 
@@ -1982,7 +1973,6 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
     summary.preoperative_positive_count =
         non_negative_difference(summary.positive_count, classified_positive_count);
 
-    disconnect(db);
     error.clear();
     return true;
 #endif

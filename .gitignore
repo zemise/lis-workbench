@@ -16,4 +16,8 @@ Thumbs.db
 
 .claude/
 .vs/
+.codegraph/
+.idea/
+.reasonix/
 resource/gnuplot/
+log/

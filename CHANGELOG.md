@@ -1,5 +1,19 @@
 # Changelog
 
+## v2026.06.12
+
+- **代码重构：常规报告模块拆分**：将 `regular_report_module.cpp`（原 4232 行单体文件）拆分为 3 个实现文件 + 1 个共享头文件：`regular_report_state.h`（结构体/常量/前向声明）、`regular_report_utils.cpp`（工具函数）、`regular_report_picture.cpp`（图片/GDI+ 处理）、`regular_report_module.cpp`（2213 行，面板/布局/查询/入口）。
+- **CMake 构建优化**：提取 8 个重复编译的 `.cpp` 文件为 `search_ui_core` STATIC 库，消除 `result_search` 和 `main_app` 之间的双重编译；添加 `/MP` 多进程编译和 `search_ui_core` 预编译头；添加 Release 构建 `/GL` + `/LTCG` 全程序优化。
+- **代码去重**：将 `clampFontSize`（3 份副本）和 `createUiFont`（4 份副本）移入共享的 `search::clamp_font_size` / `search::create_ui_font`；创建 `quick_machine_keys.h`，消除 `QUICK_MACHINE_CODE_KEYS`/`NAME_KEYS`/`ROOM_KEYS` 双份副本；`search_ui_layout` 新增 `search::apply_font_to_children`，消除 4 份 `applyFont`/`applyFontToChildren` 重复实现。
+- **WNDCLASSEXW 样板消除**：在 `search_ui_layout.h` 中添加 `REGISTER_MDI_CHILD_CLASS` 宏，统一替换 9 个 MDI 子窗口类注册站点（~100 行缩减）。
+- **g_pending 全局状态消除**：用 `lpCreateParams` 替代 8 个 `g_pending`/`g_pendingLis` 全局裸指针，消除线程安全隐患。
+- **DbContext RAII**：为 `search_core.cpp` 的 `DbContext` 添加析构函数（自动 `SQLDisconnect` + `SQLFreeHandle`），删除 28 处冗余手动 `disconnect()` 调用。
+- **query_lis_summary 查询优化**：将 ABO/RhD 和 HGB/PLT 两次独立 SQL 往返合并为单次 `OUTER APPLY` 查询，减少一次网络往返。
+- **编译警告与清理**：启用 `/W3` 编译警告，添加 `/wd4996` 抑制已知安全的 `sscanf` 警告；修复 `hiv_statistics_module.cpp` 使用过时 `WNDCLASSW`/`RegisterClassW` 的问题；修复 2 处 GDI 画刷泄漏（`blood_module.cpp`）；移除 `search_text.cpp` 死 `#else` 分支；移除未使用的 `app::ModuleDef` 结构体；修复 `query_module.cpp` 设置按钮先创建后销毁的浪费。
+- **日志与崩溃诊断系统**：新增 `log.h/cpp` 线程安全文件日志（按天滚动 `log/YYYY-MM-DD.log` + `OutputDebugString` 同步输出）；新增 `crash_handler.cpp` 崩溃转储（`crash_YYYYMMDD_HHMMSS.dmp`）；激活 `search_core` 休眠的 `LogFn` 基础设施；为查询线程添加 `try/catch` 保护（`PostMessageW` 失败记录日志、`WM_CREATE` lpCreateParams null 守卫）。
+- **打包文件更新**：NSIS 安装脚本 `LISWorkbench.nsi` 和打包文档 `packaging/README_windows_installer.md` 与当前构建产物保持一致。
+- 版本号 v2026.06.12。
+
 ## v2026.06.06
 
 - **数据库关系补充**：补充 `JC_DEPT_PROPERTY` 和 `JC_dept_mz_zy` 临床申请科室字典说明；`LS_AS_BARCODE.DEPT_CODE / DEPT_NAME` 属于申请科室，后续需要从代码补全名称时，优先使用覆盖率更高的 `JC_DEPT_PROPERTY.DEPT_ID -> NAME`，`JC_dept_mz_zy.mzksid/mzksmc` 或 `zyksid/zyksmc` 作为门诊/住院辅助关系，不与 `SIGN_DEPT`、检验科室或仪器科室混用。
