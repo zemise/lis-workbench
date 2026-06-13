@@ -214,9 +214,33 @@ HWND createMdiChild(const wchar_t* title) {
     return child;
 }
 
+HWND getActiveMdiChild() {
+    if (!g_ctx.mdiClient) return nullptr;
+    return reinterpret_cast<HWND>(SendMessageW(g_ctx.mdiClient, WM_MDIGETACTIVE, 0, 0));
+}
+
+int toolbarCommandForMdiChild(HWND child) {
+    if (!child) return 0;
+    wchar_t title[256]{};
+    if (!GetWindowTextW(child, title, 256)) return 0;
+    if (lstrcmpW(title, L"标本签收中心") == 0) return IDM_TOOL3;
+    if (lstrcmpW(title, L"常规报告") == 0) return IDM_TOOL2;
+    if (lstrcmpW(title, L"输血结果查询") == 0) return IDM_BLOOD;
+    return 0;
+}
+
+void updateToolbarState() {
+    HWND tb = GetDlgItem(g_ctx.mainWindow, ID_TOOLBAR);
+    if (!tb) return;
+    HWND active = getActiveMdiChild();
+    mtSetActiveButton(tb, toolbarCommandForMdiChild(active));
+    mtEnableButton(tb, ID_BTNCLOSE, active != nullptr);
+}
+
 void closeActiveMdiChild() {
-    HWND active = reinterpret_cast<HWND>(SendMessageW(g_ctx.mdiClient, WM_MDIGETACTIVE, 0, 0));
+    HWND active = getActiveMdiChild();
     if (active) SendMessageW(g_ctx.mdiClient, WM_MDIDESTROY, reinterpret_cast<WPARAM>(active), 0);
+    updateToolbarState();
 }
 
 // ── placeholder factories (to be replaced with real modules) ────
@@ -625,9 +649,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
             mtAddButton(tb, L"标本签收中心", IDM_TOOL3);
             mtAddButton(tb, L"常规报告", IDM_TOOL2);
+            mtAddButton(tb, L"输血查询", IDM_BLOOD);
             mtAddStretch(tb);
-            HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
-            mtAddButton(tb, L"关闭", ID_BTNCLOSE, closeIcon);
+            mtAddCloseButton(tb, L"关闭当前", ID_BTNCLOSE, false);
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -638,6 +662,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_MDIACTIVATE:
+            updateToolbarState();
+            break;
         case WM_TIMER: {
             if (wp == ID_TIMER) {
                 updateTimePane(hwnd);
@@ -691,6 +718,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (int i = 0; i < g_moduleCount; i++) {
                 if (g_modules[i].menuId == id) {
                     g_modules[i].create(makeCtx());
+                    updateToolbarState();
                     return 0;
                 }
             }
