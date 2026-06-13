@@ -60,7 +60,7 @@ constexpr UINT WM_LIS_RESULTS_DONE = WM_APP + 63;
 constexpr UINT WM_LIS_SUMMARY_DONE = WM_APP + 64;
 constexpr UINT_PTR SEARCH_EDIT_SUBCLASS = 6201;
 constexpr int DEFAULT_DATE_RANGE_DAYS = 7;
-constexpr int DEFAULT_LIS_DAYS = 7;
+constexpr int DEFAULT_LIS_DAYS = 14;
 
 constexpr int IDC_LIS_DAYS = 6301;
 constexpr int IDC_LIS_QUERY = 6302;
@@ -221,6 +221,42 @@ struct LisResultsResult {
     std::vector<search::ResultRow> rows;
     std::string error;
 };
+
+RECT workAreaForWindow(HWND hwnd) {
+    RECT fallback{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &fallback, 0);
+    RECT probe = fallback;
+    if (hwnd) {
+        GetWindowRect(hwnd, &probe);
+    }
+    HMONITOR monitor = MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        return mi.rcWork;
+    }
+    return fallback;
+}
+
+RECT centeredPopupRect(HWND ownerRoot, int desiredW, int desiredH, int minW, int minH) {
+    const RECT work = workAreaForWindow(ownerRoot);
+    const int workW = std::max(1, static_cast<int>(work.right - work.left));
+    const int workH = std::max(1, static_cast<int>(work.bottom - work.top));
+    const int maxW = std::max(minW, workW * 9 / 10);
+    const int maxH = std::max(minH, workH * 9 / 10);
+    const int popupW = std::min(desiredW, maxW);
+    const int popupH = std::min(desiredH, maxH);
+
+    RECT ownerRect{};
+    if (!ownerRoot || !GetWindowRect(ownerRoot, &ownerRect)) {
+        ownerRect = work;
+    }
+    int x = ownerRect.left + (ownerRect.right - ownerRect.left - popupW) / 2;
+    int y = ownerRect.top + (ownerRect.bottom - ownerRect.top - popupH) / 2;
+    x = std::max(static_cast<int>(work.left), std::min(x, static_cast<int>(work.right) - popupW));
+    y = std::max(static_cast<int>(work.top), std::min(y, static_cast<int>(work.bottom) - popupH));
+    return RECT{x, y, x + popupW, y + popupH};
+}
 
 bool isLeapYear(WORD year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
@@ -1334,7 +1370,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->patientAge = createValue(hwnd, L"", 0, 0, 0, 0);
             st->patientSex = createValue(hwnd, L"", 0, 0, 0, 0);
             st->days = search::create_edit(hwnd, IDC_LIS_DAYS, 0, 0, 0, 0);
-            SetWindowTextW(st->days, L"7");
+            SetWindowTextW(st->days, L"14");
             st->daysSpin = CreateWindowExW(0, UPDOWN_CLASSW, L"", WS_CHILD | WS_VISIBLE | UDS_SETBUDDYINT | UDS_ARROWKEYS,
                                            0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
             SendMessageW(st->daysSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->days), 0);
@@ -1389,6 +1425,13 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (st) layoutLisWindow(hwnd, st);
             return 0;
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc,
+                     st && st->bgBrush ? st->bgBrush : GetSysColorBrush(COLOR_WINDOW));
+            return 1;
+        }
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
@@ -1537,19 +1580,13 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
     st->patient_age = row.patient_age;
     st->patient_sex = row.patient_sex;
 
-    constexpr int windowW = 2240;
-    constexpr int windowH = 1440;
-    int x = CW_USEDEFAULT;
-    int y = CW_USEDEFAULT;
-    RECT ownerRect{};
-    if (ownerRoot && GetWindowRect(ownerRoot, &ownerRect)) {
-        x = ownerRect.left + ((ownerRect.right - ownerRect.left) - windowW) / 2;
-        y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - windowH) / 2;
-    }
+    const RECT popupRect = centeredPopupRect(ownerRoot, 2240, 1440, 1100, 720);
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, LIS_WND_CLASS, L"LIS检验信息",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        x, y, windowW, windowH,
+        popupRect.left, popupRect.top,
+        popupRect.right - popupRect.left,
+        popupRect.bottom - popupRect.top,
         ownerRoot ? ownerRoot : owner, nullptr, ctx.instance, st);
     if (hwnd) {
         ShowWindow(hwnd, SW_SHOW);
@@ -1583,6 +1620,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (st) layoutBloodWindow(hwnd, st);
             return 0;
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc,
+                     st && st->bgBrush ? st->bgBrush : GetSysColorBrush(COLOR_WINDOW));
+            return 1;
+        }
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);

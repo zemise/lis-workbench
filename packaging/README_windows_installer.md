@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.9` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.06.12`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.06.13`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -92,7 +92,7 @@ out\windows\update\updates\manifest.json
 out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 ```
 
-`lis.ps1 build` 会从 `src\version.h` 自动读取版本号并生成 `out\windows\installer\LISWorkbench-Setup.exe`，但不会生成更新 zip/manifest，也不会在默认 `auto` 策略下下载远程 LabelPrint 包。`lis.ps1 package` 和 `lis.ps1 rebuild-package` 会从 `src\version.h` 自动读取版本号；需要覆盖时可传 `-AppVersion vYYYY.MM.DD`。
+`lis.ps1 build` 会从 `src\version.h` 自动读取版本号并生成 `out\windows\installer\LISWorkbench-Setup.exe`，但不会生成更新 zip/manifest，也不会在默认 `auto` 策略下下载远程 LabelPrint 包；默认会优先使用本地 LabelPrint 源码目录，并禁用外部 `find_package(LabelPrint)`，避免旧缓存或外部 package 造成 `/MD` 与 `/MT` 运行库不一致。`lis.ps1 package` 和 `lis.ps1 rebuild-package` 会从 `src\version.h` 自动读取版本号；需要覆盖时可传 `-AppVersion vYYYY.MM.DD`。
 如果未显式传入 `-Generator`，`lis.ps1 package` 会优先复用现有 `build\main-app\CMakeCache.txt` 中的生成器；没有缓存时再按与 `build_main.ps1` 相同的规则解析实际 Visual Studio 生成器，并据此选择匹配的 LabelPrint release 包，避免 VS2026 构建误用 VS2022/Win7 包。
 
 等价的底层命令如下：
@@ -104,7 +104,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.06.12 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.06.13 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
@@ -118,7 +118,7 @@ New-Item -ItemType Directory -Force out\windows\installer
 - `github`：从 `zemise/LabelPrint` GitHub Release 下载并缓存 release 包，适合正式打包。
 - `local`：使用 `-LabelPrintLocalPath` 指向本地源码，适合本机联调。
 - `package`：使用 `-LabelPrintPackagePath` 指向已解压的 release 包。
-- `auto`：默认策略，`package/rebuild-package` 使用 GitHub；`build/run` 不强制 LabelPrint 来源，交给 CMake 默认查找逻辑处理。
+- `auto`：默认策略，`package/rebuild-package` 使用 GitHub；`build/run` 优先使用本地 LabelPrint 源码目录。
 
 `-LabelPrintPackagePath` 会传给 CMake 的 `CMAKE_PREFIX_PATH`，使主项目优先通过 `find_package(LabelPrint 1.2 CONFIG)` 使用 release 包。该路径必须是 release zip 解压后的根目录，且包含 `cmake\LabelPrintConfig.cmake`；路径无效时脚本会直接停止。
 

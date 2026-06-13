@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.06.12`
+当前版本：`v2026.06.13`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -83,13 +83,13 @@
   - 右侧底部 `导出勾选图片` 可选择一个文件夹，并将勾选项目分别导出为多张 PNG。
   - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
-- 设置页面支持字号配置，保存后会持久化到 `ClientConfig.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
-- 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
+- 设置页面采用原生 Win32 分组卡片布局，支持字号配置；字号选择限制为 `9 / 11 / 12 / 13` 四档，保存后持久化到 `ClientConfig.ini`，并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
+- 系统设置支持配置 LIS 摘要项目代码，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
 - 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
-- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。
+- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。设置页中的复选框保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
 - `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
@@ -243,6 +243,7 @@ make install      # 完整发布流程 → out/windows/dist/
 - [CHANGELOG.md](CHANGELOG.md)
 - [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
 - [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [WIN32_NATIVE_UI_DESIGN.md](WIN32_NATIVE_UI_DESIGN.md)
 - [AUTO_UPDATE_DESIGN.md](AUTO_UPDATE_DESIGN.md)
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
@@ -273,7 +274,7 @@ make package
 make install
 ```
 
-`build` 默认不强制 LabelPrint 来源，交给 CMake 默认查找逻辑处理，并在构建完成后直接生成 `out\windows\installer\LISWorkbench-Setup.exe`。`package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包，并同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`lis.ps1 package` 会优先复用现有 CMake 缓存生成器，没有缓存时再解析实际 Visual Studio 生成器，并选择匹配的 LabelPrint release 包。
+`build` / `run` 默认优先使用本地 LabelPrint 源码目录，避免旧 CMake 缓存或外部 package 把 `/MD` 运行库的 `labelprint.lib` 链接进默认 `/MT` 主程序；`package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包，并同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`lis.ps1 package` 会优先复用现有 CMake 缓存生成器，没有缓存时再解析实际 Visual Studio 生成器，并选择匹配的 LabelPrint release 包。
 
 项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
 
@@ -285,7 +286,7 @@ make install
 2. 点击底部 `设置`。
 3. 填写服务器、初始数据库、用户名、密码。
 4. 可点击 `测试连接` 验证数据库连接。
-5. 点击 `保存` 后，配置会写入程序同目录 `ClientConfig.ini`。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
+5. 点击 `保存` 后，配置会写入程序同目录 `ClientConfig.ini`，设置页面保持打开并在按钮附近显示保存状态。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
 6. 输入姓名、病人号、条码号、日期范围，或通过 `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 7. 点击 `查询`。
 8. 在中间报告列表选择一行，右侧显示该报告的项目结果。

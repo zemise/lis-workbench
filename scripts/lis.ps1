@@ -43,7 +43,7 @@ function Show-Help {
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -LabelPrintSource <auto|github|local|package>"
-    Write-Host "                                auto: package uses GitHub, build/run use CMake defaults"
+    Write-Host "                                auto: package uses GitHub, build/run prefer local LabelPrint source"
     Write-Host "  -LabelPrintVersion <version>  GitHub LabelPrint release version"
     Write-Host "  -LabelPrintLocalPath <path>   Local LabelPrint source root"
     Write-Host "  -LabelPrintPackagePath <path> Extracted LabelPrint release root"
@@ -79,6 +79,10 @@ function Resolve-DefaultLabelPrintSource([string]$CommandName) {
         return "github"
     }
     if ($LabelPrintLocalPath) {
+        return "local"
+    }
+    $defaultLocalPath = Resolve-DefaultLabelPrintLocalPath
+    if (Test-Path $defaultLocalPath) {
         return "local"
     }
     return ""
@@ -171,10 +175,8 @@ function Resolve-EffectiveGenerator {
 }
 
 function Resolve-LabelPrintAssetName {
-    $vsGen = Resolve-EffectiveGenerator
-    if ($vsGen -match "Visual Studio 18 2026") {
-        return "labelprint-$LabelPrintVersion-windows-x64-vs2026.zip"
-    }
+    # Always use the static-MSVCRT / Win7-compatible package.
+    # VS2022-static and VS2026 share stable MSVC ABI for C linkage.
     return "labelprint-$LabelPrintVersion-windows-x64-vs2022-win7.zip"
 }
 
@@ -246,6 +248,7 @@ function Resolve-LabelPrintBuildOptions([string]$CommandName) {
             $result.ExtraCMakeArgs = @(
                 "-DCMAKE_PREFIX_PATH=",
                 "-DLabelPrint_DIR=LabelPrint_DIR-NOTFOUND",
+                "-DCMAKE_DISABLE_FIND_PACKAGE_LabelPrint=ON",
                 "-DLIS_LABELPRINT_DIR=$localPath"
             )
         }

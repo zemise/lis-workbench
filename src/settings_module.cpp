@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <vector>
 
 namespace {
@@ -49,9 +50,38 @@ constexpr int IDC_SET_UPDATE_FOLDER = 5126;
 constexpr int IDC_SET_UPDATE_AUTO_CHECK = 5128;
 constexpr int IDC_SET_UPDATE_MANIFEST_LABEL = 5129;
 constexpr int IDC_SET_UPDATE_FOLDER_LABEL = 5130;
+constexpr int IDC_LABEL_SERVER = 5201;
+constexpr int IDC_LABEL_INITIAL_DATABASE = 5202;
+constexpr int IDC_LABEL_USER = 5203;
+constexpr int IDC_LABEL_PASSWORD = 5204;
+constexpr int IDC_LABEL_FONT_SIZE = 5205;
+constexpr int IDC_LABEL_LIS_ABO_CODES = 5206;
+constexpr int IDC_LABEL_LIS_RHD_CODES = 5207;
+constexpr int IDC_LABEL_LIS_HGB_CODES = 5208;
+constexpr int IDC_LABEL_LIS_PLT_CODES = 5209;
+constexpr int IDC_LABEL_BARCODE_PRINTER = 5210;
+constexpr int IDC_LABEL_QUICK_MACHINE_1 = 5211;
+constexpr int IDC_LABEL_QUICK_MACHINE_2 = 5212;
+constexpr int IDC_LABEL_QUICK_MACHINE_3 = 5213;
+constexpr int IDC_LABEL_UPDATE_SOURCE = 5214;
+constexpr int IDC_TEXT_LIS_HINT = 5215;
+constexpr int IDC_TEXT_PAGE_TITLE = 5216;
+constexpr int IDC_TEXT_PAGE_SUBTITLE = 5217;
+constexpr int IDC_TEXT_SECTION_DATABASE = 5218;
+constexpr int IDC_TEXT_SECTION_LIS = 5219;
+constexpr int IDC_TEXT_SECTION_REPORT = 5220;
+constexpr int IDC_TEXT_SECTION_UPDATE = 5221;
+constexpr int IDC_TEXT_DATABASE_HINT = 5222;
+constexpr int IDC_TEXT_REPORT_HINT = 5223;
+constexpr int IDC_TEXT_UPDATE_HINT = 5224;
+constexpr int IDC_TEXT_DATABASE_DISPLAY = 5225;
+constexpr int IDC_TEXT_REPORT_PRINTER = 5226;
+constexpr int IDC_TEXT_REPORT_QUICK = 5227;
+constexpr int IDC_TEXT_SAVE_STATUS = 5228;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
+constexpr const wchar_t* WHITE_HOST_CLASS = L"SettingsWhiteHost";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
 constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
 constexpr int PICKER_W = 440;
@@ -61,10 +91,24 @@ constexpr int PICKER_COMBO_H = 180;
 constexpr int PICKER_LIST_Y = 48;
 constexpr int PICKER_CODE_W = 92;
 constexpr int PICKER_NAME_W = 300;
+constexpr int ALLOWED_FONT_SIZES[] = {9, 11, 12, 13};
+constexpr COLORREF COLOR_PAGE_BG = RGB(0xF3, 0xF6, 0xFA);
+constexpr COLORREF COLOR_CARD_BG = RGB(0xFF, 0xFF, 0xFF);
+constexpr COLORREF COLOR_CARD_BORDER = RGB(0xD8, 0xE0, 0xEA);
+constexpr COLORREF COLOR_TEXT = RGB(0x1F, 0x29, 0x37);
+constexpr COLORREF COLOR_MUTED_TEXT = RGB(0x6B, 0x72, 0x80);
+constexpr COLORREF COLOR_ACCENT = RGB(0x25, 0x63, 0xEB);
+constexpr COLORREF COLOR_SUCCESS = RGB(0x16, 0x7A, 0x3A);
 
 struct SettingsState {
     ModuleContext ctx;
     search::AppSettings app;
+    HFONT titleFont = nullptr;
+    HFONT sectionFont = nullptr;
+    HBRUSH pageBrush = nullptr;
+    HBRUSH editBrush = nullptr;
+    HWND updateAutoCheckHost = nullptr;
+    HWND updateAutoCheck = nullptr;
     std::array<std::string, QUICK_MACHINE_COUNT> quickMachineCodes;
     std::array<std::string, QUICK_MACHINE_COUNT> quickMachineRoomCodes;
     std::array<std::wstring, QUICK_MACHINE_COUNT> quickMachineNames;
@@ -86,8 +130,332 @@ struct SettingsUpdateConfig {
     std::wstring folderPath;
 };
 
+LRESULT CALLBACK whiteHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc, GetSysColorBrush(COLOR_WINDOW));
+            return 1;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORBTN: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetBkMode(dc, OPAQUE);
+            SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+            SetTextColor(dc, COLOR_TEXT);
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        }
+        case WM_COMMAND:
+            if (HWND parent = GetParent(hwnd)) {
+                return SendMessageW(parent, msg, wp, lp);
+            }
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
 int quickMachineEditId(int slot) {
     return slot == 0 ? IDC_SET_QUICK_MACHINE_1 : (slot == 1 ? IDC_SET_QUICK_MACHINE_2 : IDC_SET_QUICK_MACHINE_3);
+}
+
+HFONT createDerivedFont(HFONT base, int pointDelta, LONG weight) {
+    LOGFONTW lf{};
+    if (base && GetObjectW(base, sizeof(lf), &lf) == sizeof(lf)) {
+        // Use the active app face and adjust only size/weight for local hierarchy.
+    } else {
+        NONCLIENTMETRICSW nm{};
+        nm.cbSize = sizeof(nm);
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
+        lf = nm.lfMessageFont;
+    }
+    HDC screen = GetDC(nullptr);
+    const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
+    const int currentPoint = std::max(8, MulDiv(std::abs(lf.lfHeight), 72, dpi));
+    lf.lfHeight = -MulDiv(std::max(8, currentPoint + pointDelta), dpi, 72);
+    lf.lfWeight = weight;
+    if (screen) ReleaseDC(nullptr, screen);
+    return CreateFontIndirectW(&lf);
+}
+
+HWND createSettingLabel(HWND parent, int id, const wchar_t* text) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
+                           0, 0, 10, 10, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
+}
+
+HWND createText(HWND parent, int id, const wchar_t* text) {
+    return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                           0, 0, 10, 10, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
+}
+
+void drawRoundRect(HDC dc, const RECT& rc, int radius, COLORREF fill, COLORREF border) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+struct SettingsLayout {
+    RECT database{};
+    RECT lis{};
+    RECT report{};
+    RECT update{};
+    int labelW = 0;
+    int gap = 0;
+    int editH = 0;
+    int rowGap = 0;
+};
+
+SettingsLayout calculateLayout(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const float s = search::dpi_scale_factor(hwnd);
+    auto S = [s](int v) { return static_cast<int>(v * s); };
+
+    const int clientW = rc.right - rc.left;
+    const int margin = S(24);
+    const int top = S(86);
+    const int columnGap = S(18);
+    const int minColumn = S(430);
+    const int contentW = std::max(S(720), clientW - margin * 2);
+    const int columnW = std::max(minColumn, (contentW - columnGap) / 2);
+    const int left = margin;
+    const int right = left + columnW + columnGap;
+
+    SettingsLayout l{};
+    l.labelW = S(96);
+    l.gap = S(10);
+    l.editH = S(26);
+    l.rowGap = S(34);
+    const int topCardH = S(286);
+    const int bottomCardH = S(224);
+    l.database = RECT{left, top, left + columnW, top + topCardH};
+    l.report = RECT{right, top, right + columnW, top + topCardH};
+    l.lis = RECT{left, l.database.bottom + S(16), left + columnW, l.database.bottom + S(16) + bottomCardH};
+    l.update = RECT{right, l.report.bottom + S(16), right + columnW, l.report.bottom + S(16) + bottomCardH};
+    return l;
+}
+
+void moveChild(HWND hwnd, int id, int x, int y, int w, int h) {
+    HWND child = GetDlgItem(hwnd, id);
+    if (child) MoveWindow(child, x, y, w, h, TRUE);
+}
+
+void layoutSettingsWindow(HWND hwnd) {
+    const float s = search::dpi_scale_factor(hwnd);
+    auto S = [s](int v) { return static_cast<int>(v * s); };
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const SettingsLayout l = calculateLayout(hwnd);
+    const int cardPadX = S(22);
+    const int titleY = S(18);
+    const int sectionTitleY = S(16);
+    const int hintY = S(42);
+    const int formY = S(74);
+    const int labelW = l.labelW;
+    const int controlGap = l.gap;
+    const int rowGap = l.rowGap;
+    const int editH = l.editH;
+
+    const auto placeSection = [&](int titleId, int hintId, const RECT& card) {
+        moveChild(hwnd, titleId, card.left + cardPadX, card.top + sectionTitleY,
+                  card.right - card.left - cardPadX * 2, S(22));
+        moveChild(hwnd, hintId, card.left + cardPadX, card.top + hintY,
+                  card.right - card.left - cardPadX * 2, S(22));
+    };
+    const auto placeRow = [&](const RECT& card, int row, int labelId, int ctrlId, int ctrlW = -1) {
+        const int y = card.top + formY + row * rowGap;
+        const int labelX = card.left + cardPadX;
+        const int ctrlX = labelX + labelW + controlGap;
+        const int maxW = card.right - cardPadX - ctrlX;
+        moveChild(hwnd, labelId, labelX, y, labelW, editH);
+        moveChild(hwnd, ctrlId, ctrlX, y, ctrlW > 0 ? std::min(ctrlW, maxW) : maxW, editH);
+    };
+
+    const int titleW = std::max(S(300), static_cast<int>(rc.right) - S(48));
+    moveChild(hwnd, IDC_TEXT_PAGE_TITLE, S(24), titleY, titleW, S(30));
+    moveChild(hwnd, IDC_TEXT_PAGE_SUBTITLE, S(24), S(50), titleW, S(22));
+
+    placeSection(IDC_TEXT_SECTION_DATABASE, IDC_TEXT_DATABASE_HINT, l.database);
+    placeRow(l.database, 0, IDC_LABEL_SERVER, IDC_SET_SERVER);
+    placeRow(l.database, 1, IDC_LABEL_INITIAL_DATABASE, IDC_SET_INITIAL_DATABASE);
+    placeRow(l.database, 2, IDC_LABEL_USER, IDC_SET_USER);
+    placeRow(l.database, 3, IDC_LABEL_PASSWORD, IDC_SET_PASSWORD);
+    moveChild(hwnd, IDC_SET_TEST,
+              l.database.right - cardPadX - S(96),
+              l.database.top + formY + 4 * rowGap, S(96), S(32));
+    moveChild(hwnd, IDC_TEXT_DATABASE_DISPLAY,
+              l.database.left + cardPadX, l.database.top + formY + 4 * rowGap + S(6),
+              S(180), S(22));
+    {
+        const int y = l.database.top + formY + 5 * rowGap;
+        const int labelX = l.database.left + cardPadX;
+        const int ctrlX = labelX + labelW + controlGap;
+        moveChild(hwnd, IDC_LABEL_FONT_SIZE, labelX, y, labelW, editH);
+        moveChild(hwnd, IDC_SET_FONT_SIZE, ctrlX, y, S(132), S(128));
+    }
+
+    placeSection(IDC_TEXT_SECTION_LIS, IDC_TEXT_LIS_HINT, l.lis);
+    placeRow(l.lis, 0, IDC_LABEL_LIS_ABO_CODES, IDC_SET_LIS_ABO_CODES);
+    placeRow(l.lis, 1, IDC_LABEL_LIS_RHD_CODES, IDC_SET_LIS_RHD_CODES);
+    placeRow(l.lis, 2, IDC_LABEL_LIS_HGB_CODES, IDC_SET_LIS_HGB_CODES);
+    placeRow(l.lis, 3, IDC_LABEL_LIS_PLT_CODES, IDC_SET_LIS_PLT_CODES);
+
+    placeSection(IDC_TEXT_SECTION_REPORT, IDC_TEXT_REPORT_HINT, l.report);
+    moveChild(hwnd, IDC_TEXT_REPORT_PRINTER,
+              l.report.left + cardPadX, l.report.top + S(68),
+              l.report.right - l.report.left - cardPadX * 2, S(22));
+    {
+        const int y = l.report.top + S(94);
+        const int labelX = l.report.left + cardPadX;
+        const int ctrlX = labelX + labelW + controlGap;
+        moveChild(hwnd, IDC_LABEL_BARCODE_PRINTER, labelX, y, labelW, editH);
+        moveChild(hwnd, IDC_SET_BARCODE_PRINTER, ctrlX, y, l.report.right - cardPadX - ctrlX, editH);
+    }
+    moveChild(hwnd, IDC_TEXT_REPORT_QUICK,
+              l.report.left + cardPadX, l.report.top + S(134),
+              l.report.right - l.report.left - cardPadX * 2, S(22));
+    for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+        const int labelId = i == 0 ? IDC_LABEL_QUICK_MACHINE_1 :
+                            (i == 1 ? IDC_LABEL_QUICK_MACHINE_2 : IDC_LABEL_QUICK_MACHINE_3);
+        const int pickId = i == 0 ? IDC_SET_QUICK_MACHINE_PICK_1 :
+                           (i == 1 ? IDC_SET_QUICK_MACHINE_PICK_2 : IDC_SET_QUICK_MACHINE_PICK_3);
+        const int y = l.report.top + S(160) + i * rowGap;
+        const int labelX = l.report.left + cardPadX;
+        const int ctrlX = labelX + labelW + controlGap;
+        const int buttonW = S(38);
+        moveChild(hwnd, labelId, labelX, y, labelW, editH);
+        moveChild(hwnd, quickMachineEditId(i), ctrlX, y,
+                  l.report.right - cardPadX - ctrlX - buttonW - S(8), editH);
+        moveChild(hwnd, pickId, l.report.right - cardPadX - buttonW, y - S(1), buttonW, editH + S(2));
+    }
+
+    placeSection(IDC_TEXT_SECTION_UPDATE, IDC_TEXT_UPDATE_HINT, l.update);
+    placeRow(l.update, 0, IDC_LABEL_UPDATE_SOURCE, IDC_SET_UPDATE_SOURCE, S(160));
+    placeRow(l.update, 1, IDC_SET_UPDATE_MANIFEST_LABEL, IDC_SET_UPDATE_MANIFEST_URL);
+    placeRow(l.update, 1, IDC_SET_UPDATE_FOLDER_LABEL, IDC_SET_UPDATE_FOLDER);
+    auto* st = reinterpret_cast<SettingsState*>(GetPropW(hwnd, PROP_STATE));
+    if (st && st->updateAutoCheckHost && st->updateAutoCheck) {
+        const int checkX = l.update.left + cardPadX + labelW + controlGap;
+        const int checkY = l.update.top + formY + 2 * rowGap;
+        MoveWindow(st->updateAutoCheckHost, checkX, checkY, S(180), editH, TRUE);
+        MoveWindow(st->updateAutoCheck, 0, 0, S(180), editH, TRUE);
+    } else {
+        moveChild(hwnd, IDC_SET_UPDATE_AUTO_CHECK,
+                  l.update.left + cardPadX + labelW + controlGap,
+                  l.update.top + formY + 2 * rowGap, S(170), editH);
+    }
+
+    const int buttonY = std::max(S(96), static_cast<int>(rc.bottom) - S(24) - S(32));
+    const int buttonH = S(32);
+    const int buttonW = S(96);
+    const int buttonGap = S(10);
+    const int rightEdge = std::max(S(240), static_cast<int>(rc.right) - S(24));
+    const int statusW = S(128);
+    moveChild(hwnd, IDC_TEXT_SAVE_STATUS,
+              rightEdge - buttonW * 2 - buttonGap - statusW - S(14),
+              buttonY + S(6), statusW, S(22));
+    moveChild(hwnd, IDC_SET_CANCEL, rightEdge - buttonW * 2 - buttonGap, buttonY, buttonW, buttonH);
+    moveChild(hwnd, IDC_SET_SAVE, rightEdge - buttonW, buttonY, buttonW, buttonH);
+}
+
+bool isMutedTextId(int id) {
+    return id == IDC_TEXT_PAGE_SUBTITLE || id == IDC_TEXT_DATABASE_HINT ||
+           id == IDC_TEXT_LIS_HINT || id == IDC_TEXT_REPORT_HINT || id == IDC_TEXT_UPDATE_HINT;
+}
+
+bool isSectionTitleId(int id) {
+    return id == IDC_TEXT_SECTION_DATABASE || id == IDC_TEXT_SECTION_LIS ||
+           id == IDC_TEXT_SECTION_REPORT || id == IDC_TEXT_SECTION_UPDATE ||
+           id == IDC_TEXT_DATABASE_DISPLAY || id == IDC_TEXT_REPORT_PRINTER ||
+           id == IDC_TEXT_REPORT_QUICK;
+}
+
+bool isReadOnlyEditId(int id) {
+    return id == IDC_SET_QUICK_MACHINE_1 || id == IDC_SET_QUICK_MACHINE_2 ||
+           id == IDC_SET_QUICK_MACHINE_3;
+}
+
+int normalizeSettingsFontSize(int value) {
+    int best = ALLOWED_FONT_SIZES[0];
+    int bestDist = value > best ? value - best : best - value;
+    for (int size : ALLOWED_FONT_SIZES) {
+        const int dist = value > size ? value - size : size - value;
+        if (dist < bestDist || (dist == bestDist && size > best)) {
+            best = size;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
+std::wstring fontSizeLabel(int size) {
+    switch (size) {
+        case 9: return L"9 - 紧凑";
+        case 11: return L"11 - 标准";
+        case 12: return L"12 - 舒适";
+        case 13: return L"13 - 大字";
+        default: return std::to_wstring(size);
+    }
+}
+
+void populateFontSizeCombo(HWND hwnd, int currentSize) {
+    HWND combo = GetDlgItem(hwnd, IDC_SET_FONT_SIZE);
+    if (!combo) return;
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const int normalized = normalizeSettingsFontSize(currentSize);
+    int selected = 0;
+    for (int i = 0; i < static_cast<int>(sizeof(ALLOWED_FONT_SIZES) / sizeof(ALLOWED_FONT_SIZES[0])); ++i) {
+        const int size = ALLOWED_FONT_SIZES[i];
+        const std::wstring label = fontSizeLabel(size);
+        const int index = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0,
+                                                        reinterpret_cast<LPARAM>(label.c_str())));
+        SendMessageW(combo, CB_SETITEMDATA, index, size);
+        if (size == normalized) selected = index;
+    }
+    SendMessageW(combo, CB_SETCURSEL, selected, 0);
+}
+
+int selectedFontSize(HWND hwnd) {
+    HWND combo = GetDlgItem(hwnd, IDC_SET_FONT_SIZE);
+    const int index = combo ? static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0)) : CB_ERR;
+    if (index != CB_ERR) {
+        const LRESULT data = SendMessageW(combo, CB_GETITEMDATA, index, 0);
+        if (data != CB_ERR) {
+            return normalizeSettingsFontSize(static_cast<int>(data));
+        }
+    }
+    return normalizeSettingsFontSize(11);
+}
+
+void broadcastSettingsChangedToChildren(HWND mdiClient) {
+    if (!mdiClient) return;
+    HWND child = GetWindow(mdiClient, GW_CHILD);
+    while (child) {
+        SendMessageW(child, app::WM_APP_SETTINGS_CHANGED, 0, 0);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+void setSaveStatus(HWND hwnd, const wchar_t* text) {
+    HWND status = GetDlgItem(hwnd, IDC_TEXT_SAVE_STATUS);
+    if (!status) return;
+    SetWindowTextW(status, text ? text : L"");
+    ShowWindow(status, text && text[0] ? SW_SHOW : SW_HIDE);
+    InvalidateRect(status, nullptr, TRUE);
+}
+
+void setSavedStatusNow(HWND hwnd) {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t text[64]{};
+    swprintf(text, 64, L"已保存 %02u:%02u", now.wHour, now.wMinute);
+    setSaveStatus(hwnd, text);
 }
 
 std::wstring readEdit(HWND hwnd, int id) {
@@ -388,10 +756,27 @@ void showSettingsMachinePicker(HWND owner, SettingsState* st, int slot, HWND anc
     const float scale = search::dpi_scale_factor(owner);
     RECT popupRc{0, 0, static_cast<LONG>(PICKER_W * scale), static_cast<LONG>(PICKER_H * scale)};
     AdjustWindowRectEx(&popupRc, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
+    const int popupW = popupRc.right - popupRc.left;
+    const int popupH = popupRc.bottom - popupRc.top;
+    int popupX = rc.left;
+    int popupY = rc.bottom + 2;
+    HMONITOR monitor = MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        const RECT work = mi.rcWork;
+        if (popupX + popupW > work.right) {
+            popupX = std::max(static_cast<int>(work.left), static_cast<int>(rc.right) - popupW);
+        }
+        if (popupY + popupH > work.bottom) {
+            popupY = std::max(static_cast<int>(work.top), static_cast<int>(rc.top) - popupH - 2);
+        }
+        popupX = std::max(static_cast<int>(work.left), std::min(popupX, static_cast<int>(work.right) - popupW));
+        popupY = std::max(static_cast<int>(work.top), std::min(popupY, static_cast<int>(work.bottom) - popupH));
+    }
     HWND popup = CreateWindowExW(WS_EX_TOOLWINDOW, PICKER_CLASS, L"选择检验仪器",
                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-                                 rc.left, rc.bottom + 2,
-                                 popupRc.right - popupRc.left, popupRc.bottom - popupRc.top,
+                                 popupX, popupY, popupW, popupH,
                                  owner, nullptr, GetModuleHandleW(nullptr), ps);
     ShowWindow(popup, SW_SHOW);
     SetForegroundWindow(popup);
@@ -409,81 +794,86 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             const float s = search::dpi_scale_factor(hwnd);
             auto S = [s](int v) { return static_cast<int>(v * s); };
+            REGISTER_MDI_CHILD_CLASS(GetModuleHandleW(nullptr), whiteHostProc, WHITE_HOST_CLASS,
+                                     GetSysColorBrush(COLOR_WINDOW));
+            st->titleFont = createDerivedFont(st->ctx.uiFont, 7, FW_SEMIBOLD);
+            st->sectionFont = createDerivedFont(st->ctx.uiFont, 1, FW_SEMIBOLD);
+            st->pageBrush = CreateSolidBrush(COLOR_PAGE_BG);
+            st->editBrush = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
 
-            search::create_label(hwnd, L"服务器", S(20), S(22), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_SERVER, S(116), S(22), S(330), S(24));
+            createText(hwnd, IDC_TEXT_PAGE_TITLE, L"系统设置");
+            createText(hwnd, IDC_TEXT_PAGE_SUBTITLE, L"配置数据库连接、显示字号、报告打印、快捷仪器和自动更新。");
+            createText(hwnd, IDC_TEXT_SECTION_DATABASE, L"数据库与界面");
+            createText(hwnd, IDC_TEXT_DATABASE_HINT, L"连接 LIS 数据库，并设置主程序字号。");
+            createText(hwnd, IDC_TEXT_DATABASE_DISPLAY, L"界面显示");
+            createText(hwnd, IDC_TEXT_SECTION_LIS, L"LIS 摘要项目");
+            createText(hwnd, IDC_TEXT_LIS_HINT, L"多个项目代码用分号分隔，用于输血检验摘要显示。");
+            createText(hwnd, IDC_TEXT_SECTION_REPORT, L"常规报告打印");
+            createText(hwnd, IDC_TEXT_REPORT_HINT, L"选择条码打印机，并设置底部 1 / 2 / 3 快捷检验仪器。");
+            createText(hwnd, IDC_TEXT_REPORT_PRINTER, L"条码打印机");
+            createText(hwnd, IDC_TEXT_REPORT_QUICK, L"快捷检验仪器");
+            createText(hwnd, IDC_TEXT_SECTION_UPDATE, L"自动更新");
+            createText(hwnd, IDC_TEXT_UPDATE_HINT, L"设置共享目录或 HTTP manifest，并控制启动后自动检查。");
+            createText(hwnd, IDC_TEXT_SAVE_STATUS, L"");
+            ShowWindow(GetDlgItem(hwnd, IDC_TEXT_SAVE_STATUS), SW_HIDE);
 
-            search::create_label(hwnd, L"初始数据库", S(20), S(56), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_INITIAL_DATABASE, S(116), S(56), S(330), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_SERVER, L"服务器");
+            search::create_edit(hwnd, IDC_SET_SERVER, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_INITIAL_DATABASE, L"初始数据库");
+            search::create_edit(hwnd, IDC_SET_INITIAL_DATABASE, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_USER, L"用户名");
+            search::create_edit(hwnd, IDC_SET_USER, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_PASSWORD, L"密码");
+            search::create_password_edit(hwnd, IDC_SET_PASSWORD, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_FONT_SIZE, L"字号");
+            search::create_combo(hwnd, IDC_SET_FONT_SIZE, 0, 0, S(132), S(128), false);
 
-            search::create_label(hwnd, L"用户名", S(20), S(90), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_USER, S(116), S(90), S(330), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_ABO_CODES, L"ABO 代码");
+            search::create_edit(hwnd, IDC_SET_LIS_ABO_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_RHD_CODES, L"RhD 代码");
+            search::create_edit(hwnd, IDC_SET_LIS_RHD_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_HGB_CODES, L"Hb 代码");
+            search::create_edit(hwnd, IDC_SET_LIS_HGB_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_PLT_CODES, L"PLT 代码");
+            search::create_edit(hwnd, IDC_SET_LIS_PLT_CODES, 0, 0, S(10), S(24));
 
-            search::create_label(hwnd, L"密码", S(20), S(124), S(86), S(22));
-            search::create_password_edit(hwnd, IDC_SET_PASSWORD, S(116), S(124), S(330), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_BARCODE_PRINTER, L"条码打印机");
+            search::create_combo(hwnd, IDC_SET_BARCODE_PRINTER, 0, 0, S(10), S(220), false);
+            createSettingLabel(hwnd, IDC_LABEL_QUICK_MACHINE_1, L"快捷仪器 1");
+            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_1, 0, 0, S(10), S(24));
+            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_1, L"...", 0, 0, S(40), S(28));
+            createSettingLabel(hwnd, IDC_LABEL_QUICK_MACHINE_2, L"快捷仪器 2");
+            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_2, 0, 0, S(10), S(24));
+            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_2, L"...", 0, 0, S(40), S(28));
+            createSettingLabel(hwnd, IDC_LABEL_QUICK_MACHINE_3, L"快捷仪器 3");
+            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_3, 0, 0, S(10), S(24));
+            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_3, L"...", 0, 0, S(40), S(28));
 
-            search::create_label(hwnd, L"字号", S(20), S(158), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_FONT_SIZE, S(116), S(158), S(80), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_UPDATE_SOURCE, L"更新源");
+            search::create_combo(hwnd, IDC_SET_UPDATE_SOURCE, 0, 0, S(10), S(180), false);
+            createSettingLabel(hwnd, IDC_SET_UPDATE_MANIFEST_LABEL, L"HTTP地址");
+            search::create_edit(hwnd, IDC_SET_UPDATE_MANIFEST_URL, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_SET_UPDATE_FOLDER_LABEL, L"共享目录");
+            search::create_edit(hwnd, IDC_SET_UPDATE_FOLDER, 0, 0, S(10), S(24));
+            st->updateAutoCheckHost = CreateWindowExW(
+                0, WHITE_HOST_CLASS, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                0, 0, S(180), S(24), hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            st->updateAutoCheck = CreateWindowExW(
+                0, L"BUTTON", L"自动检查更新",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                0, 0, S(180), S(24), st->updateAutoCheckHost,
+                win32_control_id(IDC_SET_UPDATE_AUTO_CHECK), GetModuleHandleW(nullptr), nullptr);
 
-            search::create_label(hwnd, L"LIS ABO代码", S(20), S(200), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_LIS_ABO_CODES, S(116), S(200), S(520), S(24));
-
-            search::create_label(hwnd, L"LIS RhD代码", S(20), S(234), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_LIS_RHD_CODES, S(116), S(234), S(520), S(24));
-
-            search::create_label(hwnd, L"LIS Hb代码", S(20), S(268), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_LIS_HGB_CODES, S(116), S(268), S(520), S(24));
-
-            search::create_label(hwnd, L"LIS PLT代码", S(20), S(302), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_LIS_PLT_CODES, S(116), S(302), S(520), S(24));
-
-            CreateWindowExW(0, L"STATIC", L"多个项目代码用分号分隔；",
-                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                            S(116), S(336), S(620), S(22), hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-
-            search::create_label(hwnd, L"条码打印机", S(20), S(370), S(86), S(22));
-            search::create_combo(hwnd, IDC_SET_BARCODE_PRINTER, S(116), S(370), S(520), S(220), false);
-
-            search::create_label(hwnd, L"快捷仪器1", S(20), S(414), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_1, S(116), S(414), S(470), S(24));
-            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_1, L"...", S(596), S(412), S(40), S(28));
-
-            search::create_label(hwnd, L"快捷仪器2", S(20), S(448), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_2, S(116), S(448), S(470), S(24));
-            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_2, L"...", S(596), S(446), S(40), S(28));
-
-            search::create_label(hwnd, L"快捷仪器3", S(20), S(482), S(86), S(22));
-            search::create_edit(hwnd, IDC_SET_QUICK_MACHINE_3, S(116), S(482), S(470), S(24));
-            search::create_button(hwnd, IDC_SET_QUICK_MACHINE_PICK_3, L"...", S(596), S(480), S(40), S(28));
-
-            search::create_label(hwnd, L"更新源", S(20), S(526), S(86), S(22));
-            search::create_combo(hwnd, IDC_SET_UPDATE_SOURCE, S(116), S(526), S(140), S(180), false);
-
-            CreateWindowExW(0, L"STATIC", L"HTTP地址", WS_CHILD | WS_VISIBLE | SS_RIGHT,
-                            S(20), S(560), S(86), S(22), hwnd,
-                            win32_control_id(IDC_SET_UPDATE_MANIFEST_LABEL), GetModuleHandleW(nullptr), nullptr);
-            search::create_edit(hwnd, IDC_SET_UPDATE_MANIFEST_URL, S(116), S(560), S(520), S(24));
-
-            CreateWindowExW(0, L"STATIC", L"共享目录", WS_CHILD | WS_VISIBLE | SS_RIGHT,
-                            S(20), S(560), S(86), S(22), hwnd,
-                            win32_control_id(IDC_SET_UPDATE_FOLDER_LABEL), GetModuleHandleW(nullptr), nullptr);
-            search::create_edit(hwnd, IDC_SET_UPDATE_FOLDER, S(116), S(560), S(520), S(24));
-
-            CreateWindowExW(0, L"BUTTON", L"自动检查更新",
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-                            S(116), S(594), S(150), S(24), hwnd,
-                            win32_control_id(IDC_SET_UPDATE_AUTO_CHECK), GetModuleHandleW(nullptr), nullptr);
-
-            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", S(116), S(640), S(92), S(30));
-            search::create_button(hwnd, IDC_SET_SAVE, L"保存", S(254), S(640), S(84), S(30));
-            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", S(362), S(640), S(84), S(30));
+            search::create_button(hwnd, IDC_SET_TEST, L"测试连接", 0, 0, S(92), S(30));
+            search::create_button(hwnd, IDC_SET_SAVE, L"保存", 0, 0, S(84), S(30));
+            search::create_button(hwnd, IDC_SET_CANCEL, L"取消", 0, 0, S(84), S(30));
 
             auto& app = st->app;
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_INITIAL_DATABASE), app.db.initial_database.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_USER), app.db.user.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_PASSWORD), app.db.password.c_str());
-            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_FONT_SIZE), std::to_wstring(app.ui.font_size).c_str());
+            populateFontSizeCombo(hwnd, app.ui.font_size);
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_ABO_CODES), app.lis.abo_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_RHD_CODES), app.lis.rhd_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_HGB_CODES), app.lis.hgb_codes.c_str());
@@ -507,7 +897,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER),
                            search::load_module_str(lis_update::kConfigSection, L"FolderPath", L"").c_str());
             updateSourceFieldVisibility(hwnd);
-            SendMessageW(GetDlgItem(hwnd, IDC_SET_UPDATE_AUTO_CHECK), BM_SETCHECK,
+            SendMessageW(st->updateAutoCheck, BM_SETCHECK,
                          search::load_module_int(lis_update::kConfigSection, L"AutoCheck", 0)
                              ? BST_CHECKED
                              : BST_UNCHECKED,
@@ -517,10 +907,76 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SendMessageW(child, WM_SETFONT, param, TRUE);
                 return TRUE;
             }, reinterpret_cast<LPARAM>(st->ctx.uiFont));
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_PAGE_TITLE), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->titleFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_SECTION_DATABASE), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_SECTION_LIS), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_SECTION_REPORT), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_SECTION_UPDATE), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_DATABASE_DISPLAY), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_REPORT_PRINTER), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            SendMessageW(GetDlgItem(hwnd, IDC_TEXT_REPORT_QUICK), WM_SETFONT,
+                         reinterpret_cast<WPARAM>(st->sectionFont), TRUE);
+            layoutSettingsWindow(hwnd);
             return 0;
         }
         case WM_SIZE:
+            layoutSettingsWindow(hwnd);
+            InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc, st && st->pageBrush ? st->pageBrush : GetSysColorBrush(COLOR_BTNFACE));
+            return 1;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(dc, &rc, st && st->pageBrush ? st->pageBrush : GetSysColorBrush(COLOR_BTNFACE));
+            const SettingsLayout l = calculateLayout(hwnd);
+            const int radius = static_cast<int>(10 * search::dpi_scale_factor(hwnd));
+            drawRoundRect(dc, l.database, radius, COLOR_CARD_BG, COLOR_CARD_BORDER);
+            drawRoundRect(dc, l.lis, radius, COLOR_CARD_BG, COLOR_CARD_BORDER);
+            drawRoundRect(dc, l.report, radius, COLOR_CARD_BG, COLOR_CARD_BORDER);
+            drawRoundRect(dc, l.update, radius, COLOR_CARD_BG, COLOR_CARD_BORDER);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_CTLCOLORSTATIC: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
+            if (isReadOnlyEditId(id)) {
+                SetBkMode(dc, OPAQUE);
+                SetBkColor(dc, RGB(0xFF, 0xFF, 0xFF));
+                SetTextColor(dc, COLOR_TEXT);
+                return reinterpret_cast<LRESULT>(st && st->editBrush ? st->editBrush : GetStockObject(WHITE_BRUSH));
+            }
+            SetBkMode(dc, TRANSPARENT);
+            if (id == IDC_TEXT_SAVE_STATUS) {
+                SetTextColor(dc, COLOR_SUCCESS);
+            } else if (id == IDC_TEXT_PAGE_TITLE || isSectionTitleId(id)) {
+                SetTextColor(dc, id == IDC_TEXT_PAGE_TITLE ? COLOR_TEXT : COLOR_ACCENT);
+            } else {
+                SetTextColor(dc, isMutedTextId(id) ? COLOR_MUTED_TEXT : COLOR_TEXT);
+            }
+            return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
+        }
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetBkColor(dc, RGB(0xFF, 0xFF, 0xFF));
+            SetTextColor(dc, COLOR_TEXT);
+            return reinterpret_cast<LRESULT>(st && st->editBrush ? st->editBrush : GetStockObject(WHITE_BRUSH));
+        }
         case WM_COMMAND: {
             int id = LOWORD(wp);
             if (id == IDC_SET_UPDATE_SOURCE && HIWORD(wp) == CBN_SELCHANGE) {
@@ -549,13 +1005,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == IDC_SET_SAVE) {
+                int oldFontSize = st->app.ui.font_size;
+                if (st->ctx.appContext) {
+                    auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
+                    oldFontSize = gctx->fontSize;
+                }
                 st->app.db = collectForm(hwnd);
-                st->app.ui.font_size = search::clamp_font_size(_wtoi(readEdit(hwnd, IDC_SET_FONT_SIZE).c_str()));
+                st->app.ui.font_size = selectedFontSize(hwnd);
                 st->app.lis.abo_codes = readEdit(hwnd, IDC_SET_LIS_ABO_CODES);
                 st->app.lis.rhd_codes = readEdit(hwnd, IDC_SET_LIS_RHD_CODES);
                 st->app.lis.hgb_codes = readEdit(hwnd, IDC_SET_LIS_HGB_CODES);
                 st->app.lis.plt_codes = readEdit(hwnd, IDC_SET_LIS_PLT_CODES);
-                search::save_settings(search::default_ini_path(), st->app);
+                if (!search::save_settings(search::default_ini_path(), st->app)) {
+                    setSaveStatus(hwnd, L"");
+                    MessageBoxW(hwnd, L"系统设置保存失败，请检查配置文件是否可写。", L"保存失败", MB_ICONERROR);
+                    return 0;
+                }
                 search::save_module_str(L"RegularReport", L"BarcodePrinterName",
                                         readCombo(hwnd, IDC_SET_BARCODE_PRINTER));
                 for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
@@ -568,24 +1033,31 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 saveUpdateConfig(collectUpdateConfig(hwnd));
                 search::save_module_int(lis_update::kConfigSection, L"AutoCheck",
-                                        SendMessageW(GetDlgItem(hwnd, IDC_SET_UPDATE_AUTO_CHECK),
+                                        SendMessageW(st->updateAutoCheck,
                                                      BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
                 if (st->ctx.appContext) {
                     auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
                     gctx->dbSettings = st->app.db;
                     gctx->fontSize = st->app.ui.font_size;
-                    if (gctx->mainWindow) {
+                    if (gctx->mainWindow && oldFontSize != st->app.ui.font_size) {
                         SendMessageW(gctx->mainWindow, app::WM_APP_SETTINGS_CHANGED, 0, 0);
+                    } else {
+                        broadcastSettingsChangedToChildren(st->ctx.mdiClient);
                     }
                 }
-                MessageBoxW(hwnd, L"系统设置已保存。", L"保存", MB_ICONINFORMATION);
-                DestroyWindow(hwnd);
+                setSavedStatusNow(hwnd);
                 return 0;
             }
             break;
         }
         case WM_DESTROY:
             RemovePropW(hwnd, PROP_STATE);
+            if (st) {
+                if (st->titleFont) DeleteObject(st->titleFont);
+                if (st->sectionFont) DeleteObject(st->sectionFont);
+                if (st->pageBrush) DeleteObject(st->pageBrush);
+                if (st->editBrush) DeleteObject(st->editBrush);
+            }
             delete st;
             break;
     }
