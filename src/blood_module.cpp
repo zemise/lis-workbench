@@ -68,6 +68,15 @@ constexpr int IDC_LIS_REPORTS = 6303;
 constexpr int IDC_LIS_RESULTS = 6304;
 constexpr int IDC_LIS_QUERY_NAME = 6305;
 
+enum LisReportColumn {
+    LisReportSampleNo = 0,
+    LisReportInspectTime = 1,
+    LisReportGroupName = 2,
+    LisReportBarcode = 3,
+    LisReportRequester = 4,
+    LisReportReviewer = 5,
+};
+
 constexpr COLORREF COLOR_PAGE_BG = RGB(0xE8, 0xF8, 0xFF);
 constexpr COLORREF COLOR_SEARCH_BUTTON = RGB(0xB2, 0xDC, 0xFC);
 constexpr COLORREF COLOR_LEGEND_TEXT = RGB(0xEB, 0x55, 0x28);
@@ -940,11 +949,12 @@ int selectedBloodRow(BloodState* st) {
 
 void insertLisReportRow(HWND list, int index, const search::ReportRow& row) {
     insertEmptyRow(list, index);
-    setCell(list, index, 0, dateOnly(row.chk_date));
-    setCell(list, index, 1, row.group_name);
-    setCell(list, index, 2, row.txm_no);
-    setCell(list, index, 3, row.requester);
-    setCell(list, index, 4, row.reviewer);
+    setCell(list, index, LisReportSampleNo, row.oper_no);
+    setCell(list, index, LisReportInspectTime, dateOnly(row.chk_date));
+    setCell(list, index, LisReportGroupName, row.group_name);
+    setCell(list, index, LisReportBarcode, row.txm_no);
+    setCell(list, index, LisReportRequester, row.requester);
+    setCell(list, index, LisReportReviewer, row.reviewer);
 }
 
 void insertLisResultRow(HWND list, int index, const search::ResultRow& row) {
@@ -958,11 +968,12 @@ void insertLisResultRow(HWND list, int index, const search::ResultRow& row) {
 
 std::string lisReportSortValue(const search::ReportRow& row, int col) {
     switch (col) {
-        case 0: return search::trim(row.chk_date);
-        case 1: return search::trim(row.group_name);
-        case 2: return search::trim(row.txm_no);
-        case 3: return search::trim(row.requester);
-        case 4: return search::trim(row.reviewer);
+        case LisReportSampleNo: return search::trim(row.oper_no);
+        case LisReportInspectTime: return search::trim(row.chk_date);
+        case LisReportGroupName: return search::trim(row.group_name);
+        case LisReportBarcode: return search::trim(row.txm_no);
+        case LisReportRequester: return search::trim(row.requester);
+        case LisReportReviewer: return search::trim(row.reviewer);
         default: return "";
     }
 }
@@ -1331,12 +1342,13 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     MoveWindow(st->results, rightX, top, resultW, listH, TRUE);
     MoveWindow(st->status, S(8), h - S(24), w - S(16), S(22), TRUE);
 
-    const int reportFixedW = S(100 + 160 + 105 + 76);
-    ListView_SetColumnWidth(st->reports, 0, S(100));
-    ListView_SetColumnWidth(st->reports, 1, S(160));
-    ListView_SetColumnWidth(st->reports, 2, S(105));
-    ListView_SetColumnWidth(st->reports, 3, S(76));
-    ListView_SetColumnWidth(st->reports, 4, (std::max)(S(90), reportW - reportFixedW - S(8)));
+    const int reportFixedW = S(54 + 100 + 150 + 105 + 56);
+    ListView_SetColumnWidth(st->reports, LisReportSampleNo, S(54));
+    ListView_SetColumnWidth(st->reports, LisReportInspectTime, S(100));
+    ListView_SetColumnWidth(st->reports, LisReportGroupName, S(150));
+    ListView_SetColumnWidth(st->reports, LisReportBarcode, S(105));
+    ListView_SetColumnWidth(st->reports, LisReportRequester, S(56));
+    ListView_SetColumnWidth(st->reports, LisReportReviewer, (std::max)(S(90), reportW - reportFixedW - S(8)));
 
     const int resultFixedW = S(92 + 145 + 86 + 62);
     ListView_SetColumnWidth(st->results, 0, S(92));
@@ -1391,11 +1403,12 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_REPORTS), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(st->reports, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-            search::add_list_column(st->reports, 0, L"检验时间", 100);
-            search::add_list_column(st->reports, 1, L"组合项目", 160);
-            search::add_list_column(st->reports, 2, L"条形码", 105);
-            search::add_list_column(st->reports, 3, L"检验者", 76);
-            search::add_list_column(st->reports, 4, L"审核者", 90);
+            search::add_list_column(st->reports, LisReportSampleNo, L"样本号", 54);
+            search::add_list_column(st->reports, LisReportInspectTime, L"检验时间", 100);
+            search::add_list_column(st->reports, LisReportGroupName, L"组合项目", 150);
+            search::add_list_column(st->reports, LisReportBarcode, L"条形码", 105);
+            search::add_list_column(st->reports, LisReportRequester, L"检验者", 56);
+            search::add_list_column(st->reports, LisReportReviewer, L"审核者", 90);
 
             st->results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -1479,7 +1492,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (nm->idFrom == IDC_LIS_REPORTS && nm->code == LVN_COLUMNCLICK) {
                 auto* clicked = reinterpret_cast<NMLISTVIEW*>(lp);
-                if (clicked->iSubItem >= 0 && clicked->iSubItem <= 4) {
+                if (clicked->iSubItem >= LisReportSampleNo && clicked->iSubItem <= LisReportReviewer) {
                     std::string selectedRepNo;
                     const int selected = ListView_GetNextItem(st->reports, -1, LVNI_SELECTED);
                     if (selected >= 0 && selected < static_cast<int>(st->report_rows.size())) {

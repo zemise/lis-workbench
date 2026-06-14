@@ -226,6 +226,7 @@ int toolbarCommandForMdiChild(HWND child) {
     if (lstrcmpW(title, L"标本签收中心") == 0) return IDM_TOOL3;
     if (lstrcmpW(title, L"常规报告") == 0) return IDM_TOOL2;
     if (lstrcmpW(title, L"输血结果查询") == 0) return IDM_BLOOD;
+    if (lstrcmpW(title, L"检验结果查询") == 0) return IDM_QUERY;
     return 0;
 }
 
@@ -650,6 +651,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             mtAddButton(tb, L"标本签收中心", IDM_TOOL3);
             mtAddButton(tb, L"常规报告", IDM_TOOL2);
             mtAddButton(tb, L"输血查询", IDM_BLOOD);
+            mtAddButton(tb, L"结果查询", IDM_QUERY);
             mtAddStretch(tb);
             mtAddCloseButton(tb, L"关闭当前", ID_BTNCLOSE, false);
 
