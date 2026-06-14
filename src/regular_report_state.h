@@ -329,6 +329,9 @@ struct RegularReportState {
     std::string selectedRoomCode;
     std::string reportConnectionString;
     std::string reportQueryDate;
+    bool pendingOpenReport = false;
+    std::string pendingOpenRepNo;
+    std::string pendingOpenOperNo;
     std::vector<search::ReportRow> reportRows;
     std::vector<search::ResultRow> resultRows;
     std::wstring pictureStatus;

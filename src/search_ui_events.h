@@ -22,6 +22,7 @@ struct CommandEventHandlers {
 
 struct NotifyEventHandlers {
     std::function<void(int)> on_report_selected;
+    std::function<void(int)> on_report_activated;
     std::function<COLORREF(const ReportRow&)> report_row_background;
     std::function<COLORREF(const ResultRow&)> result_row_color;
     const std::vector<ReportRow>* report_rows = nullptr;

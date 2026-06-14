@@ -1859,6 +1859,16 @@ int findReportIndexBySampleNo(const RegularReportState* st, const std::string& i
     return -1;
 }
 
+int findReportIndexByRepNo(const RegularReportState* st, const std::string& repNo) {
+    if (!st) return -1;
+    const std::string target = search::trim(repNo);
+    if (target.empty()) return -1;
+    for (int i = 0; i < static_cast<int>(st->reportRows.size()); ++i) {
+        if (search::trim(st->reportRows[static_cast<size_t>(i)].rep_no) == target) return i;
+    }
+    return -1;
+}
+
 // ============================================================================
 // Query results dispatch
 // ============================================================================
@@ -1936,6 +1946,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
     st->suppressReportSelectionQuery = true;
     presentReportRows(st, ps ? &prev : nullptr);
     int rest = -1;
+    int pendingTarget = -1;
     if (ps) {
         for (int i = 0; i < static_cast<int>(st->reportRows.size()); ++i) {
             if (containsId(chkIds, st->reportRows[static_cast<size_t>(i)].id))
@@ -1946,10 +1957,30 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         if (top >= 0 && top < ListView_GetItemCount(st->reportList))
             ListView_EnsureVisible(st->reportList, top, FALSE);
     }
+    if (st->pendingOpenReport) {
+        pendingTarget = findReportIndexByRepNo(st, st->pendingOpenRepNo);
+        if (pendingTarget < 0 && !st->pendingOpenOperNo.empty()) {
+            pendingTarget = findReportIndexBySampleNo(st, st->pendingOpenOperNo);
+        }
+        rest = pendingTarget;
+    }
     if (rest >= 0) selectReportRow(st, rest);
     st->suppressReportSelectionQuery = false;
 
-    if (ps) {
+    if (st->pendingOpenReport) {
+        st->pendingOpenReport = false;
+        if (pendingTarget >= 0) {
+            st->selectedReportIndex = pendingTarget;
+            populateLeftPanelFromReport(st, pendingTarget);
+            querySelectedResults(st, pendingTarget);
+        } else {
+            querySelectedResults(st, -1);
+            MessageBoxW(hwnd, L"已打开常规报告，但未在当前日期和仪器下找到目标报告。",
+                        L"常规报告", MB_ICONINFORMATION);
+        }
+        st->pendingOpenRepNo.clear();
+        st->pendingOpenOperNo.clear();
+    } else if (ps) {
         if (rest >= 0) {
             st->selectedReportIndex = rest;
             populateLeftPanelFromReport(st, rest);
@@ -2038,6 +2069,44 @@ void regularApplyQuickMachine(RegularReportState* st, int slot) {
     st->selectedRoomCode = nextRoom;
     regularUpdateQuickMachineButtonLabels(st);
     runReportQuery(st, sameMachine && hasSelectedReportRow(st));
+}
+
+void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarget& target) {
+    if (!st) return;
+    const std::string machCode = search::trim(target.mach_code);
+    const std::string repNo = search::trim(target.rep_no);
+    if (machCode.empty() || repNo.empty()) {
+        MessageBoxW(st->hwnd,
+                    L"目标报告缺少检验仪器或报告号，无法跳转到常规报告。",
+                    L"常规报告", MB_ICONWARNING);
+        return;
+    }
+
+    SYSTEMTIME date{};
+    const std::string dateText = search::trim(target.inspect_date);
+    if (!regularParseDateTimeText(dateText, date)) {
+        MessageBoxW(st->hwnd,
+                    L"目标报告缺少有效检验日期，无法跳转到常规报告。",
+                    L"常规报告", MB_ICONWARNING);
+        return;
+    }
+
+    st->selectedMachineCode = machCode;
+    st->selectedRoomCode = search::trim(target.room_code);
+    st->pendingOpenReport = true;
+    st->pendingOpenRepNo = repNo;
+    st->pendingOpenOperNo = search::trim(target.oper_no);
+
+    const std::wstring machineText = search::utf8_to_wide(
+        search::trim(target.mach_name).empty() ? machCode : search::trim(target.mach_name));
+    SetWindowTextW(st->machineEdit, machineText.c_str());
+    regularUpdateQuickMachineButtonLabels(st);
+
+    st->suppressInspectDateQuery = true;
+    DateTime_SetSystemtime(st->inspectDatePicker, GDT_VALID, &date);
+    st->suppressInspectDateQuery = false;
+    SetWindowTextW(st->status, L"正在跳转到目标报告...");
+    runReportQuery(st, false);
 }
 
 void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* item) {
@@ -2240,6 +2309,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::unique_ptr<ReportLoadResult>(reinterpret_cast<ReportLoadResult*>(lp)));
             else delete reinterpret_cast<ReportLoadResult*>(lp);
             return 0;
+
+        case WM_REGULAR_OPEN_REPORT: {
+            std::unique_ptr<RegularReportOpenTarget> target(
+                reinterpret_cast<RegularReportOpenTarget*>(lp));
+            if (st && target) regularOpenReportTarget(st, *target);
+            return 0;
+        }
 
         case WM_REGULAR_RESULTS_LOADED:
             if (st) finishResultQuery(st, hwnd,

@@ -609,11 +609,15 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(LTRIM(RTRIM(emp_req.NAME)),''),"
         << " isnull(r.DIAG_NAME,''),isnull(r.CREATE_TIME,''),isnull(r.PAT_PHONE,''),"
         << " isnull(cast(r.assaypat_type as varchar(20)),''),"
-        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'')"
+        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'') ,"
+        << " isnull(cast(r.MACH_CODE as varchar(20)),''),"
+        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(cast(r.MACH_CODE as varchar(20)),'')),"
+        << " isnull(cast(r.ROOM_CODE as varchar(20)),'')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
         << " LEFT JOIN LS_AS_SAMPLE samp ON samp.SAMP_CODE=r.SAMP_CODE AND samp.DELETE_BIT=0"
+        << " LEFT JOIN LS_AS_MACHINE mach ON r.MACH_CODE=mach.MACH_CODE AND mach.DELETE_BIT=0"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper ON emp_oper.EMPLOYEE_ID = r.OPER_CODE"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_rep ON emp_rep.EMPLOYEE_ID = r.REP_OPER"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_dean ON emp_dean.EMPLOYEE_ID = r.DEAN_OPER"
@@ -701,6 +705,9 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.patient_phone = fetch_column(stmt, 32);
         row.report_type = fetch_column(stmt, 33);
         row.barcode_jz_flag = fetch_column(stmt, 34);
+        row.mach_code = fetch_column(stmt, 35);
+        row.mach_name = fetch_column(stmt, 36);
+        row.room_code = fetch_column(stmt, 37);
         rows.push_back(row);
     }
 

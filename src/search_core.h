@@ -63,6 +63,9 @@ struct ReportRow {
     std::string patient_phone;
     std::string report_type;           // LS_AS_REPORT.assaypat_type: 0=emergency, 9=critical.
     std::string barcode_jz_flag;       // LS_AS_BARCODE.JZ_FLAG, used only for the right-list label.
+    std::string mach_code;
+    std::string mach_name;
+    std::string room_code;
 };
 
 struct RoomOption {

@@ -15,6 +15,7 @@
 #include "search_ui_layout.h"
 #include "search_ui_presenter.h"
 #include "search_view_state.h"
+#include "regular_report_module.h"
 #include "trend_window.h"
 #include <windows.h>
 #include <commctrl.h>
@@ -257,6 +258,34 @@ void showTrend(HWND owner, QueryState* q) {
                               db(q), input);
 }
 
+void openRegularReportForRow(HWND owner, QueryState* q, int index) {
+    if (!q || index < 0 || index >= static_cast<int>(reportRows(q).size())) return;
+    const auto& row = reportRows(q)[static_cast<size_t>(index)];
+    if (search::trim(row.rep_no).empty() || search::trim(row.mach_code).empty()) {
+        MessageBoxW(owner,
+                    L"当前报告缺少报告号或检验仪器代码，无法跳转到常规报告。",
+                    L"常规报告", MB_ICONWARNING);
+        return;
+    }
+    auto* target = new RegularReportOpenTarget;
+    target->rep_no = search::trim(row.rep_no);
+    target->oper_no = search::trim(row.oper_no);
+    target->inspect_date = search::trim(row.inspect_date).empty() ? row.chk_date : row.inspect_date;
+    target->mach_code = search::trim(row.mach_code);
+    target->mach_name = search::trim(row.mach_name);
+    target->room_code = search::trim(row.room_code);
+
+    ModuleContext ctx = q->ctx;
+    ctx.dbSettings = db(q);
+    ctx.uiFont = q->uiFont;
+    ctx.fontSize = fontSize(q);
+    HWND regular = create_regular_report_module(ctx);
+    if (!regular || !PostMessageW(regular, WM_REGULAR_OPEN_REPORT, 0, reinterpret_cast<LPARAM>(target))) {
+        delete target;
+        MessageBoxW(owner, L"常规报告页面打开失败。", L"常规报告", MB_ICONERROR);
+    }
+}
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* q = reinterpret_cast<QueryState*>(GetPropW(hwnd, PROP_STATE));
 
@@ -351,6 +380,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!q) break;
             search::NotifyEventHandlers handlers;
             handlers.on_report_selected = [q](int i) { querySelectedResults(q, i); };
+            handlers.on_report_activated = [q, hwnd](int i) { openRegularReportForRow(hwnd, q, i); };
             handlers.report_row_background = [](const search::ReportRow& r) { return reportRowBg(r); };
             handlers.result_row_color = [](const search::ResultRow& r) { return resultRowColor(r); };
             handlers.report_rows = &reportRows(q);
