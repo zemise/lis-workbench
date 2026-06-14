@@ -11,6 +11,7 @@
 #include "search_splitter.h"
 #include "search_text.h"
 #include "search_ui_context.h"
+#include "search_ui_columns.h"
 #include "search_ui_events.h"
 #include "search_ui_layout.h"
 #include "search_ui_presenter.h"
@@ -20,6 +21,8 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 
@@ -72,6 +75,8 @@ struct QueryState {
     int pendingSplitterX = 0;
     int queryGeneration = 0;
     int resultGeneration = 0;
+    int reportSortColumn = -1;
+    bool reportSortAscending = true;
     bool queryLoading = false;
     std::thread bgThread;
     std::thread bgResultThread;
@@ -103,6 +108,8 @@ auto& patientTypeOpts(QueryState* q)  { return q->viewState.patient_type_options
 auto& machineOpts(QueryState* q)      { return q->viewState.machine_options; }
 auto& connStr(QueryState* q)          { return q->viewState.connection_string; }
 
+void querySelectedResults(QueryState* q, int selected);
+
 void setStatus(QueryState* q, const std::wstring& text) {
     search::set_status_text(q->ui, text);
 }
@@ -121,6 +128,83 @@ COLORREF resultRowColor(const search::ResultRow& row) {
         case search::ResultRowTone::Low:  return RGB(0, 0, 220);
         default:                          return CLR_INVALID;
     }
+}
+
+std::string reportSortValue(const search::ReportRow& row, int col) {
+    switch (col) {
+        case search::report_columns::SampleNo: return row.oper_no;
+        case search::report_columns::Name: return row.name;
+        case search::report_columns::Barcode: return row.txm_no;
+        case search::report_columns::ReportTime: return row.chk_date;
+        case search::report_columns::Sex: return row.sex;
+        case search::report_columns::Age: return row.age;
+        case search::report_columns::Bed: return row.bed_code;
+        case search::report_columns::PatientType: return row.patient_type;
+        case search::report_columns::Requester: return row.requester;
+        case search::report_columns::Reviewer: return row.reviewer;
+        case search::report_columns::GroupName: return row.group_name;
+        case search::report_columns::ReviewStatus: return search::display_conf(row.conf);
+        case search::report_columns::ConfirmStatus: return search::display_chk_flag(row.chk_flag);
+        case search::report_columns::PrintStatus: return search::display_binary_print_flag(row.zymz_print);
+        case search::report_columns::SelfServicePrintStatus:
+            return search::display_binary_print_flag(row.zzj_print);
+        default: return row.id;
+    }
+}
+
+bool parseSortNumber(const std::string& value, double& out) {
+    const std::string trimmed = search::trim(value);
+    if (trimmed.empty()) return false;
+    char* end = nullptr;
+    out = std::strtod(trimmed.c_str(), &end);
+    return end && *end == '\0';
+}
+
+int compareReportRows(const search::ReportRow& left, const search::ReportRow& right, int col) {
+    const std::string lv = search::trim(reportSortValue(left, col));
+    const std::string rv = search::trim(reportSortValue(right, col));
+    double ln = 0;
+    double rn = 0;
+    if (parseSortNumber(lv, ln) && parseSortNumber(rv, rn) && ln != rn)
+        return ln < rn ? -1 : 1;
+    if (lv != rv) return lv < rv ? -1 : 1;
+    const std::string lid = search::trim(left.id);
+    const std::string rid = search::trim(right.id);
+    return lid < rid ? -1 : (lid == rid ? 0 : 1);
+}
+
+void sortReportRowsByColumn(QueryState* q, int col) {
+    if (!q || !q->ui.reports || reportRows(q).empty() || col < 0) return;
+    if (q->reportSortColumn == col) q->reportSortAscending = !q->reportSortAscending;
+    else {
+        q->reportSortColumn = col;
+        q->reportSortAscending = true;
+    }
+    const bool asc = q->reportSortAscending;
+
+    std::string selectedId;
+    const int selected = ListView_GetNextItem(q->ui.reports, -1, LVNI_SELECTED);
+    if (selected >= 0 && selected < static_cast<int>(reportRows(q).size()))
+        selectedId = search::trim(reportRows(q)[static_cast<size_t>(selected)].id);
+
+    std::stable_sort(reportRows(q).begin(), reportRows(q).end(),
+        [col, asc](const auto& left, const auto& right) {
+            const int cmp = compareReportRows(left, right, col);
+            return asc ? cmp < 0 : cmp > 0;
+        });
+
+    search::present_report_rows(q->ui, reportRows(q));
+    if (!selectedId.empty()) {
+        for (int i = 0; i < static_cast<int>(reportRows(q).size()); ++i) {
+            if (search::trim(reportRows(q)[static_cast<size_t>(i)].id) == selectedId) {
+                ListView_SetItemState(q->ui.reports, i, LVIS_SELECTED | LVIS_FOCUSED,
+                                      LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(q->ui.reports, i, FALSE);
+                return;
+            }
+        }
+    }
+    querySelectedResults(q, -1);
 }
 
 void reloadRoomOptions(QueryState* q) {
@@ -200,6 +284,8 @@ void finishRunQuery(QueryState* q, HWND hwnd, std::unique_ptr<QueryLoadResult> r
     }
     q->lastQueryInput = result->input;
     q->hasLastQueryInput = true;
+    q->reportSortColumn = -1;
+    q->reportSortAscending = true;
     reportRows(q) = std::move(result->rows);
     connStr(q) = std::move(result->connection_string);
     search::present_report_rows(q->ui, reportRows(q));
@@ -381,6 +467,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::NotifyEventHandlers handlers;
             handlers.on_report_selected = [q](int i) { querySelectedResults(q, i); };
             handlers.on_report_activated = [q, hwnd](int i) { openRegularReportForRow(hwnd, q, i); };
+            handlers.on_report_column_clicked = [q](int col) { sortReportRowsByColumn(q, col); };
             handlers.report_row_background = [](const search::ReportRow& r) { return reportRowBg(r); };
             handlers.result_row_color = [](const search::ResultRow& r) { return resultRowColor(r); };
             handlers.report_rows = &reportRows(q);
