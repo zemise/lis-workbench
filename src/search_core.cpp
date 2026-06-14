@@ -549,7 +549,8 @@ bool query_machines(const std::string& connection_string, const std::string& roo
     }
 
     std::ostringstream sql;
-    sql << "SELECT CAST(MACH_CODE AS varchar(20)), isnull(RTRIM(MACH_NAME),'')"
+    sql << "SELECT CAST(ROOM_CODE AS varchar(20)), CAST(MACH_CODE AS varchar(20)),"
+        << " isnull(RTRIM(MACH_NAME),''), isnull(RTRIM(PY_CODE),'')"
         << " FROM LS_AS_MACHINE WHERE DELETE_BIT=0 AND isnull(RTRIM(RUL),'')='启用'";
     add_eq(sql, "ROOM_CODE", room_code);
     sql << " ORDER BY MACH_CODE";
@@ -564,8 +565,10 @@ bool query_machines(const std::string& connection_string, const std::string& roo
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         MachineOption row;
-        row.mach_code = fetch_column(stmt, 1);
-        row.mach_name = fetch_column(stmt, 2);
+        row.room_code = fetch_column(stmt, 1);
+        row.mach_code = fetch_column(stmt, 2);
+        row.mach_name = fetch_column(stmt, 3);
+        row.py_code = fetch_column(stmt, 4);
         rows.push_back(row);
     }
 

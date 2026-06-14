@@ -113,7 +113,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | `LS_AS_PATTYPE` | 病人类型字典 | `TYPE`, `TYPE_NAME` |
 | `LS_AS_SEX` | 性别字典 | `SEX_CODE`, `SEX_NAME` |
 | `LS_AS_ROOM` | 检验科室字典 | `ROOM_CODE`, `ROOM_NAME` |
-| `LS_AS_MACHINE` | 检验仪器字典，筛选 `RUL='启用'` | `MACH_CODE`, `MACH_NAME`, `ROOM_CODE`, `RUL` |
+| `LS_AS_MACHINE` | 检验仪器字典，筛选 `DELETE_BIT=0` 且 `RUL='启用'` | `ROOM_CODE`, `MACH_CODE`, `MACH_NAME`, `PY_CODE`, `WB_CODE`, `RUL` |
 | `LS_AS_BARCODE` | 条码/病人号关联表，用于“病人号”和已签收条码查询 | `BARCODE`, `REG_NO`, `OPER_STATE`, `CANCEL_DATE`, `CANCEL_OPER` |
 | `JC_DEPT_PROPERTY` | 科室字典，覆盖率更高，当前优先用于报告表 `DEPT_CODE -> 科室名称` | `DEPT_ID`, `NAME`, `DELETED` |
 | `JC_dept_mz_zy` | 临床申请科室字典，根据 `TYPE / TYPENAME` 区分门诊或住院后解析 `DEPT_CODE -> DEPT_NAME` | 门诊：`mzksid`, `mzksmc`；住院：`zyksid`, `zyksmc`；`delete_bit` |
@@ -278,9 +278,11 @@ HIV 统计表导出：
 | 界面输入 | 查询字段 / 规则 |
 | --- | --- |
 | 检验日期 | `LS_AS_REPORT.CHK_DATE >= 日期` 且 `< 日期 + 1 天` |
-| 检验仪器 | 弹窗来源 `LS_AS_ROOM` / `LS_AS_MACHINE`，选定后以 `LS_AS_REPORT.MACH_CODE` 过滤 |
+| 检验仪器 | 弹窗来源 `LS_AS_ROOM` / `LS_AS_MACHINE`，列表显示仪器代码、仪器名称和拼音码；科室和启用仪器字典在当前常规报告页面内缓存，数据库连接配置变化时自动重载；科室下拉提供 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果默认选中第一行，检索框回车可直接确认，选中仪器后同步科室下拉框，确认后以 `LS_AS_REPORT.MACH_CODE` 过滤 |
 
 系统设置页可配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，保存到 `[RegularReport] QuickMachine*Code / QuickMachine*Name / QuickMachine*RoomCode`。中文仪器名会以 ASCII 安全编码写入 `ClientConfig.ini`，程序读取时自动还原，避免 Win32 profile API 按系统 ANSI 代码页保存后乱码。配置弹窗复用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源；如果常规报告页当前已有检验仪器，弹窗打开时会优先按当前 `ROOM_CODE` 选中科室，并按当前 `MACH_CODE` 选中仪器；弹窗失焦时只投递关闭消息，不在 `WM_ACTIVATE` 中同步销毁，避免点击主界面时影响主窗口重新激活。点击快捷按钮后只更新当前页的 `检验仪器` 条件，并按当前 `检验日期` 重新查询右侧报告列表。如果当前页面已经是该快捷仪器，则按保留状态刷新处理；切换到其他快捷仪器时仍按普通查询处理。底部快捷按钮按 `MACH_CODE + ROOM_CODE` 与当前页面检验仪器匹配，匹配项用 `[1] / [2] / [3]` 文本标记，不依赖仪器名称；打开页面、手动选择检验仪器、点击快捷按钮和系统设置保存后都会刷新该标记。
+
+常规报告页面直接打开时会在窗口初始化完成后尝试静默应用快捷检验仪器 `1`：如果 `QuickMachine1Code` 已配置，则回填左侧 `检验仪器`，按当天 `检验日期` 查询右侧报告列表，并高亮底部 `[1]`；如果未配置则不提示、不查询。从 `检验结果查询` 双击报告行跳转到常规报告时，目标报告跳转消息会取消这次默认快捷仪器加载，避免默认查询覆盖目标报告定位。
 
 ### 右侧信息列表
 

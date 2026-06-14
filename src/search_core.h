@@ -79,8 +79,10 @@ struct PatientTypeOption {
 };
 
 struct MachineOption {
+    std::string room_code;
     std::string mach_code;
     std::string mach_name;
+    std::string py_code;
 };
 
 struct ResultRow {

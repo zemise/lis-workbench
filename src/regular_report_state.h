@@ -30,6 +30,7 @@ constexpr UINT WM_REGULAR_RESULTS_LOADED = WM_APP + 172;
 constexpr UINT WM_REGULAR_PICTURE_LOADED = WM_APP + 173;
 constexpr UINT WM_POPUP_PICTURE_LOADED = WM_APP + 174;
 constexpr UINT_PTR IDT_REPORT_AUTO_REFRESH = 6310;
+constexpr UINT_PTR IDT_REPORT_INITIAL_QUICK_MACHINE = 6311;
 
 constexpr int REGULAR_IDC_RESULT_LIST = 5201;
 constexpr int REGULAR_IDC_REPORT_LIST = 5202;
@@ -40,6 +41,7 @@ constexpr int REGULAR_IDC_MIDDLE_TAB = 5207;
 constexpr int REGULAR_IDC_MACHINE_PICKER_BUTTON = 5208;
 constexpr int REGULAR_IDC_MACHINE_PICKER_ROOM = 5209;
 constexpr int REGULAR_IDC_MACHINE_PICKER_MACH = 5210;
+constexpr int REGULAR_IDC_MACHINE_PICKER_SEARCH = 5219;
 constexpr int REGULAR_IDC_INSPECT_DATE = 5211;
 constexpr int REGULAR_IDC_REPORT_FIRST_BUTTON = 5212;
 constexpr int REGULAR_IDC_REPORT_LAST_BUTTON = 5213;
@@ -75,6 +77,7 @@ constexpr UINT_PTR REGULAR_PICTURE_VIEWPORT_SUBCLASS = 6212;
 constexpr UINT_PTR REGULAR_RESULT_EDIT_SUBCLASS = 6213;
 constexpr UINT_PTR REGULAR_RESULT_LIST_SUBCLASS = 6214;
 constexpr UINT_PTR REGULAR_LEFT_TAB_SUBCLASS = 6215;
+constexpr UINT_PTR REGULAR_MACHINE_PICKER_SEARCH_SUBCLASS = 6216;
 
 constexpr int REGULAR_LEFT_CONTENT_HEIGHT = 875;
 constexpr int REGULAR_LEFT_SCROLL_STEP = 36;
@@ -110,16 +113,21 @@ constexpr int REGULAR_AUTO_REFRESH_MIN_SECONDS = 5;
 constexpr int REGULAR_AUTO_REFRESH_MAX_SECONDS = 3600;
 
 constexpr const wchar_t* REGULAR_MACHINE_PICKER_CLASS = L"RegularReportMachinePicker";
-constexpr int REGULAR_MACHINE_PICKER_CLIENT_W = 256;
-constexpr int REGULAR_MACHINE_PICKER_INITIAL_H = 182;
+constexpr int REGULAR_MACHINE_PICKER_CLIENT_W = 356;
+constexpr int REGULAR_MACHINE_PICKER_INITIAL_H = 224;
 constexpr int REGULAR_MACHINE_PICKER_INPUT_X = 10;
-constexpr int REGULAR_MACHINE_PICKER_ROOM_Y = 12;
-constexpr int REGULAR_MACHINE_PICKER_LIST_Y = 44;
-constexpr int REGULAR_MACHINE_PICKER_LIST_W = 230;
-constexpr int REGULAR_MACHINE_PICKER_CODE_COL_W = 76;
+constexpr int REGULAR_MACHINE_PICKER_SEARCH_LABEL_Y = 14;
+constexpr int REGULAR_MACHINE_PICKER_SEARCH_Y = 10;
+constexpr int REGULAR_MACHINE_PICKER_SEARCH_LABEL_W = 66;
+constexpr int REGULAR_MACHINE_PICKER_ROOM_Y = 44;
+constexpr int REGULAR_MACHINE_PICKER_LIST_Y = 76;
+constexpr int REGULAR_MACHINE_PICKER_LIST_W = 330;
+constexpr int REGULAR_MACHINE_PICKER_CODE_COL_W = 64;
+constexpr int REGULAR_MACHINE_PICKER_PY_COL_W = 80;
 constexpr int REGULAR_MACHINE_PICKER_COL_GAP = 8;
 constexpr int REGULAR_MACHINE_PICKER_NAME_COL_W =
-    REGULAR_MACHINE_PICKER_LIST_W - REGULAR_MACHINE_PICKER_CODE_COL_W - REGULAR_MACHINE_PICKER_COL_GAP;
+    REGULAR_MACHINE_PICKER_LIST_W - REGULAR_MACHINE_PICKER_CODE_COL_W -
+    REGULAR_MACHINE_PICKER_PY_COL_W - REGULAR_MACHINE_PICKER_COL_GAP;
 constexpr int REGULAR_MACHINE_PICKER_COMBO_DROP_H = 180;
 constexpr int REGULAR_MACHINE_PICKER_INITIAL_LIST_H = 92;
 constexpr int REGULAR_MACHINE_PICKER_MIN_ROWS = 3;
@@ -176,11 +184,16 @@ struct RegularReportState;
 
 struct MachinePickerState {
     RegularReportState* report = nullptr;
+    HWND searchEdit = nullptr;
     HWND roomCombo = nullptr;
     HWND machineList = nullptr;
     std::vector<search::RoomOption> rooms;
+    std::vector<search::MachineOption> allMachines;
     std::vector<search::MachineOption> machines;
     bool closePosted = false;
+    bool syncingRoom = false;
+    bool roomChosenByUser = false;
+    bool refreshingMachines = false;
 };
 
 struct ReportLoadResult {
@@ -311,6 +324,8 @@ struct RegularReportState {
     bool resultQueryLoading = false;
     bool pictureQueryLoading = false;
     bool autoRefreshTimerActive = false;
+    bool initialQuickMachineTimerActive = false;
+    bool skipInitialQuickMachineLoad = false;
     bool suppressInspectDateQuery = false;
     bool suppressReportSelectionQuery = false;
     int reportSortColumn = -1;
@@ -327,6 +342,10 @@ struct RegularReportState {
     HFONT groupTitleFont = nullptr;
     std::string selectedMachineCode;
     std::string selectedRoomCode;
+    bool machinePickerCacheLoaded = false;
+    std::string machinePickerCacheConnectionString;
+    std::vector<search::RoomOption> cachedMachinePickerRooms;
+    std::vector<search::MachineOption> cachedMachinePickerMachines;
     std::string reportConnectionString;
     std::string reportQueryDate;
     bool pendingOpenReport = false;

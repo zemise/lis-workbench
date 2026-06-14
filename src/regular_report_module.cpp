@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -112,11 +114,76 @@ SYSTEMTIME regularReportTrendEndDate(const search::ReportRow& row) {
 // Machine picker
 // ============================================================================
 
+void acceptAndCloseMachinePicker(HWND hwnd, MachinePickerState* ps);
+
 std::string selectedMachinePickerRoomCode(MachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return "";
     const auto idx = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCURSEL, 0, 0));
-    if (idx < 0 || idx >= static_cast<int>(ps->rooms.size())) return "";
-    return ps->rooms[static_cast<size_t>(idx)].room_code;
+    if (idx <= 0) return "";
+    const int roomIndex = idx - 1;
+    if (roomIndex < 0 || roomIndex >= static_cast<int>(ps->rooms.size())) return "";
+    return ps->rooms[static_cast<size_t>(roomIndex)].room_code;
+}
+
+std::string machinePickerSearchText(MachinePickerState* ps) {
+    if (!ps || !ps->searchEdit) return "";
+    wchar_t buffer[128]{};
+    GetWindowTextW(ps->searchEdit, buffer, 128);
+    return search::trim(search::wide_to_utf8(buffer));
+}
+
+std::string lowerAscii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return text;
+}
+
+bool machineMatchesSearch(const search::MachineOption& row, const std::string& needle) {
+    const std::string q = lowerAscii(search::trim(needle));
+    if (q.empty()) return true;
+    const std::string code = lowerAscii(search::trim(row.mach_code));
+    const std::string py = lowerAscii(search::trim(row.py_code));
+    return code.find(q) != std::string::npos || py.find(q) != std::string::npos;
+}
+
+void selectMachinePickerRoomByCode(MachinePickerState* ps, const std::string& roomCode) {
+    if (!ps || !ps->roomCombo) return;
+    const std::string target = search::trim(roomCode);
+    if (target.empty()) {
+        ps->syncingRoom = true;
+        SendMessageW(ps->roomCombo, CB_SETCURSEL, 0, 0);
+        ps->syncingRoom = false;
+        return;
+    }
+    for (int i = 0; i < static_cast<int>(ps->rooms.size()); ++i) {
+        if (search::trim(ps->rooms[static_cast<size_t>(i)].room_code) == target) {
+            ps->syncingRoom = true;
+            SendMessageW(ps->roomCombo, CB_SETCURSEL, i + 1, 0);
+            ps->syncingRoom = false;
+            return;
+        }
+    }
+}
+
+void syncMachinePickerRoomFromSelection(MachinePickerState* ps) {
+    if (!ps || !ps->machineList) return;
+    const int sel = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
+    if (sel < 0 || sel >= static_cast<int>(ps->machines.size())) return;
+    selectMachinePickerRoomByCode(ps, ps->machines[static_cast<size_t>(sel)].room_code);
+}
+
+void applyMachinePickerFilter(MachinePickerState* ps) {
+    if (!ps) return;
+    ps->machines.clear();
+    const std::string keyword = machinePickerSearchText(ps);
+    const std::string roomCode = search::trim(selectedMachinePickerRoomCode(ps));
+    const bool restrictByRoom = keyword.empty() && ps->roomChosenByUser && !roomCode.empty();
+    for (const auto& row : ps->allMachines) {
+        if (restrictByRoom && search::trim(row.room_code) != roomCode)
+            continue;
+        if (machineMatchesSearch(row, keyword))
+            ps->machines.push_back(row);
+    }
 }
 
 int machinePickerListHeight(HWND hwnd, MachinePickerState* ps) {
@@ -131,12 +198,23 @@ int machinePickerListHeight(HWND hwnd, MachinePickerState* ps) {
 void layoutMachinePicker(HWND hwnd, MachinePickerState* ps) {
     if (!hwnd || !ps || !ps->machineList) return;
     const int ix = S(hwnd, REGULAR_MACHINE_PICKER_INPUT_X);
+    const int searchY = S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_Y);
+    const int labelW = S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W);
+    const int editX = ix + labelW;
+    const int editW = S(hwnd, REGULAR_MACHINE_PICKER_LIST_W) - labelW;
+    if (ps->searchEdit)
+        MoveWindow(ps->searchEdit, editX, searchY, editW, S(hwnd, 24), TRUE);
+    if (ps->roomCombo)
+        MoveWindow(ps->roomCombo, ix, S(hwnd, REGULAR_MACHINE_PICKER_ROOM_Y),
+                   S(hwnd, REGULAR_MACHINE_PICKER_LIST_W),
+                   S(hwnd, REGULAR_MACHINE_PICKER_COMBO_DROP_H), TRUE);
     const int ly = S(hwnd, REGULAR_MACHINE_PICKER_LIST_Y);
     const int lw = S(hwnd, REGULAR_MACHINE_PICKER_LIST_W);
     const int lh = machinePickerListHeight(hwnd, ps);
     MoveWindow(ps->machineList, ix, ly, lw, lh, TRUE);
     ListView_SetColumnWidth(ps->machineList, 0, S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
     ListView_SetColumnWidth(ps->machineList, 1, S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 2, S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
 
     RECT cr{0, 0, S(hwnd, REGULAR_MACHINE_PICKER_CLIENT_W),
             ly + lh + S(hwnd, REGULAR_MACHINE_PICKER_BOTTOM_PAD)};
@@ -149,21 +227,20 @@ void layoutMachinePicker(HWND hwnd, MachinePickerState* ps) {
 void populateMachinePickerRooms(MachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return;
     regularComboReset(ps->roomCombo);
-    const std::string curRoom = ps->report ? search::trim(ps->report->selectedRoomCode) : "";
-    int sel = -1;
+    regularComboAdd(ps->roomCombo, L"全部");
     for (const auto& row : ps->rooms) {
         regularComboAdd(ps->roomCombo, search::utf8_to_wide(row.room_name));
-        if (sel < 0 && !curRoom.empty() && search::trim(row.room_code) == curRoom)
-            sel = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCOUNT, 0, 0)) - 1;
     }
-    if (sel >= 0) SendMessageW(ps->roomCombo, CB_SETCURSEL, sel, 0);
-    else regularComboSelectFirst(ps->roomCombo);
+    SendMessageW(ps->roomCombo, CB_SETCURSEL, 0, 0);
 }
 
 void populateMachinePickerMachines(MachinePickerState* ps) {
     if (!ps || !ps->machineList) return;
+    applyMachinePickerFilter(ps);
+    ps->refreshingMachines = true;
     ListView_DeleteAllItems(ps->machineList);
     const std::string curCode = ps->report ? search::trim(ps->report->selectedMachineCode) : "";
+    const std::string keyword = machinePickerSearchText(ps);
     wchar_t curName[256]{};
     if (ps->report && ps->report->machineEdit)
         GetWindowTextW(ps->report->machineEdit, curName, 256);
@@ -171,14 +248,16 @@ void populateMachinePickerMachines(MachinePickerState* ps) {
     for (int i = 0; i < static_cast<int>(ps->machines.size()); ++i) {
         const auto code = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].mach_code);
         const auto name = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].mach_name);
+        const auto py = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].py_code);
         LVITEMW item{};
         item.mask = LVIF_TEXT; item.iItem = i; item.iSubItem = 0;
         item.pszText = const_cast<wchar_t*>(code.c_str());
         ListView_InsertItem(ps->machineList, &item);
         ListView_SetItemText(ps->machineList, i, 1, const_cast<wchar_t*>(name.c_str()));
-        if (sel < 0 && !curCode.empty() &&
+        ListView_SetItemText(ps->machineList, i, 2, const_cast<wchar_t*>(py.c_str()));
+        if (keyword.empty() && sel < 0 && !curCode.empty() &&
             search::trim(ps->machines[static_cast<size_t>(i)].mach_code) == curCode) sel = i;
-        else if (sel < 0 && curName[0] && lstrcmpW(curName, name.c_str()) == 0) sel = i;
+        else if (keyword.empty() && sel < 0 && curName[0] && lstrcmpW(curName, name.c_str()) == 0) sel = i;
     }
     if (sel < 0 && !ps->machines.empty()) sel = 0;
     if (sel >= 0) {
@@ -186,37 +265,58 @@ void populateMachinePickerMachines(MachinePickerState* ps) {
                               LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(ps->machineList, sel, FALSE);
     }
+    ps->refreshingMachines = false;
+    if (sel >= 0 && !keyword.empty())
+        syncMachinePickerRoomFromSelection(ps);
     layoutMachinePicker(ps->report ? ps->report->machinePickerPopup : nullptr, ps);
-}
-
-void reloadMachinePickerMachines(MachinePickerState* ps) {
-    if (!ps || !ps->report || !ps->machineList) return;
-    ps->machines.clear();
-    std::string error;
-    const std::string roomCode = selectedMachinePickerRoomCode(ps);
-    if (!search::load_machine_options(ps->report->ctx.dbSettings, roomCode, ps->machines, error)) {
-        populateMachinePickerMachines(ps);
-        MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
-                                                   : ps->report->leftContent,
-                    L"检验仪器加载失败。", L"常规报告", MB_ICONERROR);
-        return;
-    }
-    populateMachinePickerMachines(ps);
 }
 
 void reloadMachinePickerRooms(MachinePickerState* ps) {
     if (!ps || !ps->report || !ps->roomCombo) return;
     ps->rooms.clear();
-    std::string error;
-    if (!search::load_room_options(ps->report->ctx.dbSettings, ps->rooms, error)) {
+    ps->allMachines.clear();
+    const std::string cacheKey =
+        search::wide_to_utf8(search::build_connection_string_w(ps->report->ctx.dbSettings));
+    if (ps->report->machinePickerCacheConnectionString != cacheKey) {
+        ps->report->machinePickerCacheLoaded = false;
+        ps->report->cachedMachinePickerRooms.clear();
+        ps->report->cachedMachinePickerMachines.clear();
+        ps->report->machinePickerCacheConnectionString = cacheKey;
+    }
+    if (!ps->report->machinePickerCacheLoaded) {
+        std::vector<search::RoomOption> rooms;
+        std::vector<search::MachineOption> machines;
+        std::string error;
+        if (!search::load_room_options(ps->report->ctx.dbSettings, rooms, error)) {
+            populateMachinePickerRooms(ps);
+            populateMachinePickerMachines(ps);
+            MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
+                                                       : ps->report->leftContent,
+                        L"检验科室加载失败。", L"常规报告", MB_ICONERROR);
+            return;
+        }
+        if (!search::load_machine_options(ps->report->ctx.dbSettings, "", machines, error)) {
+            populateMachinePickerRooms(ps);
+            populateMachinePickerMachines(ps);
+            MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
+                                                       : ps->report->leftContent,
+                        L"检验仪器加载失败。", L"常规报告", MB_ICONERROR);
+            return;
+        }
+        ps->report->cachedMachinePickerRooms = std::move(rooms);
+        ps->report->cachedMachinePickerMachines = std::move(machines);
+        ps->report->machinePickerCacheConnectionString = cacheKey;
+        ps->report->machinePickerCacheLoaded = true;
+    }
+    ps->rooms = ps->report->cachedMachinePickerRooms;
+    ps->allMachines = ps->report->cachedMachinePickerMachines;
+    if (ps->rooms.empty() && ps->allMachines.empty()) {
         populateMachinePickerRooms(ps);
-        MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
-                                                   : ps->report->leftContent,
-                    L"检验科室加载失败。", L"常规报告", MB_ICONERROR);
+        populateMachinePickerMachines(ps);
         return;
     }
     populateMachinePickerRooms(ps);
-    reloadMachinePickerMachines(ps);
+    populateMachinePickerMachines(ps);
 }
 
 void acceptMachinePicker(MachinePickerState* ps) {
@@ -226,7 +326,7 @@ void acceptMachinePicker(MachinePickerState* ps) {
         const auto& m = ps->machines[static_cast<size_t>(sel)];
         SetWindowTextW(ps->report->machineEdit, search::utf8_to_wide(m.mach_name).c_str());
         ps->report->selectedMachineCode = m.mach_code;
-        ps->report->selectedRoomCode = selectedMachinePickerRoomCode(ps);
+        ps->report->selectedRoomCode = m.room_code;
         regularUpdateQuickMachineButtonLabels(ps->report);
     }
 }
@@ -238,6 +338,58 @@ void acceptAndCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
     runReportQuery(rpt);
 }
 
+void selectMachinePickerRow(MachinePickerState* ps, int row) {
+    if (!ps || !ps->machineList) return;
+    const int count = ListView_GetItemCount(ps->machineList);
+    if (count <= 0) return;
+    row = std::clamp(row, 0, count - 1);
+    ListView_SetItemState(ps->machineList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(ps->machineList, row, LVIS_SELECTED | LVIS_FOCUSED,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(ps->machineList, row, FALSE);
+    syncMachinePickerRoomFromSelection(ps);
+    regularRedrawSelectedListRow(ps->machineList);
+}
+
+void moveMachinePickerSelection(MachinePickerState* ps, int delta) {
+    if (!ps || !ps->machineList || delta == 0) return;
+    int row = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
+    if (row < 0) row = 0;
+    else row += delta;
+    selectMachinePickerRow(ps, row);
+}
+
+LRESULT CALLBACK machinePickerSearchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                         UINT_PTR sid, DWORD_PTR data) {
+    auto* ps = reinterpret_cast<MachinePickerState*>(data);
+    switch (msg) {
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE) {
+                HWND popup = GetParent(hwnd);
+                if (IsWindow(popup)) {
+                    DestroyWindow(popup);
+                    return 0;
+                }
+            }
+            if (wp == VK_UP || wp == VK_DOWN) {
+                moveMachinePickerSelection(ps, wp == VK_UP ? -1 : 1);
+                return 0;
+            }
+            if (wp == VK_RETURN) {
+                HWND popup = GetParent(hwnd);
+                if (IsWindow(popup)) {
+                    acceptAndCloseMachinePicker(popup, ps);
+                    return 0;
+                }
+            }
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, machinePickerSearchProc, sid);
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
 void postCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
     if (!ps || ps->closePosted) return;
     ps->closePosted = true;
@@ -247,6 +399,9 @@ void postCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
 LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* ps = reinterpret_cast<MachinePickerState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE) { DestroyWindow(hwnd); return 0; }
+            break;
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             ps = reinterpret_cast<MachinePickerState*>(cs->lpCreateParams);
@@ -254,6 +409,17 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!ps || !ps->report) return -1;
             ps->report->machinePickerPopup = hwnd;
             const int ix = S(hwnd, REGULAR_MACHINE_PICKER_INPUT_X);
+            makeStatic(hwnd, L"检索内容", ix, S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_Y),
+                       S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W), S(hwnd, 18));
+            ps->searchEdit = makeEdit(hwnd, L"",
+                ix + S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W),
+                S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_Y),
+                S(hwnd, REGULAR_MACHINE_PICKER_LIST_W - REGULAR_MACHINE_PICKER_SEARCH_LABEL_W),
+                S(hwnd, 24));
+            SetWindowLongPtrW(ps->searchEdit, GWLP_ID, REGULAR_IDC_MACHINE_PICKER_SEARCH);
+            SetWindowSubclass(ps->searchEdit, machinePickerSearchProc,
+                              REGULAR_MACHINE_PICKER_SEARCH_SUBCLASS,
+                              reinterpret_cast<DWORD_PTR>(ps));
             ps->roomCombo = search::create_combo(hwnd, REGULAR_IDC_MACHINE_PICKER_ROOM,
                 ix, S(hwnd, REGULAR_MACHINE_PICKER_ROOM_Y),
                 S(hwnd, REGULAR_MACHINE_PICKER_LIST_W),
@@ -271,13 +437,26 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                      S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
             search::add_list_column(ps->machineList, 1, L"仪器名称",
                                      S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
+            search::add_list_column(ps->machineList, 2, L"拼音码",
+                                     S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
             regularApplyFont(hwnd, ps->report->ctx.uiFont);
             reloadMachinePickerRooms(ps);
             return 0;
         }
         case WM_COMMAND: {
             if (LOWORD(wp) == REGULAR_IDC_MACHINE_PICKER_ROOM && HIWORD(wp) == CBN_SELCHANGE) {
-                reloadMachinePickerMachines(ps);
+                if (ps && !ps->syncingRoom) {
+                    ps->roomChosenByUser = true;
+                    if (ps->searchEdit)
+                        SetWindowTextW(ps->searchEdit, L"");
+                }
+                populateMachinePickerMachines(ps);
+                return 0;
+            }
+            if (LOWORD(wp) == REGULAR_IDC_MACHINE_PICKER_SEARCH && HIWORD(wp) == EN_CHANGE) {
+                if (ps && !ps->roomChosenByUser && machinePickerSearchText(ps).empty())
+                    selectMachinePickerRoomByCode(ps, "");
+                populateMachinePickerMachines(ps);
                 return 0;
             }
             break;
@@ -285,8 +464,42 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+                nm->code == NM_KILLFOCUS) {
+                regularRedrawSelectedListRow(ps ? ps->machineList : nullptr);
+                return 0;
+            }
+            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+                nm->code == NM_CUSTOMDRAW) {
+                auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (regularCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row))
+                        return CDRF_NOTIFYSUBITEMDRAW;
+                    return CDRF_NOTIFYSUBITEMDRAW;
+                }
+                if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    regularCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row);
+                    return CDRF_DODEFAULT;
+                }
+            }
+            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
                 (nm->code == NM_RETURN || nm->code == NM_DBLCLK)) {
                 acceptAndCloseMachinePicker(hwnd, ps);
+                return 0;
+            }
+            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+                nm->code == NM_CLICK) {
+                if (ps && ps->searchEdit)
+                    SetFocus(ps->searchEdit);
+                return 0;
+            }
+            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+                nm->code == LVN_ITEMCHANGED) {
+                auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
+                if (lv && ps && !ps->refreshingMachines && (lv->uNewState & LVIS_SELECTED))
+                    syncMachinePickerRoomFromSelection(ps);
                 return 0;
             }
             break;
@@ -315,7 +528,14 @@ void registerMachinePickerClass(HINSTANCE instance) {
 
 void showMachinePicker(RegularReportState* st, HWND anchor) {
     if (!st || !anchor) return;
-    if (IsWindow(st->machinePickerPopup)) { SetForegroundWindow(st->machinePickerPopup); return; }
+    if (IsWindow(st->machinePickerPopup)) {
+        SetForegroundWindow(st->machinePickerPopup);
+        auto* ps = reinterpret_cast<MachinePickerState*>(
+            GetWindowLongPtrW(st->machinePickerPopup, GWLP_USERDATA));
+        if (ps && ps->searchEdit)
+            SetFocus(ps->searchEdit);
+        return;
+    }
     registerMachinePickerClass(st->ctx.instance);
     RECT ar{}; GetWindowRect(anchor, &ar);
     const int w = S(anchor, REGULAR_MACHINE_PICKER_CLIENT_W);
@@ -337,6 +557,8 @@ void showMachinePicker(RegularReportState* st, HWND anchor) {
                                  nullptr, st->ctx.instance, ps);
     if (!popup) { delete ps; return; }
     ShowWindow(popup, SW_SHOWNORMAL); UpdateWindow(popup);
+    if (ps->searchEdit)
+        SetFocus(ps->searchEdit);
 }
 
 // ============================================================================
@@ -2048,8 +2270,8 @@ search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
 // Exported wrappers (regular* functions declared in state.h)
 // ============================================================================
 
-void regularApplyQuickMachine(RegularReportState* st, int slot) {
-    if (!st || slot < 0 || slot >= REGULAR_QUICK_MACHINE_COUNT) return;
+bool applyQuickMachineSlot(RegularReportState* st, int slot, bool showMissingMessage) {
+    if (!st || slot < 0 || slot >= REGULAR_QUICK_MACHINE_COUNT) return false;
     const std::wstring name = search::load_module_str(
         L"RegularReport", regularQuickMachineNameKey(slot), L"");
     const std::wstring code = search::load_module_str(
@@ -2057,8 +2279,9 @@ void regularApplyQuickMachine(RegularReportState* st, int slot) {
     const std::wstring room = search::load_module_str(
         L"RegularReport", regularQuickMachineRoomKey(slot), L"");
     if (search::trim(search::wide_to_utf8(code)).empty()) {
-        MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
-        return;
+        if (showMissingMessage)
+            MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
+        return false;
     }
     const std::string nextCode = search::wide_to_utf8(code);
     const std::string nextRoom = search::wide_to_utf8(room);
@@ -2069,6 +2292,11 @@ void regularApplyQuickMachine(RegularReportState* st, int slot) {
     st->selectedRoomCode = nextRoom;
     regularUpdateQuickMachineButtonLabels(st);
     runReportQuery(st, sameMachine && hasSelectedReportRow(st));
+    return true;
+}
+
+void regularApplyQuickMachine(RegularReportState* st, int slot) {
+    applyQuickMachineSlot(st, slot, true);
 }
 
 void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarget& target) {
@@ -2301,6 +2529,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->pendingSplitterX = search::load_module_int(L"RegularReport", L"SplitterX", 0);
             createControls(hwnd, st);
             layout(hwnd, st);
+            st->initialQuickMachineTimerActive =
+                SetTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE, 1, nullptr) != 0;
             return 0;
         }
 
@@ -2311,6 +2541,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_REGULAR_OPEN_REPORT: {
+            if (st && st->initialQuickMachineTimerActive) {
+                KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+                st->initialQuickMachineTimerActive = false;
+            }
+            if (st) st->skipInitialQuickMachineLoad = true;
             std::unique_ptr<RegularReportOpenTarget> target(
                 reinterpret_cast<RegularReportOpenTarget*>(lp));
             if (st && target) regularOpenReportTarget(st, *target);
@@ -2379,6 +2614,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             layout(hwnd, st); return 0;
 
         case WM_TIMER:
+            if (st && wp == IDT_REPORT_INITIAL_QUICK_MACHINE) {
+                KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+                st->initialQuickMachineTimerActive = false;
+                if (!st->skipInitialQuickMachineLoad &&
+                    search::trim(st->selectedMachineCode).empty()) {
+                    applyQuickMachineSlot(st, 0, false);
+                }
+                return 0;
+            }
             if (st && wp == IDT_REPORT_AUTO_REFRESH) {
                 if (regularIsAutoRefreshChecked(st)) runAutoRefreshQuery(st);
                 else regularStopAutoRefreshTimer(st);
@@ -2454,6 +2698,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             RemovePropW(hwnd, REGULAR_REPORT_PROP_STATE);
             if (st) {
+                if (st->initialQuickMachineTimerActive) {
+                    KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+                    st->initialQuickMachineTimerActive = false;
+                }
                 regularStopAutoRefreshTimer(st);
                 finishResultEdit(st, false);
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
