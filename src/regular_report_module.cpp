@@ -12,6 +12,7 @@
 #include "search_splitter.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
+#include "trend_window.h"
 #include "win32_control_id.h"
 
 #include <windows.h>
@@ -90,6 +91,21 @@ HWND makeCombo(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
     return combo;
+}
+
+constexpr int REGULAR_TREND_DEFAULT_DAYS = 14;
+
+std::string regularDateText(SYSTEMTIME st) {
+    st = regularNormalizeDate(st);
+    char buffer[16]{};
+    std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buffer;
+}
+
+SYSTEMTIME regularReportTrendEndDate(const search::ReportRow& row) {
+    SYSTEMTIME end{};
+    if (regularParseDateTimeText(row.chk_date, end)) return regularNormalizeDate(end);
+    return regularTodayDate();
 }
 
 // ============================================================================
@@ -730,6 +746,16 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_GRAPH) {
                 regularOpenPicturePopupForSelection(st); return 0;
             }
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TREND) {
+                const int index = currentReportIndex(st);
+                if (index < 0) {
+                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"趋势图提示", MB_ICONINFORMATION);
+                } else {
+                    st->contextReportIndex = index;
+                    regularShowTrendForContext(st);
+                }
+                return 0;
+            }
             break;
         case WM_NCDESTROY: RemoveWindowSubclass(hwnd, bottomPanelProc, sid); break;
     }
@@ -1156,7 +1182,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
     };
     const ButtonDef row3[] = {
         {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"},
-        {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {5425, L"项目分析"},
+        {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
         {5426, L"日统计"}, {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
     };
     auto cr = [&](const ButtonDef* row, int cnt, int y) {
@@ -2032,6 +2058,7 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
                 regularCheckedReportIndexes(st).empty() ? (MF_STRING | MF_GRAYED) : MF_STRING,
                 REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_TREND, L"趋势图");
     TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
                    pt.x, pt.y, 0, st->hwnd, nullptr);
     DestroyMenu(menu);
@@ -2120,6 +2147,49 @@ std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
         regularClearReportChecks(st);
         return msg;
     }
+}
+
+void regularShowTrendForContext(RegularReportState* st) {
+    const search::ReportRow* row = contextReportRow(st);
+    if (!st || !row) {
+        MessageBoxW(st ? st->hwnd : nullptr, L"请先右键选择一条报告记录。",
+                    L"趋势图提示", MB_ICONINFORMATION);
+        return;
+    }
+    if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
+        MessageBoxW(st->hwnd, L"请先在“设置”中填写数据库连接信息。",
+                    L"缺少数据库设置", MB_ICONWARNING);
+        return;
+    }
+    const std::string patientId = search::trim(row->reg_no);
+    const std::string patientName = search::trim(row->name);
+    if (patientId.empty() && patientName.empty()) {
+        MessageBoxW(st->hwnd, L"当前报告缺少病人号和姓名，无法打开趋势图。",
+                    L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+
+    SYSTEMTIME endDate = regularReportTrendEndDate(*row);
+    SYSTEMTIME startDate = regularAddDays(endDate, -REGULAR_TREND_DEFAULT_DAYS + 1);
+
+    search::QueryInput input;
+    input.patient_id = patientId;
+    input.patient_name = patientName;
+    input.room_code = st->selectedRoomCode;
+    input.mach_code = st->selectedMachineCode;
+    input.start_date = regularDateText(startDate);
+    input.end_date = regularDateText(endDate);
+    input.limit = 0;
+
+    if (patientId.empty()) {
+        MessageBoxW(st->hwnd,
+                    L"当前报告缺少病人号，将按姓名查询趋势，可能包含同名病人结果。",
+                    L"趋势图提示", MB_ICONINFORMATION);
+    }
+    search::show_trend_window(st->hwnd,
+                              st->ctx.uiFont ? st->ctx.uiFont :
+                                  static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
+                              st->ctx.dbSettings, input);
 }
 
 void regularSelectReportRowBySampleInput(RegularReportState* st) {
@@ -2264,6 +2334,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES) {
                 MessageBoxW(hwnd, regularPrintCheckedBarcodes(st).c_str(),
                             L"常规报告", MB_ICONINFORMATION);
+                return 0;
+            }
+            if (LOWORD(wp) == REGULAR_IDM_REPORT_TREND) {
+                regularShowTrendForContext(st);
                 return 0;
             }
             break;

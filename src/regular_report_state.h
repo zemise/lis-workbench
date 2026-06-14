@@ -57,6 +57,8 @@ constexpr int REGULAR_IDC_BOTTOM_PREV_REPORT = 5408;
 constexpr int REGULAR_IDC_BOTTOM_NEXT_REPORT = 5409;
 constexpr int REGULAR_IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
+constexpr int REGULAR_IDM_REPORT_TREND = 5222;
+constexpr int REGULAR_IDC_BOTTOM_TREND = 5425;
 
 constexpr int REGULAR_REPORT_COLUMN_COUNT = 30;
 constexpr int REGULAR_RESULT_VALUE_COL = 5;
@@ -436,6 +438,7 @@ const search::ReportRow* regularContextReportRow(const RegularReportState* st);
 // barcode
 std::wstring regularPrintBarcodeForContext(RegularReportState* st);
 std::wstring regularPrintCheckedBarcodes(RegularReportState* st);
+void regularShowTrendForContext(RegularReportState* st);
 
 // queries
 search::QueryInput regularBuildReportQueryInput(RegularReportState* st);
