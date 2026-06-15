@@ -496,6 +496,45 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
 #endif
 }
 
+bool query_report_machine_picker_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)log;
+    error = "query_report_machine_picker_rooms is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    const std::string sql =
+        "SELECT CAST(ROOM_CODE AS varchar(20)), isnull(RTRIM(ROOM_NAME),'')"
+        " FROM LS_AS_ROOM WHERE DELETE_BIT=0 AND Dept_Code IN (102,401)"
+        " ORDER BY ROOM_CODE";
+    if (log) {
+        log("exec sql: " + sql + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        RoomOption row;
+        row.room_code = fetch_column(stmt, 1);
+        row.room_name = fetch_column(stmt, 2);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
 bool query_patient_types(const std::string& connection_string, std::vector<PatientTypeOption>& rows, std::string& error, LogFn log) {
     rows.clear();
 #ifndef _WIN32
@@ -569,6 +608,70 @@ bool query_machines(const std::string& connection_string, const std::string& roo
         row.mach_code = fetch_column(stmt, 2);
         row.mach_name = fetch_column(stmt, 3);
         row.py_code = fetch_column(stmt, 4);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)room_code;
+    (void)log;
+    error = "query_report_machine_picker_machines is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT CAST(m.ROOM_CODE AS varchar(20)), CAST(m.MACH_CODE AS varchar(20)),"
+        << " isnull(RTRIM(m.MACH_NAME),''), isnull(RTRIM(m.PY_CODE),''),"
+        << " isnull(CAST(main_group.GROUP_CODE AS varchar(20)),''),"
+        << " isnull(RTRIM(item.ITEM_NAME),''),"
+        << " isnull(RTRIM(main_group.SAMP_CODE),''),"
+        << " isnull(RTRIM(samp.SAMP_NAME),'')"
+        << " FROM LS_AS_MACHINE m"
+        << " OUTER APPLY (SELECT TOP 1 g.GROUP_CODE, g.SAMP_CODE"
+        << " FROM LS_AS_GROUP g"
+        << " WHERE g.DELETE_BIT=0 AND isnull(RTRIM(g.REP_STYLE),'')='M'"
+        << " AND g.MACH_CODE=m.MACH_CODE"
+        << " ORDER BY isnull(g.orderby,2147483647), g.GROUP_CODE) main_group"
+        << " LEFT JOIN LS_CODE_ITEM item ON RTRIM(item.ITEM_CODE)=CAST(main_group.GROUP_CODE AS varchar(10))"
+        << " LEFT JOIN LS_AS_SAMPLE samp ON CAST(samp.SAMP_CODE AS varchar(4))=RTRIM(main_group.SAMP_CODE)"
+        << " AND samp.DELETE_BIT=0"
+        << " WHERE m.DELETE_BIT=0 AND isnull(RTRIM(m.RUL),'')='启用'"
+        << " AND EXISTS (SELECT 1 FROM LS_AS_ROOM r"
+        << " WHERE r.DELETE_BIT=0 AND r.ROOM_CODE=m.ROOM_CODE"
+        << " AND r.Dept_Code IN (102,401))";
+    add_eq(sql, "m.ROOM_CODE", room_code);
+    sql << " ORDER BY m.ROOM_CODE, m.MACH_CODE";
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        MachineOption row;
+        row.room_code = fetch_column(stmt, 1);
+        row.mach_code = fetch_column(stmt, 2);
+        row.mach_name = fetch_column(stmt, 3);
+        row.py_code = fetch_column(stmt, 4);
+        row.group_code = fetch_column(stmt, 5);
+        row.group_name = fetch_column(stmt, 6);
+        row.sample_code = fetch_column(stmt, 7);
+        row.sample_name = fetch_column(stmt, 8);
         rows.push_back(row);
     }
 

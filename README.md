@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.06.15`
+当前版本：`v2026.06.15.2`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -58,7 +58,7 @@
 - `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 - `检验科室` 下拉来源于 `LS_AS_ROOM.ROOM_NAME`，查询时回写对应 `ROOM_CODE` 过滤。
 - `病人类型` 下拉来源于 `LS_AS_PATTYPE`，显示格式为 `TYPE-TYPE_NAME`，查询时回写对应 `TYPE` 过滤。
-- `检验仪器` 选择来源于 `LS_AS_MACHINE`，仅显示 `RUL='启用'` 且 `DELETE_BIT=0` 的记录；弹窗加载 `ROOM_CODE / MACH_CODE / MACH_NAME / PY_CODE` 并在当前常规报告页面内缓存，数据库连接配置变化时自动重载；科室下拉提供 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果自动选中第一行，选中仪器后自动同步科室下拉框，检索框回车可直接确认并关闭弹窗，查询时回写对应 `MACH_CODE` 过滤。
+- `检验仪器` 选择来源于 `LS_AS_ROOM / LS_AS_MACHINE`，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下 `RUL='启用'` 且 `DELETE_BIT=0` 的仪器；弹窗加载 `ROOM_CODE / MACH_CODE / MACH_NAME / PY_CODE`，并从 `LS_AS_GROUP.REP_STYLE='M'` 的首条主项目补充 `GROUP_CODE`、`LS_CODE_ITEM.ITEM_NAME` 和 `LS_AS_SAMPLE.SAMP_NAME`，按 `ROOM_CODE, MACH_CODE` 排序后在当前常规报告页面内缓存，数据库连接配置变化时自动重载；科室下拉提供 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果自动选中第一行，选中仪器后自动同步科室下拉框，检索框回车可直接确认并关闭弹窗，查询时回写对应 `MACH_CODE` 过滤。
 - 主列表补充 `打印`、`自助机` 两列，分别对应 `ZYMZ_PRINT`、`ZZJ_PRINT`。
 - 主列表补充 `检验者`、`审核者` 两列：
   - `检验者`：`LS_AS_REPORT.OPER_CODE = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`
@@ -87,7 +87,7 @@
 - 设置页面采用原生 Win32 分组卡片布局，支持字号配置；字号选择限制为 `9 / 11 / 12 / 13` 四档，保存后持久化到 `ClientConfig.ini`，并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
 - 系统设置支持配置 LIS 摘要项目代码，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
-- 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器复用常规报告仪器弹窗的数据范围，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下的启用仪器，并展示主项目代码、项目名称和样本，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
 - 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
 - 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。

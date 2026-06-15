@@ -214,7 +214,10 @@ void layoutMachinePicker(HWND hwnd, MachinePickerState* ps) {
     MoveWindow(ps->machineList, ix, ly, lw, lh, TRUE);
     ListView_SetColumnWidth(ps->machineList, 0, S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
     ListView_SetColumnWidth(ps->machineList, 1, S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 2, S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 2, S(hwnd, REGULAR_MACHINE_PICKER_GROUP_CODE_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 3, S(hwnd, REGULAR_MACHINE_PICKER_GROUP_NAME_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 4, S(hwnd, REGULAR_MACHINE_PICKER_SAMPLE_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 5, S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
 
     RECT cr{0, 0, S(hwnd, REGULAR_MACHINE_PICKER_CLIENT_W),
             ly + lh + S(hwnd, REGULAR_MACHINE_PICKER_BOTTOM_PAD)};
@@ -248,13 +251,19 @@ void populateMachinePickerMachines(MachinePickerState* ps) {
     for (int i = 0; i < static_cast<int>(ps->machines.size()); ++i) {
         const auto code = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].mach_code);
         const auto name = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].mach_name);
+        const auto groupCode = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].group_code);
+        const auto groupName = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].group_name);
+        const auto sample = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].sample_name);
         const auto py = search::utf8_to_wide(ps->machines[static_cast<size_t>(i)].py_code);
         LVITEMW item{};
         item.mask = LVIF_TEXT; item.iItem = i; item.iSubItem = 0;
         item.pszText = const_cast<wchar_t*>(code.c_str());
         ListView_InsertItem(ps->machineList, &item);
         ListView_SetItemText(ps->machineList, i, 1, const_cast<wchar_t*>(name.c_str()));
-        ListView_SetItemText(ps->machineList, i, 2, const_cast<wchar_t*>(py.c_str()));
+        ListView_SetItemText(ps->machineList, i, 2, const_cast<wchar_t*>(groupCode.c_str()));
+        ListView_SetItemText(ps->machineList, i, 3, const_cast<wchar_t*>(groupName.c_str()));
+        ListView_SetItemText(ps->machineList, i, 4, const_cast<wchar_t*>(sample.c_str()));
+        ListView_SetItemText(ps->machineList, i, 5, const_cast<wchar_t*>(py.c_str()));
         if (keyword.empty() && sel < 0 && !curCode.empty() &&
             search::trim(ps->machines[static_cast<size_t>(i)].mach_code) == curCode) sel = i;
         else if (keyword.empty() && sel < 0 && curName[0] && lstrcmpW(curName, name.c_str()) == 0) sel = i;
@@ -287,7 +296,7 @@ void reloadMachinePickerRooms(MachinePickerState* ps) {
         std::vector<search::RoomOption> rooms;
         std::vector<search::MachineOption> machines;
         std::string error;
-        if (!search::load_room_options(ps->report->ctx.dbSettings, rooms, error)) {
+        if (!search::load_report_machine_picker_room_options(ps->report->ctx.dbSettings, rooms, error)) {
             populateMachinePickerRooms(ps);
             populateMachinePickerMachines(ps);
             MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
@@ -295,7 +304,7 @@ void reloadMachinePickerRooms(MachinePickerState* ps) {
                         L"检验科室加载失败。", L"常规报告", MB_ICONERROR);
             return;
         }
-        if (!search::load_machine_options(ps->report->ctx.dbSettings, "", machines, error)) {
+        if (!search::load_report_machine_picker_machine_options(ps->report->ctx.dbSettings, "", machines, error)) {
             populateMachinePickerRooms(ps);
             populateMachinePickerMachines(ps);
             MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
@@ -437,7 +446,13 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                      S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
             search::add_list_column(ps->machineList, 1, L"仪器名称",
                                      S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
-            search::add_list_column(ps->machineList, 2, L"拼音码",
+            search::add_list_column(ps->machineList, 2, L"项目代码",
+                                     S(hwnd, REGULAR_MACHINE_PICKER_GROUP_CODE_COL_W));
+            search::add_list_column(ps->machineList, 3, L"项目名称",
+                                     S(hwnd, REGULAR_MACHINE_PICKER_GROUP_NAME_COL_W));
+            search::add_list_column(ps->machineList, 4, L"样本",
+                                     S(hwnd, REGULAR_MACHINE_PICKER_SAMPLE_COL_W));
+            search::add_list_column(ps->machineList, 5, L"拼音码",
                                      S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
             regularApplyFont(hwnd, ps->report->ctx.uiFont);
             reloadMachinePickerRooms(ps);

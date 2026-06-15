@@ -84,13 +84,16 @@ constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
 constexpr const wchar_t* WHITE_HOST_CLASS = L"SettingsWhiteHost";
 constexpr const wchar_t* PROP_STATE = L"SettingsSt";
 constexpr const wchar_t* WINDOW_TITLE = L"系统设置";
-constexpr int PICKER_W = 440;
+constexpr int PICKER_W = 640;
 constexpr int PICKER_H = 360;
 constexpr int PICKER_PAD = 12;
 constexpr int PICKER_COMBO_H = 180;
 constexpr int PICKER_LIST_Y = 48;
-constexpr int PICKER_CODE_W = 92;
-constexpr int PICKER_NAME_W = 300;
+constexpr int PICKER_CODE_W = 70;
+constexpr int PICKER_NAME_W = 170;
+constexpr int PICKER_GROUP_CODE_W = 78;
+constexpr int PICKER_GROUP_NAME_W = 150;
+constexpr int PICKER_SAMPLE_W = 64;
 constexpr int ALLOWED_FONT_SIZES[] = {9, 11, 12, 13};
 constexpr COLORREF COLOR_PAGE_BG = RGB(0xF3, 0xF6, 0xFA);
 constexpr COLORREF COLOR_CARD_BG = RGB(0xFF, 0xFF, 0xFF);
@@ -604,12 +607,18 @@ void populatePickerMachines(SettingsMachinePickerState* ps) {
         const auto& machine = ps->machines[static_cast<size_t>(i)];
         const auto code = search::utf8_to_wide(machine.mach_code);
         const auto name = search::utf8_to_wide(machine.mach_name);
+        const auto groupCode = search::utf8_to_wide(machine.group_code);
+        const auto groupName = search::utf8_to_wide(machine.group_name);
+        const auto sample = search::utf8_to_wide(machine.sample_name);
         LVITEMW item{};
         item.mask = LVIF_TEXT;
         item.iItem = i;
         item.pszText = const_cast<wchar_t*>(code.c_str());
         ListView_InsertItem(ps->machineList, &item);
         ListView_SetItemText(ps->machineList, i, 1, const_cast<wchar_t*>(name.c_str()));
+        ListView_SetItemText(ps->machineList, i, 2, const_cast<wchar_t*>(groupCode.c_str()));
+        ListView_SetItemText(ps->machineList, i, 3, const_cast<wchar_t*>(groupName.c_str()));
+        ListView_SetItemText(ps->machineList, i, 4, const_cast<wchar_t*>(sample.c_str()));
         if (!current.empty() && machine.mach_code == current) selected = i;
     }
     if (selected < 0 && !ps->machines.empty()) selected = 0;
@@ -623,7 +632,7 @@ void reloadPickerMachines(SettingsMachinePickerState* ps) {
     if (!ps || !ps->settings) return;
     ps->machines.clear();
     std::string error;
-    if (!search::load_machine_options(collectForm(ps->owner), selectedPickerRoomCode(ps), ps->machines, error)) {
+    if (!search::load_report_machine_picker_machine_options(collectForm(ps->owner), selectedPickerRoomCode(ps), ps->machines, error)) {
         MessageBoxW(ps->owner, L"检验仪器加载失败。", L"系统设置", MB_ICONERROR);
     }
     populatePickerMachines(ps);
@@ -634,7 +643,7 @@ void reloadPickerRooms(SettingsMachinePickerState* ps) {
     SendMessageW(ps->roomCombo, CB_RESETCONTENT, 0, 0);
     ps->rooms.clear();
     std::string error;
-    if (!search::load_room_options(collectForm(ps->owner), ps->rooms, error)) {
+    if (!search::load_report_machine_picker_room_options(collectForm(ps->owner), ps->rooms, error)) {
         MessageBoxW(ps->owner, L"检验科室加载失败。", L"系统设置", MB_ICONERROR);
     }
     const std::string currentRoom = ps->settings->quickMachineRoomCodes[static_cast<size_t>(ps->slot)];
@@ -685,6 +694,9 @@ LRESULT CALLBACK pickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ListView_SetExtendedListViewStyle(ps->machineList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             search::add_list_column(ps->machineList, 0, L"仪器", S(PICKER_CODE_W));
             search::add_list_column(ps->machineList, 1, L"仪器名称", S(PICKER_NAME_W));
+            search::add_list_column(ps->machineList, 2, L"项目代码", S(PICKER_GROUP_CODE_W));
+            search::add_list_column(ps->machineList, 3, L"项目名称", S(PICKER_GROUP_NAME_W));
+            search::add_list_column(ps->machineList, 4, L"样本", S(PICKER_SAMPLE_W));
             if (ps->settings && ps->settings->ctx.uiFont) {
                 EnumChildWindows(hwnd, [](HWND child, LPARAM font) -> BOOL {
                     SendMessageW(child, WM_SETFONT, font, TRUE);
@@ -707,8 +719,14 @@ LRESULT CALLBACK pickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 MoveWindow(ps->machineList, pad, listY, innerW,
                            std::max(80, static_cast<int>(rc.bottom - rc.top) - listY - pad), TRUE);
                 ListView_SetColumnWidth(ps->machineList, 0, static_cast<int>(PICKER_CODE_W * scale));
-                ListView_SetColumnWidth(ps->machineList, 1,
-                                        std::max(160, innerW - static_cast<int>((PICKER_CODE_W + 16) * scale)));
+                ListView_SetColumnWidth(ps->machineList, 1, static_cast<int>(PICKER_NAME_W * scale));
+                ListView_SetColumnWidth(ps->machineList, 2, static_cast<int>(PICKER_GROUP_CODE_W * scale));
+                ListView_SetColumnWidth(ps->machineList, 3, static_cast<int>(PICKER_GROUP_NAME_W * scale));
+                ListView_SetColumnWidth(ps->machineList, 4,
+                                        std::max(static_cast<int>(PICKER_SAMPLE_W * scale),
+                                                 innerW - static_cast<int>((PICKER_CODE_W + PICKER_NAME_W +
+                                                                           PICKER_GROUP_CODE_W + PICKER_GROUP_NAME_W +
+                                                                           16) * scale)));
             }
             return 0;
         case WM_COMMAND:
