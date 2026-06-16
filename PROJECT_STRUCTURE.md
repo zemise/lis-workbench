@@ -41,7 +41,7 @@
 
 | 文件 | 职责 | Qt 复用方式 |
 |------|------|-----------|
-| `search_core.*` | ODBC 数据库查询 | 切换到 Qt SQL 后端，接口不变 |
+| `search_core.*` | ODBC 数据库查询、driver candidate 缓存、连接池和登录超时 | 切换到 Qt SQL 后端，接口不变 |
 | `search_app.*` | `QueryInput` 结构、筛选器组装、状态文案映射 | 原样复用 |
 | `search_controller.*` | 测试连接、加载字典、执行查询 | 原样复用（ODBC 切换后） |
 | `search_text.*` | `trim`、UTF-8 ↔ 宽字符转换 | Qt 下替换为 `QString`，过渡期保持兼容 |
@@ -49,7 +49,7 @@
 | `search_view_state.*` | `ViewState` 聚合运行时状态 | 原样复用 |
 | `version.h` | 版本号与标题 | 原样复用 |
 | `search_ui_columns.h` | 列号常量 | Qt 中列语义由 model 管理，参考此文件 |
-| `trend_core.*` | 趋势数据查询 | 原样复用（ODBC 切换后） |
+| `trend_core.*` | 趋势数据查询，复用 ODBC driver 缓存、连接池和登录超时策略 | 原样复用（ODBC 切换后） |
 | `update_config.h` | 自动更新配置键、更新源取值和 GitHub latest manifest 默认地址 | Win32 主程序和设置页共用 |
 | `update_manifest.*` | 自动更新 manifest 解析、版本比较、SHA-256 校验 | 可作为后续 Qt/Win32 共享更新核心 |
 | `update_source.*` | 自动更新源抽象、文件夹更新源、HTTP 更新源和统一检查拉取流程 | 主程序菜单 `系统 -> 检查更新` 入口已复用 |

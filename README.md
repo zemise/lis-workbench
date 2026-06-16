@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.06.15.2`
+当前版本：`v2026.06.16`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -313,5 +313,7 @@ Data Source=172.18.3.8\MSSQLSERVER1;Initial Catalog=trasen;User ID=sa;Password=y
 说明：
 
 - `初始数据库` 直接作为实际查询连接里的 `Initial Catalog`。
-- 前端不再手填 ODBC 驱动，驱动选择由底层自动尝试。
+- 前端不再手填 ODBC 驱动，驱动选择由底层自动尝试；本次运行内会优先复用上次成功的 driver candidate，失败时再回退完整候选列表。
+- 数据库连接层启用 ODBC Driver Manager 连接池并使用严格连接匹配，现有短连接查询模式可复用底层连接。
+- ODBC 登录阶段默认 5 秒超时，仅限制建连阶段，不限制 SQL 查询执行时长。
 - 该字段会保存到 `ClientConfig.ini`。

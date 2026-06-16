@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <sstream>
 
 #ifdef _WIN32
@@ -109,6 +110,51 @@ void add_like(std::ostringstream& sql, const char* col, const std::string& value
 }
 
 #ifdef _WIN32
+constexpr SQLULEN kLoginTimeoutSeconds = 5;
+
+std::mutex& preferred_odbc_candidate_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::map<std::string, std::string>& preferred_odbc_candidates() {
+    static std::map<std::string, std::string> cache;
+    return cache;
+}
+
+std::string cached_odbc_candidate(const std::string& connection_string) {
+    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
+    const auto it = preferred_odbc_candidates().find(connection_string);
+    return it == preferred_odbc_candidates().end() ? std::string{} : it->second;
+}
+
+void remember_odbc_candidate(const std::string& connection_string, const std::string& candidate) {
+    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
+    preferred_odbc_candidates()[connection_string] = candidate;
+}
+
+std::vector<std::string> prioritized_odbc_candidates(const std::string& connection_string,
+                                                     std::string& cached_candidate) {
+    auto candidates = odbc_candidates(connection_string);
+    cached_candidate = cached_odbc_candidate(connection_string);
+    if (cached_candidate.empty()) {
+        return candidates;
+    }
+    candidates.erase(std::remove(candidates.begin(), candidates.end(), cached_candidate), candidates.end());
+    candidates.insert(candidates.begin(), cached_candidate);
+    return candidates;
+}
+
+void enable_odbc_connection_pooling_once() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        SQLSetEnvAttr(SQL_NULL_HANDLE,
+                      SQL_ATTR_CONNECTION_POOLING,
+                      reinterpret_cast<SQLPOINTER>(SQL_CP_ONE_PER_HENV),
+                      0);
+    });
+}
+
 struct DbContext {
     SQLHENV env = SQL_NULL_HENV;
     SQLHDBC dbc = SQL_NULL_HDBC;
@@ -148,18 +194,27 @@ std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle) {
 }
 
 bool connect(const std::string& connection_string, DbContext& db, std::string& error) {
+    enable_odbc_connection_pooling_once();
     if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &db.env) != SQL_SUCCESS) {
         error = "SQLAllocHandle ENV failed";
         return false;
     }
     SQLSetEnvAttr(db.env, SQL_ATTR_ODBC_VERSION, reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0);
+    SQLSetEnvAttr(db.env, SQL_ATTR_CP_MATCH, reinterpret_cast<SQLPOINTER>(SQL_CP_STRICT_MATCH), 0);
     if (SQLAllocHandle(SQL_HANDLE_DBC, db.env, &db.dbc) != SQL_SUCCESS) {
         error = "SQLAllocHandle DBC failed";
         disconnect(db);
         return false;
     }
+    SQLSetConnectAttr(db.dbc,
+                      SQL_ATTR_LOGIN_TIMEOUT,
+                      reinterpret_cast<SQLPOINTER>(kLoginTimeoutSeconds),
+                      0);
 
-    for (const auto& candidate : odbc_candidates(connection_string)) {
+    std::string cached_candidate;
+    const auto candidates = prioritized_odbc_candidates(connection_string, cached_candidate);
+
+    for (const auto& candidate : candidates) {
         const auto wide = utf8_to_wide(candidate);
         SQLWCHAR out_conn[2048] = {};
         SQLSMALLINT out_len = 0;
@@ -167,6 +222,7 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
             db.dbc, nullptr, reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(wide.c_str())), SQL_NTS,
             out_conn, 2048, &out_len, SQL_DRIVER_NOPROMPT);
         if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+            remember_odbc_candidate(connection_string, candidate);
             return true;
         }
     }
