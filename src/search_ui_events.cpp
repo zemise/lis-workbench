@@ -61,6 +61,25 @@ bool handle_notify(LPARAM lparam, const MainUiIds& ids, const NotifyEventHandler
         return true;
     }
 
+    if (hdr->idFrom == static_cast<UINT_PTR>(ids.reports) &&
+        (hdr->code == NM_DBLCLK || hdr->code == LVN_ITEMACTIVATE)) {
+        auto* item = reinterpret_cast<NMITEMACTIVATE*>(lparam);
+        if (item->iItem >= 0 && handlers.on_report_activated) {
+            handlers.on_report_activated(item->iItem);
+        }
+        result = 0;
+        return true;
+    }
+
+    if (hdr->idFrom == static_cast<UINT_PTR>(ids.reports) && hdr->code == LVN_COLUMNCLICK) {
+        auto* item = reinterpret_cast<NMLISTVIEW*>(lparam);
+        if (handlers.on_report_column_clicked) {
+            handlers.on_report_column_clicked(item->iSubItem);
+        }
+        result = 0;
+        return true;
+    }
+
     if (hdr->idFrom == static_cast<UINT_PTR>(ids.reports) && hdr->code == NM_CUSTOMDRAW) {
         auto* draw = reinterpret_cast<NMLVCUSTOMDRAW*>(lparam);
         if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) {

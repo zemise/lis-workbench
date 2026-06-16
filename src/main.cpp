@@ -139,21 +139,6 @@ LRESULT CALLBACK splitter_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-int clamp_font_size(int value) {
-    return std::max(8, std::min(24, value));
-}
-
-HFONT create_ui_font(int point_size) {
-    NONCLIENTMETRICSW metrics{};
-    metrics.cbSize = sizeof(metrics);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
-    LOGFONTW lf = metrics.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(point_size, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
-}
-
 void apply_font_to_window(HWND root) {
     if (!root || !g_ui_context.ui_font) {
         return;
@@ -169,7 +154,7 @@ void apply_font_to_window(HWND root) {
 void load_settings() {
     g_state.ini_path = search::default_ini_path();
     g_state.settings = search::load_settings(g_state.ini_path);
-    g_font_size = clamp_font_size(g_font_size);
+    g_font_size = search::clamp_font_size(g_font_size);
 }
 
 void save_settings_to_ini() {
@@ -267,7 +252,7 @@ void show_settings(HWND owner) {
         if (g_ui_context.ui_font) {
             DeleteObject(g_ui_context.ui_font);
         }
-        g_ui_context.ui_font = create_ui_font(g_font_size);
+        g_ui_context.ui_font = search::create_ui_font(g_font_size);
         apply_font_to_window(g_ui_context.main_window);
         reload_room_options();
         reload_patient_type_options();
@@ -406,7 +391,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     enable_dpi_awareness();
     load_settings();
-    g_ui_context.ui_font = create_ui_font(g_font_size);
+    g_ui_context.ui_font = search::create_ui_font(g_font_size);
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_DATE_CLASSES;

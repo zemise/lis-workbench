@@ -64,6 +64,10 @@ struct MainUiHandles {
 
 float dpi_scale_factor(HWND hwnd);
 
+int clamp_font_size(int value);
+HFONT create_ui_font(int pointSize);
+void apply_font_to_children(HWND root, HFONT font);
+
 HWND create_label(HWND parent, const wchar_t* text, int x, int y, int w, int h);
 HWND create_groupbox(HWND parent, const wchar_t* text, int x, int y, int w, int h);
 HWND create_edit(HWND parent, int id, int x, int y, int w, int h);
@@ -77,5 +81,22 @@ void create_main_controls(HWND hwnd, HFONT font, const MainUiIds& ids, MainUiHan
 void layout_main_window(HWND hwnd, MainUiHandles& ui, int& splitter_x);
 
 }  // namespace search
+
+#define REGISTER_MDI_CHILD_CLASS(inst, wndProc, clsName, bg)                                               \
+    do {                                                                                                  \
+        static bool _registered = false;                                                                  \
+        if (!_registered) {                                                                               \
+            WNDCLASSEXW _wc{};                                                                            \
+            _wc.cbSize = sizeof(_wc);                                                                     \
+            _wc.lpfnWndProc = (wndProc);                                                                  \
+            _wc.hInstance   = (inst);                                                                     \
+            _wc.hIcon       = LoadIconW((inst), MAKEINTRESOURCEW(IDI_APP));                               \
+            _wc.hCursor     = LoadCursor(nullptr, IDC_ARROW);                                             \
+            _wc.hbrBackground = (bg);                                                                      \
+            _wc.lpszClassName = (clsName);                                                                \
+            RegisterClassExW(&_wc);                                                                        \
+            _registered = true;                                                                           \
+        }                                                                                                 \
+    } while (0)
 
 #endif

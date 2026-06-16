@@ -18,8 +18,12 @@
 
 #include "app_settings.h"
 #include "app_settings_io.h"
+#include "crash_handler.h"
+#include "log.h"
+#include "search_ui_layout.h"
 #include "barcode_module.h"
 #include "blood_module.h"
+#include "hiv_statistics_module.h"
 #include "menu_toolbar.h"
 #include "module_registry.h"
 #include "query_module.h"
@@ -50,6 +54,11 @@ constexpr int IDM_TOOL2        = 3012;
 constexpr int IDM_TOOL3        = 3013;
 constexpr int IDM_TOOL4        = 3014;
 constexpr int IDM_TOOL5        = 3015;
+constexpr int IDM_STAT1        = 3021;
+constexpr int IDM_STAT2        = 3022;
+constexpr int IDM_STAT3        = 3023;
+constexpr int IDM_STAT4        = 3024;
+constexpr int IDM_STAT5        = 3025;
 constexpr int ID_STATUS        = 4001;
 constexpr int ID_TIMER         = 5001;
 constexpr int ID_AUTO_UPDATE_TIMER = 5002;
@@ -93,21 +102,6 @@ std::vector<std::unique_ptr<MenuDrawText>> g_menuDrawTexts;
 MenuDrawText* addMenuDrawText(const wchar_t* text, bool topLevel) {
     g_menuDrawTexts.push_back(std::make_unique<MenuDrawText>(MenuDrawText{text ? text : L"", topLevel}));
     return g_menuDrawTexts.back().get();
-}
-
-int clampFontSize(int value) {
-    return value < 8 ? 8 : (value > 24 ? 24 : value);
-}
-
-HFONT createUiFont(int pointSize) {
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    LOGFONTW lf = nm.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
 }
 
 HFONT createMenuFont(int pointSize) {
@@ -156,8 +150,8 @@ void broadcastSettingsChangedToMdiChildren() {
 }
 
 void rebuildUiFont(int fontSize) {
-    g_ctx.fontSize = clampFontSize(fontSize);
-    HFONT newFont = createUiFont(g_ctx.fontSize);
+    g_ctx.fontSize = search::clamp_font_size(fontSize);
+    HFONT newFont = search::create_ui_font(g_ctx.fontSize);
     HFONT newMenuFont = createMenuFont(g_ctx.fontSize);
     if (!newFont || !newMenuFont) {
         if (newFont) DeleteObject(newFont);
@@ -220,15 +214,44 @@ HWND createMdiChild(const wchar_t* title) {
     return child;
 }
 
+HWND getActiveMdiChild() {
+    if (!g_ctx.mdiClient) return nullptr;
+    return reinterpret_cast<HWND>(SendMessageW(g_ctx.mdiClient, WM_MDIGETACTIVE, 0, 0));
+}
+
+int toolbarCommandForMdiChild(HWND child) {
+    if (!child) return 0;
+    wchar_t title[256]{};
+    if (!GetWindowTextW(child, title, 256)) return 0;
+    if (lstrcmpW(title, L"标本签收中心") == 0) return IDM_TOOL3;
+    if (lstrcmpW(title, L"常规报告") == 0) return IDM_TOOL2;
+    if (lstrcmpW(title, L"输血结果查询") == 0) return IDM_BLOOD;
+    if (lstrcmpW(title, L"检验结果查询") == 0) return IDM_QUERY;
+    return 0;
+}
+
+void updateToolbarState() {
+    HWND tb = GetDlgItem(g_ctx.mainWindow, ID_TOOLBAR);
+    if (!tb) return;
+    HWND active = getActiveMdiChild();
+    mtSetActiveButton(tb, toolbarCommandForMdiChild(active));
+    mtEnableButton(tb, ID_BTNCLOSE, active != nullptr);
+}
+
 void closeActiveMdiChild() {
-    HWND active = reinterpret_cast<HWND>(SendMessageW(g_ctx.mdiClient, WM_MDIGETACTIVE, 0, 0));
+    HWND active = getActiveMdiChild();
     if (active) SendMessageW(g_ctx.mdiClient, WM_MDIDESTROY, reinterpret_cast<WPARAM>(active), 0);
+    updateToolbarState();
 }
 
 // ── placeholder factories (to be replaced with real modules) ────
 
 HWND create_tool4_placeholder(const ModuleContext&) { return createMdiChild(L"工具4"); }
 HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"工具5"); }
+HWND create_stat2_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析2"); }
+HWND create_stat3_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析3"); }
+HWND create_stat4_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析4"); }
+HWND create_stat5_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析5"); }
 
 // ── module registry ─────────────────────────────────────────────
 
@@ -240,6 +263,11 @@ const ModuleDef g_modules[] = {
     { L"SpecimenSign", L"工具",  L"标本签收中心(&3)",   IDM_TOOL3,   create_specimen_sign_module },
     { L"Tool4",    L"工具",     L"工具4(&4)",           IDM_TOOL4,   create_tool4_placeholder },
     { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
+    { L"HivStatistics", L"统计分析管理", L"HIV 抗体检测统计(&1)", IDM_STAT1, create_hiv_statistics_module },
+    { L"Stat2",    L"统计分析管理", L"统计分析2(&2)",    IDM_STAT2,   create_stat2_placeholder },
+    { L"Stat3",    L"统计分析管理", L"统计分析3(&3)",    IDM_STAT3,   create_stat3_placeholder },
+    { L"Stat4",    L"统计分析管理", L"统计分析4(&4)",    IDM_STAT4,   create_stat4_placeholder },
+    { L"Stat5",    L"统计分析管理", L"统计分析5(&5)",    IDM_STAT5,   create_stat5_placeholder },
     { L"Settings", L"系统",     L"系统设置(&S)...",     IDM_SETTINGS, create_settings_module  },
 };
 constexpr int g_moduleCount = sizeof(g_modules) / sizeof(g_modules[0]);
@@ -622,9 +650,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HWND tb = mtCreate(hwnd, g_ctx.instance, g_ctx.menuFont, ID_TOOLBAR);
             mtAddButton(tb, L"标本签收中心", IDM_TOOL3);
             mtAddButton(tb, L"常规报告", IDM_TOOL2);
+            mtAddButton(tb, L"输血查询", IDM_BLOOD);
+            mtAddButton(tb, L"结果查询", IDM_QUERY);
             mtAddStretch(tb);
-            HICON closeIcon = (HICON)LoadImageW(g_ctx.instance, MAKEINTRESOURCEW(IDI_CLOSE), IMAGE_ICON, 16, 16, 0);
-            mtAddButton(tb, L"关闭", ID_BTNCLOSE, closeIcon);
+            mtAddCloseButton(tb, L"关闭当前", ID_BTNCLOSE, false);
 
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
@@ -635,6 +664,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_MDIACTIVATE:
+            updateToolbarState();
+            break;
         case WM_TIMER: {
             if (wp == ID_TIMER) {
                 updateTimePane(hwnd);
@@ -688,6 +720,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (int i = 0; i < g_moduleCount; i++) {
                 if (g_modules[i].menuId == id) {
                     g_modules[i].create(makeCtx());
+                    updateToolbarState();
                     return 0;
                 }
             }
@@ -734,11 +767,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    install_crash_handler();
+    applog::init(L"log");
+    LOG_INFO("LIS 工作台 starting");
+
     g_ctx.instance = instance;
     auto iniSettings = search::load_settings(search::default_ini_path());
     g_ctx.dbSettings = iniSettings.db;
-    g_ctx.fontSize = clampFontSize(iniSettings.ui.font_size);
-    g_ctx.uiFont = createUiFont(g_ctx.fontSize);
+    g_ctx.fontSize = search::clamp_font_size(iniSettings.ui.font_size);
+    g_ctx.uiFont = search::create_ui_font(g_ctx.fontSize);
     g_ctx.menuFont = createMenuFont(g_ctx.fontSize);
 
     INITCOMMONCONTROLSEX icc{};

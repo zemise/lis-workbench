@@ -63,6 +63,9 @@ struct ReportRow {
     std::string patient_phone;
     std::string report_type;           // LS_AS_REPORT.assaypat_type: 0=emergency, 9=critical.
     std::string barcode_jz_flag;       // LS_AS_BARCODE.JZ_FLAG, used only for the right-list label.
+    std::string mach_code;
+    std::string mach_name;
+    std::string room_code;
 };
 
 struct RoomOption {
@@ -76,8 +79,14 @@ struct PatientTypeOption {
 };
 
 struct MachineOption {
+    std::string room_code;
     std::string mach_code;
     std::string mach_name;
+    std::string py_code;
+    std::string group_code;
+    std::string group_name;
+    std::string sample_code;
+    std::string sample_name;
 };
 
 struct ResultRow {
@@ -258,11 +267,57 @@ struct SpecimenSignedListQuery {
     std::string patient_name;
 };
 
+struct HivStatSummary {
+    int screening_count = 0;
+    int positive_count = 0;
+    int preoperative_screening_count = 0;
+    int preoperative_positive_count = 0;
+    int transfusion_screening_count = 0;
+    int transfusion_positive_count = 0;
+    int sti_clinic_screening_count = 0;
+    int sti_clinic_positive_count = 0;
+    int prenatal_screening_count = 0;
+    int prenatal_positive_count = 0;
+    int other_visit_screening_count = 0;
+    int other_visit_positive_count = 0;
+};
+
+struct HivStatDetailRow {
+    std::string mach_code;
+    std::string machine_name;
+    std::string methodology;
+    std::string lab_department;
+    std::string item_code;
+    std::string item_name;
+    std::string rep_no;
+    std::string txm_no;
+    std::string oper_no;
+    std::string patient_no;
+    std::string name;
+    std::string completed_blood_apply_forms;
+    std::string patient_type;
+    std::string dept_name;
+    std::string result;
+    std::string lower_bound;
+    std::string upper_bound;
+    std::string positive;
+    std::string report_time;
+};
+
+struct HivStatQuery {
+    std::string connection_string;
+    int year = 0;
+    int month = 0;
+    std::string lab_department;
+};
+
 using LogFn = std::function<void(const std::string&)>;
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
+bool query_report_machine_picker_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
 bool query_patient_types(const std::string& connection_string, std::vector<PatientTypeOption>& rows, std::string& error, LogFn log = {});
 bool query_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
+bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
@@ -271,5 +326,6 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});
+bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search

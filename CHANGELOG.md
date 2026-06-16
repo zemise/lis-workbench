@@ -1,7 +1,51 @@
 # Changelog
 
-## v2026.06.02
+## v2026.06.16
 
+- **数据库连接优化**：ODBC 自动兼容 `ODBC Driver 18 / 17 / SQL Server` 时会在本次运行内缓存已成功的 driver candidate，后续相同连接配置优先使用缓存命中，失败再回退完整候选列表，减少每次查询重复尝试不可用驱动的开销；主查询和趋势图查询路径同步生效。
+- **数据库连接日志降噪**：ODBC driver 自动探测最终成功时只记录命中的 driver，兼容探测过程中的失败项不再写入日志；仅当所有候选都连接失败时才展开每个 driver 的诊断信息。
+- **ODBC 连接池**：数据库连接层在首次分配 ODBC 环境句柄前启用进程级 ODBC 连接池，并使用严格连接匹配，让现有短连接查询模式可复用 Driver Manager 底层连接，减少频繁打开/关闭连接的成本。
+- **数据库登录超时**：ODBC 连接阶段设置 5 秒登录超时，避免数据库地址不可达、网络阻断或不可用驱动长时间阻塞；仅限制建连阶段，不影响 SQL 查询执行时长。
+- **常规报告默认快捷仪器**：常规报告页面直接打开时，如果系统设置中已配置底部快捷检验仪器 `1`，页面初始化完成后会自动应用快捷仪器 `1` 并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转到目标报告时会取消该默认加载，避免覆盖目标报告定位。
+- **常规报告仪器选择检索**：常规报告左侧 `检验仪器` 弹窗顶部新增 `检索内容` 原生输入框，仪器列表增加 `项目代码`、`项目名称`、`样本` 和 `拼音码` 列；弹窗一次加载 `LS_AS_ROOM.Dept_Code IN (102,401)` 房间下的 `LS_AS_MACHINE` 启用仪器，并从 `LS_AS_GROUP.REP_STYLE='M'` 的首条主项目补充 `GROUP_CODE`、`LS_CODE_ITEM.ITEM_NAME` 和 `LS_AS_SAMPLE.SAMP_NAME`，按 `ROOM_CODE, MACH_CODE` 排序并缓存在当前常规报告页面内，后续打开直接复用缓存，数据库连接配置变化时自动失效重载；系统设置页快捷仪器选择器复用同一受限数据源并同步展示项目和样本信息；科室下拉新增 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果自动选中第一行，选中匹配仪器后自动同步上方科室下拉框；弹窗打开和鼠标点选仪器后焦点保持在检索框，检索框内按上下键可移动仪器选中行，按回车可直接确认选中仪器并关闭弹窗，按 `ESC` 可退出弹窗，确认后仍以 `MACH_CODE + ROOM_CODE` 作为常规报告查询条件。
+- **结果查询报告列表排序**：`结果查询` 第一张报告列表支持点击任意列名进行本地升降序排序，只重排当前已加载内存数据，不重新查询报告列表数据库；数值列优先按数值比较，排序后保留当前选中报告并刷新右侧项目明细。
+- **检验结果查询联动常规报告**：`检验结果查询` 第一张报告列表支持双击报告行跳转到 `常规报告` 页面；跳转会带上 `REP_NO`、检验日期、检验仪器和科室代码，常规报告页按日期和仪器查询后再按 `REP_NO` 精确选中目标报告，并自动回填左侧信息和中间项目明细。
+- **常规报告趋势图入口**：常规报告右侧报告列表右键菜单新增 `趋势图`，底部 `项目分析` 按钮同步改为 `趋势图`；两处都复用检验结果查询页趋势图窗口，查询条件自动取当前报告的病人号/姓名、当前检验仪器和科室，趋势图窗口顶部提供开始/结束日期选择器和刷新按钮，默认结束日期为当前报告检验日期、开始日期为前 14 天；趋势图窗口按父窗口所在显示器工作区居中打开，避免系统默认级联位置漂移。
+- **输血 LIS 检验信息列表补充样本号**：`输血结果查询 -> 查询检验结果` 弹窗右侧报告列表在 `检验时间` 前新增 `样本号` 列，字段沿用检验结果查询页的 `LS_AS_REPORT.OPER_NO`；排序逻辑同步支持新列。
+- **自定义工具栏入口补充**：主程序自定义工具栏在 `输血查询` 后新增 `结果查询` 快捷入口，复用 `检验结果查询` 页面命令，并同步活动 MDI 页面高亮。
+- 版本号 v2026.06.16。
+
+## v2026.06.13
+
+- **系统设置页原生 Win32 体验优化**：设置页调整为两列分组卡片布局，整理数据库、界面、LIS 摘要、常规报告、快捷检验仪器和自动更新区域；`自动检查更新` 保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
+- **系统设置交互优化**：字号选择改为原生下拉框，仅提供 `9 / 11 / 12 / 13` 四档并兼容旧配置就近归一；LIS 摘要标签简化为 `ABO 代码 / RhD 代码 / Hb 代码 / PLT 代码`；点击保存后页面保持打开，并在保存按钮附近显示状态提示；字号未变化时避免全窗口字体重建，减少保存闪烁。
+- **Win32 原生设计文档**：新增 `WIN32_NATIVE_UI_DESIGN.md`，记录坚持原生控件、复选框背景处理、白色宿主窗口、字体层级和后续页面设计检查清单。
+- **输血结果查询修复**：恢复输血结果查询页浅蓝背景；`查询检验结果` 弹窗按当前显示器工作区限制最大尺寸并居中，避免出现在屏幕边缘导致显示不全；LIS 检验结果弹窗默认时间范围从 7 天调整为 14 天。
+- **Windows 默认构建修复**：`lis.ps1 build/run` 在 `auto` 策略下优先使用本地 LabelPrint 源码，并显式禁用外部 `find_package(LabelPrint)`，避免旧 CMake 缓存或 `/MD` package 与主程序默认 `/MT` 静态运行库混用导致 LNK2038/LNK2001。
+- **自定义工具栏风格尝试**：保持原生菜单分组不变，优化 Win32 自定义工具栏绘制，改为浅灰蓝背景、底部分隔线、圆角 hover/pressed/active 状态、深灰文字和双缓冲绘制；工具栏在 `常规报告` 后新增 `输血查询` 快捷入口；活动 MDI 页面会高亮对应工具栏按钮，且没有活动页面时禁用 `关闭当前` 按钮；`关闭当前` 改为右侧文字型次要操作按钮，不再使用模糊图标；分离鼠标 hover 与键盘 focus，避免鼠标划过时第一个工具栏按钮残留蓝色焦点边框。
+- 版本号 v2026.06.13。
+
+## v2026.06.12
+
+- **代码重构：常规报告模块拆分**：将 `regular_report_module.cpp`（原 4232 行单体文件）拆分为 3 个实现文件 + 1 个共享头文件：`regular_report_state.h`（结构体/常量/前向声明）、`regular_report_utils.cpp`（工具函数）、`regular_report_picture.cpp`（图片/GDI+ 处理）、`regular_report_module.cpp`（2213 行，面板/布局/查询/入口）。
+- **CMake 构建优化**：提取 8 个重复编译的 `.cpp` 文件为 `search_ui_core` STATIC 库，消除 `result_search` 和 `main_app` 之间的双重编译；添加 `/MP` 多进程编译和 `search_ui_core` 预编译头；添加 Release 构建 `/GL` + `/LTCG` 全程序优化。
+- **代码去重**：将 `clampFontSize`（3 份副本）和 `createUiFont`（4 份副本）移入共享的 `search::clamp_font_size` / `search::create_ui_font`；创建 `quick_machine_keys.h`，消除 `QUICK_MACHINE_CODE_KEYS`/`NAME_KEYS`/`ROOM_KEYS` 双份副本；`search_ui_layout` 新增 `search::apply_font_to_children`，消除 4 份 `applyFont`/`applyFontToChildren` 重复实现。
+- **WNDCLASSEXW 样板消除**：在 `search_ui_layout.h` 中添加 `REGISTER_MDI_CHILD_CLASS` 宏，统一替换 9 个 MDI 子窗口类注册站点（~100 行缩减）。
+- **g_pending 全局状态消除**：用 `lpCreateParams` 替代 8 个 `g_pending`/`g_pendingLis` 全局裸指针，消除线程安全隐患。
+- **DbContext RAII**：为 `search_core.cpp` 的 `DbContext` 添加析构函数（自动 `SQLDisconnect` + `SQLFreeHandle`），删除 28 处冗余手动 `disconnect()` 调用。
+- **query_lis_summary 查询优化**：将 ABO/RhD 和 HGB/PLT 两次独立 SQL 往返合并为单次 `OUTER APPLY` 查询，减少一次网络往返。
+- **编译警告与清理**：启用 `/W3` 编译警告，添加 `/wd4996` 抑制已知安全的 `sscanf` 警告；修复 `hiv_statistics_module.cpp` 使用过时 `WNDCLASSW`/`RegisterClassW` 的问题；修复 2 处 GDI 画刷泄漏（`blood_module.cpp`）；移除 `search_text.cpp` 死 `#else` 分支；移除未使用的 `app::ModuleDef` 结构体；修复 `query_module.cpp` 设置按钮先创建后销毁的浪费。
+- **日志与崩溃诊断系统**：新增 `log.h/cpp` 线程安全文件日志（按天滚动 `log/YYYY-MM-DD.log` + `OutputDebugString` 同步输出）；新增 `crash_handler.cpp` 崩溃转储（`crash_YYYYMMDD_HHMMSS.dmp`）；激活 `search_core` 休眠的 `LogFn` 基础设施；为查询线程添加 `try/catch` 保护（`PostMessageW` 失败记录日志、`WM_CREATE` lpCreateParams null 守卫）。
+- **打包文件更新**：NSIS 安装脚本 `LISWorkbench.nsi` 和打包文档 `packaging/README_windows_installer.md` 与当前构建产物保持一致；`lis.ps1 build` 现在会在本地构建后直接生成 `out\windows\installer\LISWorkbench-Setup.exe`，且默认不下载远程 LabelPrint；`lis.ps1 package` 会优先复用现有 CMake 缓存生成器，没有缓存时再解析实际 Visual Studio 生成器，并选择匹配的 LabelPrint release 包，避免 VS2026 构建误用 VS2022/Win7 包。
+- **macOS 交叉编译 Makefile**：新增根目录 `Makefile`，支持 macOS 上通过 MinGW-w64 toolchain 交叉编译 Windows 版本；提供 Maven 风格目标（clean / compile / test / package / verify / install），生命周期链 compile → test → package → verify → install；package 目标生成 NSIS 安装包、自动更新 zip 和 `manifest.json`，产物与 Windows `lis.ps1 package` 保持一致。
+- **交叉编译兼容修复**：`/GL` + `/LTCG` 标志用 `if(MSVC)` 包裹，MinGW 交叉编译正常；`regular_report_utils.cpp` 和 `regular_report_picture.cpp` 补全 `<cstring>` include，消除 MinGW GCC `std::strlen`/`std::memcpy` 缺失错误。
+- 版本号 v2026.06.12。
+
+## v2026.06.06
+
+- **数据库关系补充**：补充 `JC_DEPT_PROPERTY` 和 `JC_dept_mz_zy` 临床申请科室字典说明；`LS_AS_BARCODE.DEPT_CODE / DEPT_NAME` 属于申请科室，后续需要从代码补全名称时，优先使用覆盖率更高的 `JC_DEPT_PROPERTY.DEPT_ID -> NAME`，`JC_dept_mz_zy.mzksid/mzksmc` 或 `zyksid/zyksmc` 作为门诊/住院辅助关系，不与 `SIGN_DEPT`、检验科室或仪器科室混用。
+- **输血表结构补充**：补充 `LS_XK_BloodRequestApply` 输血申请主表说明，确认 `ApplyFormNO` 为输血单申请号，`Apply_Time` 为输血申请时间，`Plan_Date` 为输血计划时间，`ApplyForm_Statue` 为审核状态且状态值为 `已审核 / 未审核 / 已完结`，`Patient_NO` 为病人号，`Patient_NOType` 为病人类型，`Patient_Name` 为病人姓名；补充 `LS_XK_BloodCrossMatch` 交叉配血记录表说明，确认 `ApplyFormNO` 对应输血申请号，`Patient_NO` 为病人号，`Patient_NOType` 为患者类型，`Patient_Name` 为病人姓名，`VerifyState` 为审核状态，`Match_Date` 为配血时间。
+- **统计分析管理**：新增 `统计分析管理` 顶级菜单，预留 5 个统计分析入口；`统计分析1` 替换为 `HIV 抗体检测统计` 页面，第一版按 `LS_AS_REPORT.REP_TIME` 月份只读统计三组已确认 HIV 初筛候选项目，只纳入已审核 `CHK_FLAG='T'`、已发送 `CONF='S'` 且姓名非空的报告；HIV 查询先按月份、审核、发送、仪器和可选 `DEPT_CODE IN (...)` 从 `LS_AS_REPORT` 筛出候选 `REP_NO`，再按候选 `REP_NO` 分批查询 `LS_AS_REPENTRY` 的目标 `ITEM_CODE`，避免月度范围直接联查大明细表；仪器、病人类型和科室名称字典移到 C++ 内存映射，减少多字典 JOIN；明细新增 `方法学` 列，按 `MACH_CODE` 派生为 `4005/914 -> 化学发光法`、`4008 -> 酶免法`，不额外查库；`新院 / 老院` 筛选先从 `JC_DEPT_PROPERTY` 分出 `DEPT_ID` 集合并下推为 `r.DEPT_CODE IN (...)`，避免主 SQL 使用 `LIKE '%滨水新城%'`；按 `REP_NO + MACH_CODE + ITEM_CODE` 去重生成合计行的初筛检测数和初筛阳性数；`性病门诊` 行暂按明细 `科室` 包含 `皮肤科门诊` 的文字口径生成，`其他就诊检测` 行暂按明细 `科室` 包含 `体检`、`儿童保健`、`健康管理`、`GCP` 或科室为空/`0` 的文字口径生成，`孕产期检查` 行暂按明细 `科室` 包含 `产科门诊` 或 `早孕关爱门诊` 的文字口径生成，后续再考虑将这三类改为 `DEPT_ID` 精确口径；`受血（制品）前检测` 行按明细 `已完结输血单申请号` 非空生成初筛检测数和初筛阳性数；`术前检测` 行按总数扣除受血、性病门诊、其他就诊和孕产期检查后的剩余量生成初筛检测数和初筛阳性数；阳性按结果文本判断，`待确认` 优先，其次为 `阳性` 或 `+`，不做结果值与上下限的数值比较；顶部新增 `全部 / 新院 / 老院` 检验科来源筛选；新增 `病人号` 列显示 `LS_AS_REPORT.REG_NO`，新增 `已完结输血单申请号` 列，先按统计月份预取 `LS_XK_BloodRequestApply.Apply_Time` 当月 `ApplyForm_Statue='已完结'` 申请记录，再按当前明细 `REG_NO` 匹配 `Patient_NO` 的 `ApplyFormNO`，报告时间按 `LS_AS_REPORT.REP_TIME` 显示，阳性行用红色背景提示；下方明细列表支持点击任意表头进行本地内存排序，不额外查询数据库；`导出统计表` 支持基于安装目录 `templates/HIVStatisticsTemplate.docx` 的 `{}` 占位符生成 Word `.docx` 统计表，模版不随项目发布，需通过页面 `上传模版` 指定并复制到安装目录；未检测到匹配模版时导出按钮不可用；只导出当前汇总结果，不导出下方明细列表，也不额外查询数据库；非合计行数字为 `0` 时导出为空，合计行保留 `0`；WB 检测数、复检和本年度累计暂未接入。
 - **标本签收中心界面**：工具菜单 `标本签收中心` 替换原 `工具3` 占位页，新增 `specimen_sign_module.cpp/h`，按 `temp/模版.png` 完成顶部扫码区、病人信息、医嘱明细、左侧筛选区和右侧已签收条码列表的界面骨架；病人类型下拉框复用 `LS_AS_PATTYPE` 数据源并只显示 `TYPE_NAME`；顶部操作按钮和医嘱明细列表右侧 `- / +` 按钮会随窗口右侧边界移动；左上扫码框增加 `标本签收工作台` 标签，签收日期和申请日期使用日期时间选择器并默认当天起止时间，页面跨过凌晨后自动切换到新一天；按钮完全复用检验结果查询页的公共 `search::create_button` 原生按钮创建逻辑，不额外 owner-draw；当前已接入第一版只读条码查询，按单个条码精确查询 `LS_AS_BARCODE / LS_AS_REPORT` 并可选补查 `V_lis_mzinfo_txm / YJ_MZSQ / YJ_ZYSQ` 回填页面；当左侧条码为空时，支持按签收日期 `IN_DATE` 和/或申请日期 `REQ_TIME` 查询已签收条码列表，不执行签收、拒签、打印或导出操作。
 - **标本签收中心查询细节**：下方已签收列表补充签收时间、送检时间、年龄、签收人、标本类型和检验室，检验室通过 `LS_AS_BARCODE.ROOM_CODE -> LS_AS_ROOM.ROOM_NAME` 转换，字典查不到时回退显示代码；`此条码已存在...` 提示拆分为顶部红色专用标签，普通查询状态移至左下按钮区；已签收提示中的仪器通过 `LS_AS_REPORT.MACH_CODE -> LS_AS_MACHINE.MACH_NAME` 显示，并在任一条码明细 `OPER_STATE=0` 时追加 `未上机检验!`。
 - **标本签收中心补打条码**：新增 `barcode_label_printing.cpp/h` 共享条码打印 helper，常规报告和标本签收中心共用 LabelPrint `printMedicalLabel` 入口；标本签收中心 `补打条码` 以右侧已签收列表当前选中行为输入，样本号固定为 `补`，组合项目固定取当前行 `检验室` 内容。
@@ -14,7 +58,7 @@
 - **常规报告报告统计**：右侧顶部第二行显示 `危急报告数`、`危急报告已审`、`急诊报告数` 和 `急诊报告已审`；危急报告按 `assaypat_type=9` 统计，急诊报告按 `assaypat_type=0` 或 `JZ_FLAG=1` 合并统计，已审均要求已审核且已发送。
 - **LabelPrint 来源选择**：`lis.ps1` 新增 `-LabelPrintSource github|local|package`，正式打包可默认从 GitHub Release 下载 LabelPrint，本地联调可显式使用本地源码，已有解压包可继续通过 `-LabelPrintPackagePath` 使用。
 - **LabelPrint 跟进**：GitHub Actions 和打包文档改为引用 LabelPrint `v1.2.9` release 包。
-- 版本号 v2026.06.02。
+- 版本号 v2026.06.06。
 
 ## v2026.05.25.2
 

@@ -21,12 +21,6 @@ struct Context {
     int fontSize = 9;
 };
 
-// Module registration — add new modules here
-struct ModuleDef {
-    const wchar_t* menuLabel;
-    void (*onClick)(HWND owner, const Context& ctx);
-};
-
 }  // namespace app
 
 #endif

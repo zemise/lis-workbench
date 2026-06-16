@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -40,6 +42,39 @@ std::string upper_ascii(std::string text) {
         return static_cast<char>(std::toupper(ch));
     });
     return text;
+}
+
+bool contains_text(const std::string& text, const char* needle) {
+    return text.find(needle) != std::string::npos;
+}
+
+void add_count(int& screening_count, int& positive_count, bool is_positive) {
+    ++screening_count;
+    if (is_positive) {
+        ++positive_count;
+    }
+}
+
+int non_negative_difference(int total, int used) {
+    return total > used ? total - used : 0;
+}
+
+bool is_hiv_sti_clinic_dept(const std::string& dept_name) {
+    return contains_text(dept_name, "皮肤科门诊");
+}
+
+bool is_hiv_other_visit_dept(const std::string& dept_name) {
+    const std::string normalized = trim(dept_name);
+    return normalized.empty() || normalized == "0" ||
+           contains_text(normalized, "体检") ||
+           contains_text(normalized, "儿童保健") ||
+           contains_text(normalized, "健康管理") ||
+           contains_text(normalized, "GCP");
+}
+
+bool is_hiv_prenatal_dept(const std::string& dept_name) {
+    return contains_text(dept_name, "产科门诊") ||
+           contains_text(dept_name, "早孕关爱门诊");
 }
 
 std::string sql_item_code_list(const std::string& text, const char* fallback) {
@@ -136,9 +171,74 @@ std::vector<std::string> odbc_candidates(const std::string& input) {
 }
 
 #ifdef _WIN32
+constexpr SQLULEN kLoginTimeoutSeconds = 5;
+
+std::mutex& preferred_odbc_candidate_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::map<std::string, std::string>& preferred_odbc_candidates() {
+    static std::map<std::string, std::string> cache;
+    return cache;
+}
+
+std::string cached_odbc_candidate(const std::string& connection_string) {
+    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
+    const auto it = preferred_odbc_candidates().find(connection_string);
+    return it == preferred_odbc_candidates().end() ? std::string{} : it->second;
+}
+
+void remember_odbc_candidate(const std::string& connection_string, const std::string& candidate) {
+    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
+    preferred_odbc_candidates()[connection_string] = candidate;
+}
+
+std::vector<std::string> prioritized_odbc_candidates(const std::string& connection_string,
+                                                     std::string& cached_candidate) {
+    auto candidates = odbc_candidates(connection_string);
+    cached_candidate = cached_odbc_candidate(connection_string);
+    if (cached_candidate.empty()) {
+        return candidates;
+    }
+    candidates.erase(std::remove(candidates.begin(), candidates.end(), cached_candidate), candidates.end());
+    candidates.insert(candidates.begin(), cached_candidate);
+    return candidates;
+}
+
+void enable_odbc_connection_pooling_once(LogFn log) {
+    static std::once_flag flag;
+    std::call_once(flag, [log]() {
+        const SQLRETURN rc = SQLSetEnvAttr(
+            SQL_NULL_HANDLE,
+            SQL_ATTR_CONNECTION_POOLING,
+            reinterpret_cast<SQLPOINTER>(SQL_CP_ONE_PER_HENV),
+            0);
+        if (log) {
+            log(std::string("db odbc pooling ") +
+                (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO ? "enabled" : "not enabled") + "\n");
+        }
+    });
+}
+
 struct DbContext {
     SQLHENV env = SQL_NULL_HENV;
     SQLHDBC dbc = SQL_NULL_HDBC;
+
+    ~DbContext() {
+        if (dbc != SQL_NULL_HDBC) {
+            SQLDisconnect(dbc);
+            SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+        }
+        if (env != SQL_NULL_HENV) {
+            SQLFreeHandle(SQL_HANDLE_ENV, env);
+        }
+    }
+
+    // Non-copyable
+    DbContext() = default;
+    DbContext(const DbContext&) = delete;
+    DbContext& operator=(const DbContext&) = delete;
 };
 
 std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle);
@@ -230,22 +330,32 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         error = "missing connection string";
         return false;
     }
+    enable_odbc_connection_pooling_once(log);
     if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &db.env) != SQL_SUCCESS) {
         error = "SQLAllocHandle ENV failed";
         return false;
     }
     SQLSetEnvAttr(db.env, SQL_ATTR_ODBC_VERSION, reinterpret_cast<void*>(SQL_OV_ODBC3), 0);
+    SQLSetEnvAttr(db.env, SQL_ATTR_CP_MATCH, reinterpret_cast<void*>(SQL_CP_STRICT_MATCH), 0);
     if (SQLAllocHandle(SQL_HANDLE_DBC, db.env, &db.dbc) != SQL_SUCCESS) {
         error = "SQLAllocHandle DBC failed";
         disconnect(db);
         return false;
     }
+    SQLSetConnectAttr(db.dbc,
+                      SQL_ATTR_LOGIN_TIMEOUT,
+                      reinterpret_cast<SQLPOINTER>(kLoginTimeoutSeconds),
+                      0);
+    if (log) {
+        log("db login timeout seconds=" + std::to_string(kLoginTimeoutSeconds) + "\n");
+    }
 
-    for (const auto& candidate : odbc_candidates(connection_string)) {
+    std::string cached_candidate;
+    const auto candidates = prioritized_odbc_candidates(connection_string, cached_candidate);
+    std::vector<std::string> failed_attempt_logs;
+
+    for (const auto& candidate : candidates) {
         const auto driver_name = candidate_driver_name(candidate);
-        if (log) {
-            log("db try driver=" + driver_name + "\n");
-        }
         const auto wide = utf8_to_wide(candidate);
         SQLWCHAR out_conn[2048] = {};
         SQLSMALLINT out_len = 0;
@@ -254,17 +364,28 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
             reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(wide.c_str())), SQL_NTS,
             out_conn, 2048, &out_len, SQL_DRIVER_NOPROMPT);
         if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+            remember_odbc_candidate(connection_string, candidate);
             if (log) {
-                log("db connect ok driver=" + driver_name + "\n");
+                log(std::string("db connect ok driver=") + driver_name +
+                    (candidate == cached_candidate ? " cached" : "") + "\n");
             }
             return true;
         }
         if (log) {
-            log("db connect failed driver=" + driver_name + " diag=" + collect_diag(SQL_HANDLE_DBC, db.dbc) + "\n");
+            failed_attempt_logs.push_back(
+                "db connect failed driver=" + driver_name +
+                (candidate == cached_candidate ? " cached" : "") +
+                " diag=" + collect_diag(SQL_HANDLE_DBC, db.dbc) + "\n");
         }
     }
 
     error = "SQLDriverConnect failed: " + collect_diag(SQL_HANDLE_DBC, db.dbc);
+    if (log) {
+        for (const auto& entry : failed_attempt_logs) {
+            log(entry);
+        }
+        log(error + "\n");
+    }
     disconnect(db);
     return false;
 }
@@ -432,7 +553,6 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql, stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -444,7 +564,45 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_report_machine_picker_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)log;
+    error = "query_report_machine_picker_rooms is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    const std::string sql =
+        "SELECT CAST(ROOM_CODE AS varchar(20)), isnull(RTRIM(ROOM_NAME),'')"
+        " FROM LS_AS_ROOM WHERE DELETE_BIT=0 AND Dept_Code IN (102,401)"
+        " ORDER BY ROOM_CODE";
+    if (log) {
+        log("exec sql: " + sql + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        RoomOption row;
+        row.room_code = fetch_column(stmt, 1);
+        row.room_name = fetch_column(stmt, 2);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
@@ -472,7 +630,6 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql, stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -484,7 +641,6 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -505,7 +661,8 @@ bool query_machines(const std::string& connection_string, const std::string& roo
     }
 
     std::ostringstream sql;
-    sql << "SELECT CAST(MACH_CODE AS varchar(20)), isnull(RTRIM(MACH_NAME),'')"
+    sql << "SELECT CAST(ROOM_CODE AS varchar(20)), CAST(MACH_CODE AS varchar(20)),"
+        << " isnull(RTRIM(MACH_NAME),''), isnull(RTRIM(PY_CODE),'')"
         << " FROM LS_AS_MACHINE WHERE DELETE_BIT=0 AND isnull(RTRIM(RUL),'')='启用'";
     add_eq(sql, "ROOM_CODE", room_code);
     sql << " ORDER BY MACH_CODE";
@@ -515,19 +672,83 @@ bool query_machines(const std::string& connection_string, const std::string& roo
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         MachineOption row;
-        row.mach_code = fetch_column(stmt, 1);
-        row.mach_name = fetch_column(stmt, 2);
+        row.room_code = fetch_column(stmt, 1);
+        row.mach_code = fetch_column(stmt, 2);
+        row.mach_name = fetch_column(stmt, 3);
+        row.py_code = fetch_column(stmt, 4);
         rows.push_back(row);
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)room_code;
+    (void)log;
+    error = "query_report_machine_picker_machines is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT CAST(m.ROOM_CODE AS varchar(20)), CAST(m.MACH_CODE AS varchar(20)),"
+        << " isnull(RTRIM(m.MACH_NAME),''), isnull(RTRIM(m.PY_CODE),''),"
+        << " isnull(CAST(main_group.GROUP_CODE AS varchar(20)),''),"
+        << " isnull(RTRIM(item.ITEM_NAME),''),"
+        << " isnull(RTRIM(main_group.SAMP_CODE),''),"
+        << " isnull(RTRIM(samp.SAMP_NAME),'')"
+        << " FROM LS_AS_MACHINE m"
+        << " OUTER APPLY (SELECT TOP 1 g.GROUP_CODE, g.SAMP_CODE"
+        << " FROM LS_AS_GROUP g"
+        << " WHERE g.DELETE_BIT=0 AND isnull(RTRIM(g.REP_STYLE),'')='M'"
+        << " AND g.MACH_CODE=m.MACH_CODE"
+        << " ORDER BY isnull(g.orderby,2147483647), g.GROUP_CODE) main_group"
+        << " LEFT JOIN LS_CODE_ITEM item ON RTRIM(item.ITEM_CODE)=CAST(main_group.GROUP_CODE AS varchar(10))"
+        << " LEFT JOIN LS_AS_SAMPLE samp ON CAST(samp.SAMP_CODE AS varchar(4))=RTRIM(main_group.SAMP_CODE)"
+        << " AND samp.DELETE_BIT=0"
+        << " WHERE m.DELETE_BIT=0 AND isnull(RTRIM(m.RUL),'')='启用'"
+        << " AND EXISTS (SELECT 1 FROM LS_AS_ROOM r"
+        << " WHERE r.DELETE_BIT=0 AND r.ROOM_CODE=m.ROOM_CODE"
+        << " AND r.Dept_Code IN (102,401))";
+    add_eq(sql, "m.ROOM_CODE", room_code);
+    sql << " ORDER BY m.ROOM_CODE, m.MACH_CODE";
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        MachineOption row;
+        row.room_code = fetch_column(stmt, 1);
+        row.mach_code = fetch_column(stmt, 2);
+        row.mach_name = fetch_column(stmt, 3);
+        row.py_code = fetch_column(stmt, 4);
+        row.group_code = fetch_column(stmt, 5);
+        row.group_name = fetch_column(stmt, 6);
+        row.sample_code = fetch_column(stmt, 7);
+        row.sample_name = fetch_column(stmt, 8);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
@@ -567,11 +788,15 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(LTRIM(RTRIM(emp_req.NAME)),''),"
         << " isnull(r.DIAG_NAME,''),isnull(r.CREATE_TIME,''),isnull(r.PAT_PHONE,''),"
         << " isnull(cast(r.assaypat_type as varchar(20)),''),"
-        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'')"
+        << " isnull(cast(bar.JZ_FLAG as varchar(20)),'') ,"
+        << " isnull(cast(r.MACH_CODE as varchar(20)),''),"
+        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(cast(r.MACH_CODE as varchar(20)),'')),"
+        << " isnull(cast(r.ROOM_CODE as varchar(20)),'')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
         << " LEFT JOIN LS_AS_SAMPLE samp ON samp.SAMP_CODE=r.SAMP_CODE AND samp.DELETE_BIT=0"
+        << " LEFT JOIN LS_AS_MACHINE mach ON r.MACH_CODE=mach.MACH_CODE AND mach.DELETE_BIT=0"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper ON emp_oper.EMPLOYEE_ID = r.OPER_CODE"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_rep ON emp_rep.EMPLOYEE_ID = r.REP_OPER"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_dean ON emp_dean.EMPLOYEE_ID = r.DEAN_OPER"
@@ -620,7 +845,6 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -660,11 +884,13 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.patient_phone = fetch_column(stmt, 32);
         row.report_type = fetch_column(stmt, 33);
         row.barcode_jz_flag = fetch_column(stmt, 34);
+        row.mach_code = fetch_column(stmt, 35);
+        row.mach_name = fetch_column(stmt, 36);
+        row.room_code = fetch_column(stmt, 37);
         rows.push_back(row);
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -728,7 +954,6 @@ bool query_results(const std::string& connection_string, const std::string& rep_
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
@@ -750,7 +975,6 @@ bool query_results(const std::string& connection_string, const std::string& rep_
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -792,20 +1016,17 @@ bool query_report_picture(const std::string& connection_string, const std::strin
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
-        disconnect(db);
         return false;
     }
 
     if (SQLFetch(stmt) == SQL_SUCCESS) {
         if (!fetch_binary_column(stmt, 1, picture, error)) {
             SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-            disconnect(db);
             return false;
         }
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -848,63 +1069,60 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
     const std::string blood_codes = abo_codes + "," + rhd_codes;
     const std::string cbc_codes = hgb_codes + "," + plt_codes;
 
-    std::ostringstream blood_sql;
-    blood_sql
+    // Single round-trip via OUTER APPLY: blood and CBC are independent subqueries
+    // from the same base tables, executed together to avoid two network round-trips.
+    std::ostringstream sql;
+    sql
+        << "SELECT b.abo,b.rhd,b.blood_type_date,c.hgb,c.plt,c.cbc_date"
+        << " FROM (VALUES(1)) AS _(d)"
+        << " OUTER APPLY ("
         << "SELECT TOP 1"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'')"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS abo,"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS rhd,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS blood_type_date"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND e.ITEM_CODE IN (" << blood_codes << ")";
-    add_lis_patient_filters(blood_sql, filters, "r");
-    blood_sql
+    add_lis_patient_filters(sql, filters, "r");
+    sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"
         << " HAVING MAX(CASE WHEN e.ITEM_CODE IN (" << abo_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
         << " AND MAX(CASE WHEN e.ITEM_CODE IN (" << rhd_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
-        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
-
-    std::vector<std::string> blood_cols(3);
-    if (!exec_one(blood_sql, blood_cols)) {
-        disconnect(db);
-        return false;
-    }
-    summary.abo = blood_cols[0];
-    summary.rhd = blood_cols[1];
-    summary.blood_type_date = blood_cols[2];
-
-    std::ostringstream cbc_sql;
-    cbc_sql
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC"
+        << ") b"
+        << " OUTER APPLY ("
         << "SELECT TOP 1"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),''),"
-        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'')"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS hgb,"
+        << " isnull(MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ") THEN nullif(LTRIM(RTRIM(e.RESULT)),'') END),'') AS plt,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS cbc_date"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND e.ITEM_CODE IN (" << cbc_codes << ")";
-    add_lis_patient_filters(cbc_sql, filters, "r");
-    cbc_sql
+    add_lis_patient_filters(sql, filters, "r");
+    sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"
         << " HAVING MAX(CASE WHEN e.ITEM_CODE IN (" << hgb_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
         << " AND MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
-        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC"
+        << ") c";
 
-    std::vector<std::string> cbc_cols(3);
-    if (!exec_one(cbc_sql, cbc_cols)) {
-        disconnect(db);
+    std::vector<std::string> cols(6);
+    if (!exec_one(sql, cols)) {
         return false;
     }
-    summary.hgb = cbc_cols[0];
-    summary.plt = cbc_cols[1];
-    summary.cbc_date = cbc_cols[2];
+    summary.abo = cols[0];
+    summary.rhd = cols[1];
+    summary.blood_type_date = cols[2];
+    summary.hgb = cols[3];
+    summary.plt = cols[4];
+    summary.cbc_date = cols[5];
 
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -970,7 +1188,7 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         BloodRequestRow row;
@@ -997,7 +1215,6 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1085,7 +1302,7 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         BarcodeQueryRow row;
@@ -1118,7 +1335,6 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1189,7 +1405,7 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
     if (log) log("exec sql: " + sql.str() + "\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         SpecimenSignedListRow row;
@@ -1213,7 +1429,6 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    disconnect(db);
     error.clear();
     return true;
 #endif
@@ -1272,7 +1487,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         if (log) log("exec sql: " + sql.str() + "\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
-        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
         while (SQLFetch(stmt) == SQL_SUCCESS) {
             const auto col_barcode = fetch_column(stmt, 1);
             const auto col_reg_no = fetch_column(stmt, 2);
@@ -1362,7 +1577,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         if (log) log("exec sql: " + sql.str() + "\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
-        if (!exec_query(db.dbc, sql.str(), stmt, error)) { disconnect(db); return false; }
+        if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
         while (SQLFetch(stmt) == SQL_SUCCESS) {
             const auto col_type_code = fetch_column(stmt, 1);
             const auto col_type_name = fetch_column(stmt, 2);
@@ -1556,7 +1771,400 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
         }
     }
 
-    disconnect(db);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log) {
+    summary = HivStatSummary{};
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_hiv_statistics is only available on Windows";
+    return false;
+#else
+    if (query.year < 1900 || query.year > 9999 || query.month < 1 || query.month > 12) {
+        error = "invalid year or month";
+        return false;
+    }
+
+    char start_date[16]{};
+    char end_date[16]{};
+    const int next_year = query.month == 12 ? query.year + 1 : query.year;
+    const int next_month = query.month == 12 ? 1 : query.month + 1;
+    sprintf_s(start_date, "%04d-%02d-01", query.year, query.month);
+    sprintf_s(end_date, "%04d-%02d-01", next_year, next_month);
+    const std::string lab_department = trim(query.lab_department);
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) {
+        return false;
+    }
+
+    auto load_lookup = [&](const std::string& lookup_sql, std::map<std::string, std::string>& out) {
+        if (log) log("exec sql: " + lookup_sql + "\n");
+        SQLHSTMT lookup_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, lookup_sql, lookup_stmt, error)) {
+            return false;
+        }
+        while (SQLFetch(lookup_stmt) == SQL_SUCCESS) {
+            const std::string code = fetch_column(lookup_stmt, 1);
+            const std::string name = fetch_column(lookup_stmt, 2);
+            if (!code.empty()) {
+                out[code] = name;
+            }
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, lookup_stmt);
+        return true;
+    };
+
+    std::map<std::string, std::string> machine_names;
+    std::map<std::string, std::string> patient_type_names;
+    std::map<std::string, std::string> dept_names;
+
+    if (!load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),MACH_CODE))),''),"
+            " isnull(LTRIM(RTRIM(MACH_NAME)),'')"
+            " FROM LS_AS_MACHINE WITH (NOLOCK)"
+            " WHERE isnull(DELETE_BIT,0)=0",
+            machine_names) ||
+        !load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(TYPE)),''),"
+            " isnull(LTRIM(RTRIM(TYPE_NAME)),'')"
+            " FROM LS_AS_PATTYPE WITH (NOLOCK)"
+            " WHERE isnull(DELETE_BIT,0)=0",
+            patient_type_names) ||
+        !load_lookup(
+            "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),DEPT_ID))),''),"
+            " isnull(LTRIM(RTRIM(NAME)),'')"
+            " FROM JC_DEPT_PROPERTY WITH (NOLOCK)"
+            " WHERE isnull(DELETED,0)=0",
+            dept_names)) {
+        return false;
+    }
+
+    const auto lookup_name = [](const std::map<std::string, std::string>& values,
+                                const std::string& code,
+                                const std::string& fallback) {
+        const auto it = values.find(code);
+        if (it != values.end() && !trim(it->second).empty()) {
+            return it->second;
+        }
+        return fallback;
+    };
+
+    const auto lab_department_for_dept = [](const std::string& dept_name) {
+        return contains_text(dept_name, "滨水新城") ? std::string("新院") : std::string("老院");
+    };
+
+    std::vector<std::string> lab_department_dept_codes;
+    if (lab_department == "新院" || lab_department == "老院") {
+        for (const auto& [dept_code, dept_name] : dept_names) {
+            if (!std::all_of(dept_code.begin(), dept_code.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            if (lab_department_for_dept(dept_name) == lab_department) {
+                lab_department_dept_codes.push_back(dept_code);
+            }
+        }
+    }
+
+    const auto append_dept_code_filter = [&](std::ostringstream& target) {
+        if (lab_department != "新院" && lab_department != "老院") {
+            return;
+        }
+        if (lab_department_dept_codes.empty()) {
+            target << " AND 1=0";
+            return;
+        }
+        target << " AND r.DEPT_CODE IN (";
+        for (size_t i = 0; i < lab_department_dept_codes.size(); ++i) {
+            if (i > 0) {
+                target << ",";
+            }
+            target << lab_department_dept_codes[i];
+        }
+        target << ")";
+    };
+
+    struct HivReportCandidate {
+        std::string rep_no;
+        std::string mach_code;
+        std::string txm_no;
+        std::string oper_no;
+        std::string patient_no;
+        std::string name;
+        std::string patient_type_code;
+        std::string dept_code;
+        std::string report_time;
+    };
+
+    std::ostringstream report_sql;
+    auto append_report_branch = [&](int mach_code, bool first) {
+        if (!first) {
+            report_sql << " UNION ALL ";
+        }
+        report_sql << " SELECT"
+            << " CONVERT(varchar(30),r.REP_NO),"
+            << " CONVERT(varchar(20),r.MACH_CODE),"
+            << " isnull(LTRIM(RTRIM(r.TXM_NO)),'') AS TXM_NO,"
+            << " isnull(LTRIM(RTRIM(r.OPER_NO)),'') AS OPER_NO,"
+            << " isnull(LTRIM(RTRIM(r.REG_NO)),'') AS PATIENT_NO,"
+            << " isnull(LTRIM(RTRIM(r.NAME)),'') AS NAME,"
+            << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),'') AS PAT_TYPE_CODE,"
+            << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),'') AS DEPT_CODE,"
+            << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME_TEXT"
+            << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+            << " WHERE isnull(r.DELETE_BIT,0)=0"
+            << " AND r.REP_TIME>='" << start_date << "'"
+            << " AND r.REP_TIME<'" << end_date << "'"
+            << " AND r.CHK_FLAG='T'"
+            << " AND r.CONF='S'"
+            << " AND r.MACH_CODE=" << mach_code
+            << " AND NULLIF(LTRIM(RTRIM(r.NAME)),'') IS NOT NULL";
+        append_dept_code_filter(report_sql);
+    };
+
+    append_report_branch(4005, true);
+    append_report_branch(914, false);
+    append_report_branch(4008, false);
+    report_sql << " ORDER BY 2,1";
+
+    if (log) log("exec sql: " + report_sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, report_sql.str(), stmt, error)) {
+        return false;
+    }
+
+    std::map<std::string, HivReportCandidate> reports_by_rep_no;
+    std::vector<std::string> rep_nos;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        HivReportCandidate report;
+        report.rep_no = fetch_column(stmt, 1);
+        report.mach_code = fetch_column(stmt, 2);
+        report.txm_no = fetch_column(stmt, 3);
+        report.oper_no = fetch_column(stmt, 4);
+        report.patient_no = fetch_column(stmt, 5);
+        report.name = fetch_column(stmt, 6);
+        report.patient_type_code = fetch_column(stmt, 7);
+        report.dept_code = fetch_column(stmt, 8);
+        report.report_time = fetch_column(stmt, 9);
+        if (report.rep_no.empty() || reports_by_rep_no.find(report.rep_no) != reports_by_rep_no.end()) {
+            continue;
+        }
+        rep_nos.push_back(report.rep_no);
+        reports_by_rep_no[report.rep_no] = std::move(report);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+
+    const auto expected_hiv_item_code = [](const std::string& mach_code) -> const char* {
+        if (mach_code == "4005") return "91593";
+        if (mach_code == "914") return "93053";
+        if (mach_code == "4008") return "91442";
+        return "";
+    };
+    const auto hiv_methodology = [](const std::string& mach_code) -> const char* {
+        if (mach_code == "4005" || mach_code == "914") return "化学发光法";
+        if (mach_code == "4008") return "酶免法";
+        return "";
+    };
+    const auto max_text = [](const std::string& a, const std::string& b) {
+        if (a.empty()) return b;
+        if (b.empty()) return a;
+        return (std::max)(a, b);
+    };
+    const auto padded_number = [](std::string value) {
+        value = trim(value);
+        if (value.size() >= 20) {
+            return value;
+        }
+        return std::string(20 - value.size(), '0') + value;
+    };
+    const auto grouped_key = [&](const HivReportCandidate& report, const std::string& item_code) {
+        return padded_number(report.mach_code) + "\x1f" + padded_number(item_code) + "\x1f" + padded_number(report.rep_no);
+    };
+
+    std::map<std::string, HivStatDetailRow> grouped_rows;
+    constexpr size_t REP_NO_BATCH_SIZE = 500;
+    for (size_t offset = 0; offset < rep_nos.size(); offset += REP_NO_BATCH_SIZE) {
+        const size_t end = (std::min)(rep_nos.size(), offset + REP_NO_BATCH_SIZE);
+        std::ostringstream entry_sql;
+        entry_sql
+            << "SELECT"
+            << " CONVERT(varchar(30),e.REP_NO),"
+            << " CONVERT(varchar(20),e.ITEM_CODE),"
+            << " isnull(LTRIM(RTRIM(e.ITEM_NAME)),''),"
+            << " isnull(LTRIM(RTRIM(e.RESULT)),''),"
+            << " isnull(LTRIM(RTRIM(e.UPBOUND)),''),"
+            << " isnull(LTRIM(RTRIM(e.DOWNBOUND)),'')"
+            << " FROM LS_AS_REPENTRY e WITH (NOLOCK)"
+            << " WHERE isnull(e.DELETE_BIT,0)=0"
+            << " AND e.ITEM_CODE IN (91593,93053,91442)"
+            << " AND e.REP_NO IN (";
+        bool has_rep_no = false;
+        for (size_t i = offset; i < end; ++i) {
+            const std::string rep_no = trim(rep_nos[i]);
+            if (!std::all_of(rep_no.begin(), rep_no.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            if (has_rep_no) {
+                entry_sql << ",";
+            }
+            entry_sql << rep_no;
+            has_rep_no = true;
+        }
+        if (!has_rep_no) {
+            continue;
+        }
+        entry_sql << ") ORDER BY e.REP_NO,e.ITEM_CODE";
+
+        if (log) log("exec sql: " + entry_sql.str() + "\n");
+
+        SQLHSTMT entry_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, entry_sql.str(), entry_stmt, error)) {
+            return false;
+        }
+
+        while (SQLFetch(entry_stmt) == SQL_SUCCESS) {
+            const std::string rep_no = fetch_column(entry_stmt, 1);
+            const std::string item_code = fetch_column(entry_stmt, 2);
+            const auto report_it = reports_by_rep_no.find(rep_no);
+            if (report_it == reports_by_rep_no.end()) {
+                continue;
+            }
+            const HivReportCandidate& report = report_it->second;
+            if (item_code != expected_hiv_item_code(report.mach_code)) {
+                continue;
+            }
+
+            HivStatDetailRow& row = grouped_rows[grouped_key(report, item_code)];
+            if (row.rep_no.empty()) {
+                row.mach_code = report.mach_code;
+                row.machine_name = lookup_name(machine_names, report.mach_code, report.mach_code);
+                row.methodology = hiv_methodology(report.mach_code);
+                row.lab_department = lab_department_for_dept(lookup_name(dept_names, report.dept_code, report.dept_code));
+                row.item_code = item_code;
+                row.rep_no = report.rep_no;
+                row.txm_no = report.txm_no;
+                row.oper_no = report.oper_no;
+                row.patient_no = report.patient_no;
+                row.name = report.name;
+                row.patient_type = lookup_name(patient_type_names, report.patient_type_code, report.patient_type_code);
+                row.dept_name = lookup_name(dept_names, report.dept_code, report.dept_code);
+                row.report_time = report.report_time;
+                row.positive = "否";
+            }
+
+            const std::string item_name = fetch_column(entry_stmt, 3);
+            const std::string result = fetch_column(entry_stmt, 4);
+            const std::string lower_bound = fetch_column(entry_stmt, 5);
+            const std::string upper_bound = fetch_column(entry_stmt, 6);
+            row.item_name = max_text(row.item_name, item_name);
+            row.result = max_text(row.result, result);
+            row.lower_bound = max_text(row.lower_bound, lower_bound);
+            row.upper_bound = max_text(row.upper_bound, upper_bound);
+            if (contains_text(result, "待确认") || contains_text(result, "阳性") || contains_text(result, "+")) {
+                row.positive = "是";
+            }
+        }
+
+        SQLFreeHandle(SQL_HANDLE_STMT, entry_stmt);
+    }
+
+    for (auto& [_, row] : grouped_rows) {
+        ++summary.screening_count;
+        const bool is_positive = trim(row.positive) == "是";
+        if (is_positive) {
+            ++summary.positive_count;
+        }
+        if (is_hiv_sti_clinic_dept(row.dept_name)) {
+            add_count(summary.sti_clinic_screening_count, summary.sti_clinic_positive_count, is_positive);
+        }
+        if (is_hiv_other_visit_dept(row.dept_name)) {
+            add_count(summary.other_visit_screening_count, summary.other_visit_positive_count, is_positive);
+        }
+        if (is_hiv_prenatal_dept(row.dept_name)) {
+            add_count(summary.prenatal_screening_count, summary.prenatal_positive_count, is_positive);
+        }
+        rows.push_back(std::move(row));
+    }
+
+    if (!rows.empty()) {
+        std::ostringstream completed_apply_sql;
+        completed_apply_sql
+            << ";WITH completed_apply_distinct AS ("
+            << " SELECT DISTINCT"
+            << " LTRIM(RTRIM(a.Patient_NO)) AS PATIENT_NO,"
+            << " LTRIM(RTRIM(a.ApplyFormNO)) AS ApplyFormNO"
+            << " FROM LS_XK_BloodRequestApply a WITH (NOLOCK)"
+            << " WHERE isnull(a.Delete_Bit,0)=0"
+            << " AND a.Apply_Time>='" << start_date << "'"
+            << " AND a.Apply_Time<'" << end_date << "'"
+            << " AND LTRIM(RTRIM(a.ApplyForm_Statue))='已完结'"
+            << " AND NULLIF(LTRIM(RTRIM(a.Patient_NO)),'') IS NOT NULL"
+            << " AND NULLIF(LTRIM(RTRIM(a.ApplyFormNO)),'') IS NOT NULL"
+            << "), completed_apply_forms AS ("
+            << " SELECT bd.PATIENT_NO,"
+            << " STUFF(("
+            << " SELECT ';' + x.ApplyFormNO"
+            << " FROM completed_apply_distinct x"
+            << " WHERE x.PATIENT_NO=bd.PATIENT_NO"
+            << " ORDER BY x.ApplyFormNO"
+            << " FOR XML PATH(''),TYPE).value('.','varchar(max)'),1,1,'') AS COMPLETED_APPLY_FORMS"
+            << " FROM completed_apply_distinct bd"
+            << " GROUP BY bd.PATIENT_NO"
+            << ")"
+            << " SELECT PATIENT_NO,COMPLETED_APPLY_FORMS FROM completed_apply_forms";
+
+        if (log) log("exec sql: " + completed_apply_sql.str() + "\n");
+
+        SQLHSTMT completed_apply_stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, completed_apply_sql.str(), completed_apply_stmt, error)) {
+            return false;
+        }
+
+        std::map<std::string, std::string> completed_forms_by_patient;
+        while (SQLFetch(completed_apply_stmt) == SQL_SUCCESS) {
+            const std::string patient_no = fetch_column(completed_apply_stmt, 1);
+            completed_forms_by_patient[patient_no] = fetch_column(completed_apply_stmt, 2);
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, completed_apply_stmt);
+
+        for (auto& row : rows) {
+            const auto it = completed_forms_by_patient.find(row.patient_no);
+            if (it != completed_forms_by_patient.end()) {
+                row.completed_blood_apply_forms = it->second;
+            }
+        }
+    }
+
+    for (const auto& row : rows) {
+        if (!trim(row.completed_blood_apply_forms).empty()) {
+            add_count(summary.transfusion_screening_count,
+                      summary.transfusion_positive_count,
+                      trim(row.positive) == "是");
+        }
+    }
+
+    const int classified_screening_count =
+        summary.transfusion_screening_count +
+        summary.sti_clinic_screening_count +
+        summary.other_visit_screening_count +
+        summary.prenatal_screening_count;
+    const int classified_positive_count =
+        summary.transfusion_positive_count +
+        summary.sti_clinic_positive_count +
+        summary.other_visit_positive_count +
+        summary.prenatal_positive_count;
+    summary.preoperative_screening_count =
+        non_negative_difference(summary.screening_count, classified_screening_count);
+    summary.preoperative_positive_count =
+        non_negative_difference(summary.positive_count, classified_positive_count);
+
     error.clear();
     return true;
 #endif

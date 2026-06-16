@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.06.02`
+当前版本：`v2026.06.16`
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
@@ -45,6 +45,8 @@
 - 从 `LS_AS_REPORT` 查询报告主记录。
 - 通过 `REP_NO` 联查 `LS_AS_REPENTRY` 中的项目结果。
 - 支持按姓名、诊疗卡号、病人号、条码号、样本号、仪器、组合项目、日期范围等条件过滤。
+- `结果查询` 第一张报告列表支持点击任意列名进行本地升降序排序，只重排当前已加载内存数据，不重新查询报告列表数据库；排序后保留当前选中报告并刷新右侧项目明细。
+- `检验结果查询` 第一张报告列表支持双击报告行跳转到 `常规报告` 页面；程序会携带报告号、检验日期、检验仪器和科室代码，常规报告页查询后按 `REP_NO` 精确选中对应报告并加载左侧详情和中间项目明细。
 - 在主程序中接入输血结果查询模块，从 `LS_XK_BloodRequestApply` 查询输血申请，并通过 `LS_XK_BloodRequestApplySon.ApplyFormNO` 聚合申请成分。
 
 ## 当前实现范围
@@ -56,8 +58,7 @@
 - `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 - `检验科室` 下拉来源于 `LS_AS_ROOM.ROOM_NAME`，查询时回写对应 `ROOM_CODE` 过滤。
 - `病人类型` 下拉来源于 `LS_AS_PATTYPE`，显示格式为 `TYPE-TYPE_NAME`，查询时回写对应 `TYPE` 过滤。
-- `检验仪器` 下拉来源于 `LS_AS_MACHINE.MACH_NAME`，仅显示 `RUL='启用'` 的记录，查询时回写对应 `MACH_CODE` 过滤。
-- `检验科室 -> 检验仪器` 联动筛选，选定科室后，仪器列表自动缩小到该科室下启用的仪器。
+- `检验仪器` 选择来源于 `LS_AS_ROOM / LS_AS_MACHINE`，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下 `RUL='启用'` 且 `DELETE_BIT=0` 的仪器；弹窗加载 `ROOM_CODE / MACH_CODE / MACH_NAME / PY_CODE`，并从 `LS_AS_GROUP.REP_STYLE='M'` 的首条主项目补充 `GROUP_CODE`、`LS_CODE_ITEM.ITEM_NAME` 和 `LS_AS_SAMPLE.SAMP_NAME`，按 `ROOM_CODE, MACH_CODE` 排序后在当前常规报告页面内缓存，数据库连接配置变化时自动重载；科室下拉提供 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果自动选中第一行，选中仪器后自动同步科室下拉框，检索框回车可直接确认并关闭弹窗，查询时回写对应 `MACH_CODE` 过滤。
 - 主列表补充 `打印`、`自助机` 两列，分别对应 `ZYMZ_PRINT`、`ZZJ_PRINT`。
 - 主列表补充 `检验者`、`审核者` 两列：
   - `检验者`：`LS_AS_REPORT.OPER_CODE = JC_EMPLOYEE_PROPERTY.EMPLOYEE_ID`
@@ -83,24 +84,26 @@
   - 右侧底部 `导出勾选图片` 可选择一个文件夹，并将勾选项目分别导出为多张 PNG。
   - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
-- 设置页面支持字号配置，保存后会持久化到 `ClientConfig.ini` 并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
-- 系统设置支持配置 LIS 摘要项目代码，ABO、RhD、Hb、PLT 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
+- 设置页面采用原生 Win32 分组卡片布局，支持字号配置；字号选择限制为 `9 / 11 / 12 / 13` 四档，保存后持久化到 `ClientConfig.ini`，并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
+- 系统设置支持配置 LIS 摘要项目代码，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
-- 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器使用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器复用常规报告仪器弹窗的数据范围，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下的启用仪器，并展示主项目代码、项目名称和样本，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
 - 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
-- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。
+- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。设置页中的复选框保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
 - `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
 - 主程序中的 `检验结果查询`、`输血结果查询`、`系统设置` 均为单实例 MDI 窗口，重复点击菜单会激活已打开窗口。
-- 主程序工具栏提供 `标本签收中心` 和 `常规报告` 快捷入口，分别复用菜单栏 `工具 -> 标本签收中心`、`工具 -> 常规报告` 的打开逻辑；右侧 `关闭` 按钮仍用于关闭当前 MDI 子窗口。
+- 主程序自定义工具栏提供 `标本签收中心`、`常规报告`、`输血查询`、`结果查询` 快捷入口，分别复用对应菜单命令；活动 MDI 页面会高亮对应入口，右侧 `关闭当前` 为文字型次要操作按钮，用于关闭当前 MDI 子窗口。
 - 工具菜单中的 `已签收条码查询` 已接入 `LS_AS_BARCODE` 只读查询：
   - 默认不自动查询，日期默认当天申请日期，支持切换签收日期、上机日期。
   - 支持按条形码、姓名、病人号、上机状态、专业组、取消签收状态筛选；取消签收状态按 `CANCEL_DATE` 是否为空判断，上机状态直接对应 `LS_AS_BARCODE.OPER_STATE`，列表中 `0/1/2` 简化显示为 `未上机 / 已上机 / 审核完成`，下拉中的 `已审核未发送` 暂时不关联实际状态。
   - 下方列表展示样本号、急诊、条形码、病人号、类型、姓名、性别、申请科室、床号、签收人、签收时间、医嘱内容、标本、费用、申请医生、状态、备注、原因、送检、送检时间、申请时间、取消时间、取消人、HZID、上机状态。
   - 当前仅实现查询和刷新；取消签收、取消医嘱签收、取消原因限制、导出 Excel 保持禁用，不执行数据库修改。
 - 工具菜单中的 `标本签收中心` 已替换原 `工具3` 占位页，当前按 `temp/模版.png` 完成界面骨架，并接入第一版只读条码查询；有条码时按单个条码精确读取数据库并回填页面，左侧条码为空时可按签收日期和/或申请日期查询已签收条码列表，不执行签收、拒签、导出等数据库写入业务操作。下方列表补充签收时间、送检时间、年龄、签收人、标本类型和检验室；`此条码已存在...` 使用独立红色提示标签，普通查询状态显示在左下按钮区，且未上机条码会追加 `未上机检验!`。`补打条码` 复用常规报告页的 LabelPrint 打印入口，样本号固定为 `补`，组合项目固定取当前选中行的 `检验室` 内容；`管理` 按钮会打开或激活 `已签收条码查询` 页面。
+- 统计分析管理菜单新增 `HIV 抗体检测统计` 第一版页面，按 `LS_AS_REPORT.REP_TIME` 月份只读统计三组已确认 HIV 初筛候选项目，只纳入已审核、已发送且姓名非空的报告，按 `REP_NO + MACH_CODE + ITEM_CODE` 去重填充合计行的初筛检测数和初筛阳性数；HIV 明细查询先按月份、审核、发送和仪器从 `LS_AS_REPORT` 筛出候选 `REP_NO`，再按候选 `REP_NO` 分批查询 `LS_AS_REPENTRY` 的目标项目；仪器、病人类型、科室名称字典转为 C++ 内存映射，避免主查询使用大 `OR`、多字典 JOIN 和 `LIKE '%滨水新城%'`；顶部 `新院 / 老院` 筛选会先由 `JC_DEPT_PROPERTY` 分出对应 `DEPT_ID` 集合，并以下推的 `r.DEPT_CODE IN (...)` 约束主查询；`性病门诊` 行暂按下方明细 `科室` 包含 `皮肤科门诊` 的文字口径填充，`其他就诊检测` 行暂按 `科室` 包含 `体检`、`儿童保健`、`健康管理`、`GCP` 或科室为空/`0` 的文字口径填充，`孕产期检查` 行暂按 `科室` 包含 `产科门诊` 或 `早孕关爱门诊` 的文字口径填充，后续再考虑将这三类改为 `DEPT_ID` 精确口径；`受血（制品）前检测` 行按下方明细 `已完结输血单申请号` 非空统计；`术前检测` 行按总数扣除受血、性病门诊、其他就诊和孕产期检查后的剩余量统计；阳性按结果文本判断，`待确认` 优先，其次为 `阳性` 或 `+`，不做结果值与上下限的数值比较；顶部可按 `全部 / 新院 / 老院` 筛选检验科来源；下方明细列表展示仪器、方法学、检验科、项目、病人号、姓名、科室、结果和报告时间，其中 `方法学` 按 `MACH_CODE` 派生为 `4005/914 -> 化学发光法`、`4008 -> 酶免法`，`病人号` 来自 `LS_AS_REPORT.REG_NO`，`科室` 按 `LS_AS_REPORT.DEPT_CODE -> JC_DEPT_PROPERTY.DEPT_ID -> NAME` 显示，`检验科` 按科室名称是否包含 `滨水新城` 显示 `新院/老院`，`已完结输血单申请号` 先按当前统计月份的 `LS_XK_BloodRequestApply.Apply_Time` 预取当月 `ApplyForm_Statue='已完结'` 申请记录，再按当前明细 `REG_NO` 匹配 `LS_XK_BloodRequestApply.Patient_NO` 的 `ApplyFormNO`；阳性行用红色背景提示，并支持点击任意表头对当前已加载明细做本地排序，不额外查询数据库；`导出统计表` 按钮会基于安装目录 `templates/HIVStatisticsTemplate.docx` 的 `{}` 占位符生成 Word `.docx` 统计表，模版不随项目发布，需通过旁边的 `上传模版` 指定并复制到安装目录；未检测到匹配模版时 `导出统计表` 不可用；只导出当前汇总数据，不导出下方 listview 明细，也不额外查询数据库；非合计行数字为 `0` 时导出为空，合计行保留 `0`。其他样本来源分类、复检和本年度累计暂未接入。
 - 工具菜单中的 `常规报告` 已替换原 `工具2` 占位页，按 `temp/模版2.png` 基本完成三栏报告工作台界面：
   - 构建时优先通过 `find_package(LabelPrint 1.2 CONFIG QUIET)` 链接外部 `LabelPrint` package；正式打包建议用 `scripts/build_main.ps1 -LabelPrintPackagePath` 指向 LabelPrint release zip 解压目录。找不到符合版本的 package 时，再按 `LIS_LABELPRINT_DIR` 回退到源码 `add_subdirectory`，默认路径为 `../../020 LabelPrint/LabelPrint`。两者都找不到时仍可构建，但条码打印不可用。
   - 通过左侧 `检验日期` 和 `检验仪器` 查询 `LS_AS_REPORT`，右侧信息列表按样本号升序展示报告主记录。
@@ -116,9 +119,9 @@
   - `刷新(F5)` 和 `自动刷新` 查询完成后按 `LS_AS_REPORT.ID` 恢复当前选中行、勾选行和滚动位置；如果刷新前后行顺序未变，只更新内容变化的单元格，减少闪烁和不必要的界面重建；如果查询后没有可选中报告，则同步清空左侧详情、中间结果和图像状态。
   - 右侧已有选中行时，重复选择当前 `检验日期` 或点击 `今天` 按钮，也会复用保留状态刷新，避免因为日期控件触发查询而清空当前页面信息。
   - 右侧信息列表下方提供 `今天 / 前一天 / 后一天` 快捷按钮，用于切换左侧 `检验日期` 并按当前检验仪器刷新列表；其后 `自动刷新` 默认未启用，勾选后按秒数输入定时刷新，默认 10 秒，最小 5 秒，且不会在上一次查询未完成时叠加发起。
-  - 页面底部 `1 / 2 / 3` 按钮会读取系统设置中的快捷检验仪器，快速切换左侧 `检验仪器` 并按当前 `检验日期` 刷新右侧列表；如果当前页面已经是该快捷仪器，则复用保留状态刷新，并把对应按钮文字标记为 `[1] / [2] / [3]`。手动打开检验仪器弹窗时，会优先定位到当前页面已选仪器对应的科室和仪器；弹窗失焦时采用延迟关闭，避免点击主界面时打断主窗口激活。
+  - 页面底部 `1 / 2 / 3` 按钮会读取系统设置中的快捷检验仪器，快速切换左侧 `检验仪器` 并按当前 `检验日期` 刷新右侧列表；如果当前页面已经是该快捷仪器，则复用保留状态刷新，并把对应按钮文字标记为 `[1] / [2] / [3]`。页面直接打开时会优先自动应用快捷仪器 `1` 并加载当天报告；手动打开检验仪器弹窗时，科室默认 `全部` 并显示全部启用仪器；弹窗顶部 `检索内容` 可输入拼音码或仪器代码快速过滤，匹配结果默认选中第一行，回车即可确认并关闭弹窗，匹配选中后会反向同步科室下拉框；弹窗失焦时采用延迟关闭，避免点击主界面时打断主窗口激活。
   - 左侧 `样本号` 输入框支持输入样本号后按回车，在当前右侧信息列表中定位并选中对应行，同时触发左侧信息和中间结果列表联动更新。
-  - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码` 和 `打印勾选条码`，会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该右侧报告行的 `检验仪器` 列内容，开单日期按 `2026/5/21` 这种仅日期格式打印。
+  - 右侧信息列表第一列支持勾选；行右键菜单提供 `打印条码`、`打印勾选条码` 和 `趋势图`。条码打印会把对应行样本号、组合项目、条码号、姓名、标本、开单日期、科室代码、病人号填入 LabelPrint 的 `MedicalLabelData`，再调用 LabelPrint `printMedicalLabel` 统一入口发送到条码打印机；其中条码上的组合项目取自该右侧报告行的 `检验仪器` 列内容，开单日期按 `2026/5/21` 这种仅日期格式打印。右键 `趋势图` 和底部 `趋势图` 按钮复用检验结果查询页趋势图窗口，按当前报告的病人号/姓名、当前检验仪器和科室生成查询条件，窗口顶部提供开始/结束日期选择器和刷新按钮，默认结束日期为当前报告检验日期，开始日期为前 14 天；窗口按父窗口所在显示器工作区居中打开。
   - 条码打印机名读取 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`，默认 `Xprinter XP-360B #2`；打印机型号和 TSPL/ZPL 后端由 LabelPrint 根据 Windows 打印机元数据自动选择，识别不出时按 XP-360B 兼容路径兜底。如果打印机名失效，需要在系统设置页重新选择条码打印机。
   - 中间结果列表复用检验结果查询的项目明细查询和 `NORMAL` 偏差展示逻辑；其中 `组合项目` 按 `LS_AS_REPENTRY.GROUP_CODE -> LS_AS_LABMATCH.GROUP_NAME` 显示，优先取未删除启用记录，缺失时取同组任意非空名称兜底；连续相同组合项目只在第一行显示；`结果` 列保持白底，其他列使用浅灰底以突出结果值。
   - 中间结果列表优先采用 `LS_AS_REPENTRY.NORMAL_WJ` 的 LIS 判定结果：`9` 表示该项目结果为危急值，`0` 表示该项目存在危急值规则，`NULL` 表示不参与危急值规则；同时保留客户端按 `LS_AS_DEF_ITEMSCOPE` 的 `DNBOUND1 / UPBOUND1` 计算危急值的能力，用于当前展示兜底和后续仪器输入结果后的实时判断。命中危急值时，该行除 `结果` 列外以 `#FFFF39` 黄色背景提示。
@@ -133,9 +136,12 @@
 - 主程序 `输血结果查询` 模块：
   - 默认按最近 7 天申请日期自动查询。
   - 支持按病人编号、病人姓名、申请单号、申请状态、申请日期筛选。
+  - 输血申请主表为 `LS_XK_BloodRequestApply`：`ApplyFormNO` 为输血单申请号，`Apply_Time` 为输血申请时间，`Plan_Date` 为输血计划时间，`ApplyForm_Statue` 为审核状态，`Patient_NO` 为病人号，`Patient_NOType` 为病人类型，`Patient_Name` 为病人姓名。
   - `申请状态` 直接对应 `LS_XK_BloodRequestApply.ApplyForm_Statue` 的中文值，支持“未审核 / 已审核 / 已完结”过滤。
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
+  - 交叉配血记录表为 `LS_XK_BloodCrossMatch`，可通过 `ApplyFormNO` 关联输血申请；已确认 `Patient_NO` 为病人号、`Patient_NOType` 为患者类型、`Patient_Name` 为病人姓名、`VerifyState` 为配血审核状态、`Match_Date` 为配血时间。
   - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果，并根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
+  - `查询检验结果` 窗口右侧报告列表的 `样本号` 与检验结果查询页一致，来自 `LS_AS_REPORT.OPER_NO`，位于 `检验时间` 前。
   - `查询检验结果` 窗口的组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
 - GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.9` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。
 
@@ -189,8 +195,10 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 
 - `LS_AS_ITEM`：项目名称、单位、英文名。
 - `JC_EMPLOYEE_PROPERTY`：人员字典，当前用于“检验者”和“审核者”列；`审核者` 使用 `LS_AS_REPORT.REP_OPER` 关联。
+- `JC_DEPT_PROPERTY`：科室字典，`DEPT_ID -> NAME`，当前用于 HIV 统计明细和常规报告相关查询中的科室名称显示。
 - `LS_AS_BARCODE`：条码/病人号关联，用于“病人号”筛选。
 - `LS_AS_PATTYPE`：病人类型字典。
+- `JC_dept_mz_zy`：临床科室字典。结合 `TYPE / TYPENAME` 判断门诊或住院后，用 `DEPT_CODE` 分别匹配门诊科室 ID `mzksid` 或住院科室 ID `zyksid`，得到对应 `DEPT_NAME`（`mzksmc / zyksmc`）。
 - `LS_AS_SEX`：性别字典。
 - `LS_AS_ROOM`：检验科室字典。
 - `LS_AS_MACHINE`：检验仪器字典。
@@ -211,17 +219,26 @@ LS_AS_REPORT.MACH_CODE = LS_AS_MACHINE.MACH_CODE
 - 这是一条基于现场实测得到的显示规则。
 - 如果后续现场验证结论变化，同步修改 `main.cpp` 中的 `result_row_color()`。
 
-## Windows 交叉编译
+## Windows 交叉编译 (macOS)
+
+macOS 可通过 MinGW-w64 toolchain 交叉编译 Windows 版本，使用项目根目录的 `Makefile`：
 
 ```bash
-cmake -S . -B build/windows-x64 \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
-  -DCMAKE_BUILD_TYPE=Release
+# 安装 toolchain
+brew install mingw-w64
 
-cmake --build build/windows-x64 -j
+# Maven 风格构建目标
+make              # 帮助（默认）
+make compile      # 交叉编译 lis_workbench.exe + Updater.exe
+make clean compile  # 清除后编译
+make package      # 编译 + NSIS 安装包 + 更新 zip + manifest.json
+make verify       # 效验二进制和版本一致性
+make install      # 完整发布流程 → out/windows/dist/
 ```
 
-输出：`build/windows-x64/result_search.exe`
+要求环境：`cmake`、`make`、`x86_64-w64-mingw32-g++`、`makensis`（Homebrew），LabelPrint 本地源码目录需存在。
+
+编译产物：`build/windows-x64/lis_workbench.exe` 等。`make package` 生成的 NSIS 安装包和更新包结构与 Windows `lis.ps1` 产物路径一致，适用于同一个 CI 流水线的 GitHub Release 发布。
 
 ## 项目文件
 
@@ -229,28 +246,38 @@ cmake --build build/windows-x64 -j
 - [CHANGELOG.md](CHANGELOG.md)
 - [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
 - [QUERY_DESIGN.md](QUERY_DESIGN.md)
+- [WIN32_NATIVE_UI_DESIGN.md](WIN32_NATIVE_UI_DESIGN.md)
 - [AUTO_UPDATE_DESIGN.md](AUTO_UPDATE_DESIGN.md)
 - [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)
 - [TREND_CHART_PLAN.md](TREND_CHART_PLAN.md)
 
-## Windows 安装包
+## Windows 安装包（Windows / macOS 通用）
 
 主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和菜单栏 `系统 -> 检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 
-常用构建命令已封装到根目录 `lis.ps1`：
+常用构建命令已封装：
+
+**Windows** — 根目录 `lis.ps1`：
 
 ```powershell
 .\lis.ps1 build
 .\lis.ps1 run
 .\lis.ps1 clean
 .\lis.ps1 package -LabelPrintSource github
-.\lis.ps1 package -LabelPrintSource local -LabelPrintLocalPath "Z:\Local\Code\020 LabelPrint\LabelPrint"
 .\lis.ps1 rebuild-package -LabelPrintSource github -LabelPrintVersion v1.2.9
 ```
 
-`package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包；`build` / `run` 默认使用本地 `..\..\020 LabelPrint\LabelPrint` 源码。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`package` / `rebuild-package` 会同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。
+**macOS** — 根目录 `Makefile`（MinGW 交叉编译）：
+
+```bash
+make compile
+make package
+make install
+```
+
+`build` / `run` 默认优先使用本地 LabelPrint 源码目录，避免旧 CMake 缓存或外部 package 把 `/MD` 运行库的 `labelprint.lib` 链接进默认 `/MT` 主程序；`package` / `rebuild-package` 默认从 GitHub 下载 LabelPrint release 包，并同时生成 NSIS 安装包、自动更新 zip 和 `manifest.json`。可通过 `-LabelPrintSource github|local|package` 显式选择来源；已有解压包仍可用 `-LabelPrintPackagePath` 指定。`lis.ps1 package` 会优先复用现有 CMake 缓存生成器，没有缓存时再解析实际 Visual Studio 生成器，并选择匹配的 LabelPrint release 包。
 
 项目按 Windows 7 兼容目标编译，CMake 会为 Win32 目标统一设置 `WINVER/_WIN32_WINNT=0x0601`。代码中不能直接导入 Windows 8/10 才有的 API；需要使用时应通过 `GetProcAddress` 动态探测并提供 Win7 回退，避免在 Win7 上出现 `CreateFile2`、`GetDpiForWindow` 等入口点缺失错误。
 
@@ -262,12 +289,14 @@ VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release
 2. 点击底部 `设置`。
 3. 填写服务器、初始数据库、用户名、密码。
 4. 可点击 `测试连接` 验证数据库连接。
-5. 点击 `保存` 后，配置会写入程序同目录 `ClientConfig.ini`。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
+5. 点击 `保存` 后，配置会写入程序同目录 `ClientConfig.ini`，设置页面保持打开并在按钮附近显示保存状态。LIS 摘要项目代码可在系统设置里按分号维护，默认值来自当前现场排查结果。
 6. 输入姓名、病人号、条码号、日期范围，或通过 `检验科室 / 病人类型 / 报告状态` 下拉筛选。
 7. 点击 `查询`。
 8. 在中间报告列表选择一行，右侧显示该报告的项目结果。
-9. 如果本次查询使用了病人姓名或病人号，可点击 `趋势图` 查看该查询条件下的项目趋势。
-10. 在趋势图窗口右侧点击项目行切换图表，勾选项目后可导出对应趋势明细 CSV。
+9. 可点击第一张报告列表的任意列名进行本地排序，不会重新查询报告列表数据库。
+10. 可双击第一张报告列表中的报告行跳转到 `常规报告` 页面，并自动定位同一条报告。
+11. 如果本次查询使用了病人姓名或病人号，可点击 `趋势图` 查看该查询条件下的项目趋势。
+12. 在趋势图窗口右侧点击项目行切换图表，勾选项目后可导出对应趋势明细 CSV。
 
 程序内部会自动生成连接串，格式示例：
 
@@ -284,5 +313,7 @@ Data Source=172.18.3.8\MSSQLSERVER1;Initial Catalog=trasen;User ID=sa;Password=y
 说明：
 
 - `初始数据库` 直接作为实际查询连接里的 `Initial Catalog`。
-- 前端不再手填 ODBC 驱动，驱动选择由底层自动尝试。
+- 前端不再手填 ODBC 驱动，驱动选择由底层自动尝试；本次运行内会优先复用上次成功的 driver candidate，失败时再回退完整候选列表。
+- 数据库连接层启用 ODBC Driver Manager 连接池并使用严格连接匹配，现有短连接查询模式可复用底层连接。
+- ODBC 登录阶段默认 5 秒超时，仅限制建连阶段，不限制 SQL 查询执行时长。
 - 该字段会保存到 `ClientConfig.ini`。

@@ -30,6 +30,9 @@ constexpr int IDC_TREND_LIST = 5102;
 constexpr int IDC_TREND_CHART = 5103;
 constexpr int IDC_TREND_EXPORT = 5104;
 constexpr int IDC_TREND_EXPORT_IMAGE = 5105;
+constexpr int IDC_TREND_START_DATE = 5106;
+constexpr int IDC_TREND_END_DATE = 5107;
+constexpr int IDC_TREND_REFRESH = 5108;
 constexpr UINT WM_TREND_LOADED = WM_APP + 51;
 
 struct TrendWindowContext {
@@ -37,6 +40,11 @@ struct TrendWindowContext {
     QueryInput input;
     HFONT font = nullptr;
     HWND hwnd = nullptr;
+    HWND start_label = nullptr;
+    HWND start_date = nullptr;
+    HWND end_label = nullptr;
+    HWND end_date = nullptr;
+    HWND refresh_button = nullptr;
     HWND item_list = nullptr;
     HWND export_button = nullptr;
     HWND export_image_button = nullptr;
@@ -102,6 +110,59 @@ void add_column(HWND list, int index, const wchar_t* title, int width) {
     col.cx = width;
     col.iSubItem = index;
     ListView_InsertColumn(list, index, &col);
+}
+
+SYSTEMTIME parse_query_date(const std::string& value) {
+    SYSTEMTIME st{};
+    int y = 0;
+    int m = 0;
+    int d = 0;
+    if (std::sscanf(value.c_str(), "%d-%d-%d", &y, &m, &d) == 3 &&
+        y > 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+        st.wYear = static_cast<WORD>(y);
+        st.wMonth = static_cast<WORD>(m);
+        st.wDay = static_cast<WORD>(d);
+    } else {
+        GetLocalTime(&st);
+    }
+    st.wHour = 0;
+    st.wMinute = 0;
+    st.wSecond = 0;
+    st.wMilliseconds = 0;
+    return st;
+}
+
+std::string format_query_date(const SYSTEMTIME& st) {
+    char buffer[16]{};
+    std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buffer;
+}
+
+bool picker_date(HWND picker, std::string& out) {
+    SYSTEMTIME st{};
+    if (!picker || DateTime_GetSystemtime(picker, &st) != GDT_VALID) return false;
+    out = format_query_date(st);
+    return true;
+}
+
+bool date_less_or_equal(const std::string& left, const std::string& right) {
+    const SYSTEMTIME a = parse_query_date(left);
+    const SYSTEMTIME b = parse_query_date(right);
+    FILETIME fa{};
+    FILETIME fb{};
+    if (!SystemTimeToFileTime(&a, &fa) || !SystemTimeToFileTime(&b, &fb)) return true;
+    return CompareFileTime(&fa, &fb) <= 0;
+}
+
+HWND create_date_picker(HWND parent, int id, const std::string& value) {
+    HWND picker = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"",
+                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | DTS_SHORTDATECENTURYFORMAT,
+                                  0, 0, 120, 24, parent, win32_control_id(id),
+                                  GetModuleHandleW(nullptr), nullptr);
+    DateTime_SetFormat(picker, L"yyyy-MM-dd");
+    SYSTEMTIME st = parse_query_date(value);
+    DateTime_SetSystemtime(picker, GDT_VALID, &st);
+    return picker;
 }
 
 void set_cell(HWND list, int row, int col, const std::string& text) {
@@ -564,8 +625,14 @@ LRESULT CALLBACK chart_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 
 void begin_load_trend_data(TrendWindowContext& ctx) {
     ctx.loading = true;
+    EnableWindow(ctx.refresh_button, FALSE);
     EnableWindow(ctx.export_button, FALSE);
     EnableWindow(ctx.export_image_button, FALSE);
+    ListView_DeleteAllItems(ctx.item_list);
+    ListView_DeleteAllItems(ctx.list);
+    ctx.points.clear();
+    ctx.items.clear();
+    ctx.selected_item_code.clear();
     InvalidateRect(ctx.chart, nullptr, TRUE);
     const HWND hwnd = ctx.hwnd;
     const DbSettings settings = ctx.settings;
@@ -584,6 +651,7 @@ void begin_load_trend_data(TrendWindowContext& ctx) {
 
 void finish_load_trend_data(TrendWindowContext& ctx, std::unique_ptr<TrendLoadResult> result) {
     ctx.loading = false;
+    EnableWindow(ctx.refresh_button, TRUE);
     EnableWindow(ctx.export_button, TRUE);
     EnableWindow(ctx.export_image_button, TRUE);
     if (!result->ok) {
@@ -598,6 +666,23 @@ void finish_load_trend_data(TrendWindowContext& ctx, std::unique_ptr<TrendLoadRe
     InvalidateRect(ctx.chart, nullptr, TRUE);
 }
 
+void reload_trend_data_from_controls(TrendWindowContext& ctx) {
+    if (ctx.loading) return;
+    std::string start;
+    std::string end;
+    if (!picker_date(ctx.start_date, start) || !picker_date(ctx.end_date, end)) {
+        MessageBoxW(ctx.hwnd, L"请选择有效的开始日期和结束日期。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+    if (!date_less_or_equal(start, end)) {
+        MessageBoxW(ctx.hwnd, L"开始日期不能晚于结束日期。", L"趋势图提示", MB_ICONWARNING);
+        return;
+    }
+    ctx.input.start_date = start;
+    ctx.input.end_date = end;
+    begin_load_trend_data(ctx);
+}
+
 void layout_trend_window(TrendWindowContext& ctx) {
     RECT rc{};
     GetClientRect(ctx.hwnd, &rc);
@@ -610,13 +695,25 @@ void layout_trend_window(TrendWindowContext& ctx) {
     const int export_h = S(32);
     const int button_gap = S(8);
     const int gap = S(10);
+    const int filter_h = S(34);
     const int left_w = std::max(S(360), client_w - margin * 3 - side_w);
-    const int chart_h = std::max(S(220), client_h / 2 + S(20));
-    MoveWindow(ctx.chart, margin, margin, left_w, chart_h, TRUE);
-    MoveWindow(ctx.list, margin, margin + chart_h + gap, left_w,
-               std::max(S(120), client_h - (margin + chart_h + gap + margin)), TRUE);
-    MoveWindow(ctx.item_list, margin * 2 + left_w, margin, side_w,
-               std::max(S(120), client_h - margin * 2 - export_h * 2 - button_gap - gap), TRUE);
+    const int content_top = margin + filter_h + gap;
+    const int chart_h = std::max(S(220), (client_h - content_top - margin) / 2 + S(20));
+    int x = margin;
+    MoveWindow(ctx.start_label, x, margin + S(5), S(64), S(24), TRUE);
+    x += S(66);
+    MoveWindow(ctx.start_date, x, margin, S(126), S(26), TRUE);
+    x += S(140);
+    MoveWindow(ctx.end_label, x, margin + S(5), S(64), S(24), TRUE);
+    x += S(66);
+    MoveWindow(ctx.end_date, x, margin, S(126), S(26), TRUE);
+    x += S(140);
+    MoveWindow(ctx.refresh_button, x, margin, S(78), S(28), TRUE);
+    MoveWindow(ctx.chart, margin, content_top, left_w, chart_h, TRUE);
+    MoveWindow(ctx.list, margin, content_top + chart_h + gap, left_w,
+               std::max(S(120), client_h - (content_top + chart_h + gap + margin)), TRUE);
+    MoveWindow(ctx.item_list, margin * 2 + left_w, content_top, side_w,
+               std::max(S(120), client_h - content_top - margin - export_h * 2 - button_gap - gap), TRUE);
     MoveWindow(ctx.export_image_button, margin * 2 + left_w, client_h - margin - export_h * 2 - button_gap, side_w, export_h, TRUE);
     MoveWindow(ctx.export_button, margin * 2 + left_w, client_h - margin - export_h, side_w, export_h, TRUE);
 }
@@ -629,6 +726,20 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             ctx = reinterpret_cast<TrendWindowContext*>(createstruct->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
             ctx->hwnd = hwnd;
+            ctx->start_label = CreateWindowExW(0, L"STATIC", L"开始日期",
+                                               WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                               0, 0, 80, 24, hwnd, nullptr,
+                                               GetModuleHandleW(nullptr), nullptr);
+            ctx->start_date = create_date_picker(hwnd, IDC_TREND_START_DATE, ctx->input.start_date);
+            ctx->end_label = CreateWindowExW(0, L"STATIC", L"结束日期",
+                                             WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                             0, 0, 80, 24, hwnd, nullptr,
+                                             GetModuleHandleW(nullptr), nullptr);
+            ctx->end_date = create_date_picker(hwnd, IDC_TREND_END_DATE, ctx->input.end_date);
+            ctx->refresh_button = CreateWindowExW(0, L"BUTTON", L"刷新",
+                                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                                  0, 0, 100, 32, hwnd, win32_control_id(IDC_TREND_REFRESH),
+                                                  GetModuleHandleW(nullptr), nullptr);
             ctx->item_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                              0, 0, 100, 100, hwnd, win32_control_id(IDC_TREND_ITEM), GetModuleHandleW(nullptr), nullptr);
             ctx->export_button = CreateWindowExW(0, L"BUTTON", L"导出勾选项目", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -652,6 +763,11 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             add_column(ctx->list, 5, L"上限", dS(80));
             add_column(ctx->list, 6, L"报告号", dS(90));
             if (ctx->font) {
+                SendMessageW(ctx->start_label, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->start_date, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->end_label, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->end_date, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
+                SendMessageW(ctx->refresh_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->item_list, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->export_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
                 SendMessageW(ctx->export_image_button, WM_SETFONT, reinterpret_cast<WPARAM>(ctx->font), TRUE);
@@ -682,6 +798,10 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             }
             if (LOWORD(wparam) == IDC_TREND_EXPORT_IMAGE && ctx) {
                 export_checked_chart_images(*ctx);
+                return 0;
+            }
+            if (LOWORD(wparam) == IDC_TREND_REFRESH && ctx) {
+                reload_trend_data_from_controls(*ctx);
                 return 0;
             }
             break;
@@ -743,9 +863,27 @@ void show_trend_window(HWND owner, HFONT font, const DbSettings& settings, const
     ctx->font = font;
 
     const float s = search::dpi_scale_factor(owner);
+    RECT work{};
+    HMONITOR monitor = owner ? MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST) : nullptr;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        work = mi.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    }
+    const int margin = static_cast<int>(24 * s);
+    const int work_w = static_cast<int>(work.right - work.left);
+    const int work_h = static_cast<int>(work.bottom - work.top);
+    const int window_w = std::max(static_cast<int>(720 * s),
+                                  std::min(static_cast<int>(980 * s), work_w - margin * 2));
+    const int window_h = std::max(static_cast<int>(520 * s),
+                                  std::min(static_cast<int>(680 * s), work_h - margin * 2));
+    const int window_x = work.left + (work_w - window_w) / 2;
+    const int window_y = work.top + (work_h - window_h) / 2;
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, L"ResultTrendWindow", L"检验结果趋势图",
                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(980 * s), static_cast<int>(680 * s),
+                                window_x, window_y, window_w, window_h,
                                 owner, nullptr, GetModuleHandleW(nullptr), ctx);
     if (!hwnd) {
         delete ctx;

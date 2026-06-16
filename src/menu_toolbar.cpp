@@ -6,6 +6,8 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
+
 namespace {
 
 struct MTButton {
@@ -21,20 +23,34 @@ struct MTState {
     MTButton btns[MT_MAXBTN];
     int count = 0;
     int hover = -1;
+    int pressed = -1;
+    int activeId = 0;
     int focus = -1;
-    int btnH = 24;
+    bool keyboardFocusVisible = false;
+    bool mouseFocusRequest = false;
+    int btnH = 42;
 };
 
-COLORREF mtBlend(COLORREF c1, COLORREF c2, double t) {
-    return RGB(
-        (BYTE)(GetRValue(c1) * (1 - t) + GetRValue(c2) * t),
-        (BYTE)(GetGValue(c1) * (1 - t) + GetGValue(c2) * t),
-        (BYTE)(GetBValue(c1) * (1 - t) + GetBValue(c2) * t));
-}
+constexpr COLORREF kToolbarBg = RGB(245, 248, 251);
+constexpr COLORREF kToolbarLine = RGB(214, 224, 234);
+constexpr COLORREF kButtonHover = RGB(232, 242, 255);
+constexpr COLORREF kButtonPressed = RGB(214, 233, 255);
+constexpr COLORREF kButtonActive = RGB(221, 238, 255);
+constexpr COLORREF kButtonFocus = RGB(91, 155, 213);
+constexpr COLORREF kText = RGB(31, 41, 51);
+constexpr COLORREF kTextDisabled = RGB(154, 165, 177);
+constexpr COLORREF kSeparator = RGB(208, 218, 229);
+constexpr COLORREF kCloseBorder = RGB(205, 214, 224);
+constexpr COLORREF kCloseDisabledBorder = RGB(225, 231, 238);
+constexpr COLORREF kCloseText = RGB(75, 85, 99);
+constexpr COLORREF kCloseHoverBg = RGB(255, 241, 242);
+constexpr COLORREF kClosePressedBg = RGB(255, 228, 230);
+constexpr COLORREF kCloseHoverBorder = RGB(253, 164, 175);
+constexpr COLORREF kCloseHoverText = RGB(185, 28, 28);
 
 void mtUpdateMetrics(HWND hwnd, MTState* s) {
     if (!s) return;
-    s->btnH = 24;
+    s->btnH = 42;
     if (!s->font) return;
     HDC dc = GetDC(hwnd);
     HFONT old = (HFONT)SelectObject(dc, s->font);
@@ -42,7 +58,158 @@ void mtUpdateMetrics(HWND hwnd, MTState* s) {
     GetTextMetricsW(dc, &tm);
     SelectObject(dc, old);
     ReleaseDC(hwnd, dc);
-    s->btnH = tm.tmHeight + 8;
+    s->btnH = std::max(40, static_cast<int>(tm.tmHeight) + 22);
+}
+
+void fillRoundRect(HDC dc, const RECT& rc, int radius, COLORREF color) {
+    HBRUSH br = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldBr = SelectObject(dc, br);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBr);
+    DeleteObject(pen);
+    DeleteObject(br);
+}
+
+void strokeRoundRect(HDC dc, const RECT& rc, int radius, COLORREF color) {
+    HBRUSH oldBr = (HBRUSH)SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBr);
+    DeleteObject(pen);
+}
+
+int firstEnabledButton(const MTState* s) {
+    if (!s) return -1;
+    for (int i = 0; i < s->count; ++i) {
+        if (!(s->btns[i].flags & (MTBS_SEPARATOR | MTBS_STRETCH | MTBS_DISABLED))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void drawToolbar(MTState* s, HWND hwnd, HDC dc) {
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+
+    HBRUSH bg = CreateSolidBrush(kToolbarBg);
+    FillRect(dc, &rc, bg);
+    DeleteObject(bg);
+
+    RECT line = {rc.left, rc.bottom - 1, rc.right, rc.bottom};
+    HBRUSH lineBr = CreateSolidBrush(kToolbarLine);
+    FillRect(dc, &line, lineBr);
+    DeleteObject(lineBr);
+
+    HFONT oldFont = s->font ? (HFONT)SelectObject(dc, s->font) : nullptr;
+    SetBkMode(dc, TRANSPARENT);
+
+    // Pass 1: measure button widths.
+    int totalW = 20;
+    for (int i = 0; i < s->count; ++i) {
+        auto& b = s->btns[i];
+        if (b.flags & MTBS_SEPARATOR) {
+            totalW += 12;
+            continue;
+        }
+        if (b.flags & MTBS_STRETCH) continue;
+        SIZE sz{};
+        GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
+        int iconSz = b.icon ? std::max(16, static_cast<int>(sz.cy)) : 0;
+        totalW += sz.cx + 28 + iconSz + (b.icon ? 8 : 0) + 4;
+    }
+    int stretchW = rc.right - totalW;
+    if (stretchW < 0) stretchW = 0;
+
+    // Pass 2: draw.
+    int x = 10;
+    int buttonTop = 5;
+    int buttonBottom = std::max(buttonTop + 28, static_cast<int>(rc.bottom) - 6);
+    for (int i = 0; i < s->count; ++i) {
+        auto& b = s->btns[i];
+
+        if (b.flags & MTBS_STRETCH) {
+            x += stretchW;
+            continue;
+        }
+
+        if (b.flags & MTBS_SEPARATOR) {
+            int sx = x + 5;
+            RECT sr = {sx, 10, sx + 1, rc.bottom - 10};
+            HBRUSH sepBr = CreateSolidBrush(kSeparator);
+            FillRect(dc, &sr, sepBr);
+            DeleteObject(sepBr);
+            b.rect = {sx, 0, sx + 1, rc.bottom};
+            x = sx + 12;
+            continue;
+        }
+
+        SIZE sz{};
+        GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
+        int iconSz = b.icon ? std::max(16, static_cast<int>(sz.cy)) : 0;
+        int iconW = b.icon ? iconSz + 8 : 0;
+        RECT br = {x, buttonTop, x + sz.cx + 28 + iconW, buttonBottom};
+        bool isHover = (i == s->hover);
+        bool isPressed = (i == s->pressed);
+        bool isActive = (b.id != 0 && b.id == s->activeId);
+        bool isFocus = (i == s->focus);
+        bool isDisabled = (b.flags & MTBS_DISABLED);
+        bool isCloseButton = (b.flags & MTBS_CLOSE) != 0;
+
+        if (isCloseButton) {
+            const COLORREF border = isDisabled ? kCloseDisabledBorder : (isHover || isPressed ? kCloseHoverBorder : kCloseBorder);
+            if (!isDisabled && (isHover || isPressed)) {
+                fillRoundRect(dc, br, 8, isPressed ? kClosePressedBg : kCloseHoverBg);
+            }
+            RECT cr = br;
+            InflateRect(&cr, -1, -1);
+            strokeRoundRect(dc, cr, 8, border);
+        } else if (!isDisabled && (isActive || isPressed || isHover)) {
+            fillRoundRect(dc, br, 8, isPressed ? kButtonPressed : (isHover ? kButtonHover : kButtonActive));
+        }
+
+        if (!isCloseButton && isActive && !isDisabled) {
+            RECT ar = br;
+            InflateRect(&ar, -1, -1);
+            strokeRoundRect(dc, ar, 8, kButtonFocus);
+        }
+
+        if (s->keyboardFocusVisible && isFocus && !isDisabled) {
+            RECT fr = br;
+            InflateRect(&fr, -1, -1);
+            strokeRoundRect(dc, fr, 8, kButtonFocus);
+        }
+
+        COLORREF textColor = isDisabled ? kTextDisabled : kText;
+        if (isCloseButton && !isDisabled) {
+            textColor = (isHover || isPressed) ? kCloseHoverText : kCloseText;
+        }
+        SetTextColor(dc, textColor);
+
+        int contentX = x + 14;
+        int pressedOffset = isPressed ? 1 : 0;
+        if (b.icon) {
+            int iy = (br.top + br.bottom - iconSz) / 2 + pressedOffset;
+            DrawIconEx(dc, contentX, iy, b.icon, iconSz, iconSz, 0, nullptr, DI_NORMAL);
+            contentX += iconW;
+        }
+
+        RECT textRect = br;
+        textRect.left = contentX;
+        textRect.right -= 12;
+        OffsetRect(&textRect, 0, pressedOffset);
+        DrawTextW(dc, b.text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        b.rect = br;
+        x = br.right + 4;
+    }
+
+    if (oldFont) SelectObject(dc, oldFont);
 }
 
 LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -63,17 +230,33 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_SETFOCUS:
-            s->focus = 0;
+            if (s->mouseFocusRequest) {
+                s->mouseFocusRequest = false;
+                s->keyboardFocusVisible = false;
+            } else {
+                s->keyboardFocusVisible = true;
+                if (s->focus < 0 || s->focus >= s->count ||
+                        (s->btns[s->focus].flags & (MTBS_SEPARATOR | MTBS_STRETCH | MTBS_DISABLED))) {
+                    s->focus = firstEnabledButton(s);
+                }
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_KILLFOCUS:
             s->focus = -1;
+            s->pressed = -1;
+            s->keyboardFocusVisible = false;
+            s->mouseFocusRequest = false;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_GETDLGCODE:
             return DLGC_WANTARROWS | DLGC_WANTCHARS;
 
         case WM_KEYDOWN: {
+            s->keyboardFocusVisible = true;
+            if (s->focus < 0 || s->focus >= s->count) {
+                s->focus = firstEnabledButton(s);
+            }
             int next = s->focus;
             switch (wp) {
                 case VK_RIGHT: case VK_TAB:
@@ -107,7 +290,7 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (hit != s->hover) {
                 s->hover = hit;
-                if (hit != -1) { SetCapture(hwnd); SetFocus(hwnd); }
+                if (hit != -1) { SetCapture(hwnd); }
                 else ReleaseCapture();
                 InvalidateRect(hwnd, nullptr, FALSE);
                 SetTimer(hwnd, 1, hit != -1 ? 50 : 0, nullptr);
@@ -125,105 +308,47 @@ LRESULT CALLBACK mtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-        case WM_LBUTTONUP:
+        case WM_LBUTTONDOWN:
             if (s->hover >= 0 && s->hover < s->count && !(s->btns[s->hover].flags & MTBS_DISABLED)) {
+                s->pressed = s->hover;
+                s->focus = s->hover;
+                s->keyboardFocusVisible = false;
+                s->mouseFocusRequest = true;
+                SetCapture(hwnd);
+                SetFocus(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            if (s->pressed >= 0 && s->pressed == s->hover &&
+                    s->hover < s->count && !(s->btns[s->hover].flags & MTBS_DISABLED)) {
                 PostMessageW(GetParent(hwnd), WM_COMMAND, s->btns[s->hover].id, 0);
             }
+            s->pressed = -1;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_CANCELMODE:
+            s->pressed = -1;
+            s->hover = -1;
+            s->keyboardFocusVisible = false;
+            s->mouseFocusRequest = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
-            RECT rc; GetClientRect(hwnd, &rc);
-
-            // Menu-colored background
-            COLORREF menuBg = GetSysColor(COLOR_MENU);
-            HBRUSH menuBr = GetSysColorBrush(COLOR_MENU);
-            FillRect(dc, &rc, menuBr);
-
-            HFONT oldFont = s->font ? (HFONT)SelectObject(dc, s->font) : nullptr;
-            SetBkMode(dc, TRANSPARENT);
-
-            // Pass 1: measure button widths
-            int widths[MT_MAXBTN] = {};
-            int totalW = 12;
-            for (int i = 0; i < s->count; ++i) {
-                auto& b = s->btns[i];
-                if (b.flags & MTBS_SEPARATOR) { widths[i] = 8; totalW += 8; continue; }
-                if (b.flags & MTBS_STRETCH) continue;
-                SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
-                int iconSz = b.icon ? sz.cy : 0;
-                widths[i] = sz.cx + 24 + iconSz + (b.icon ? 6 : 0);
-                totalW += widths[i] + 2;
-            }
-            int stretchW = rc.right - totalW;
-            if (stretchW < 0) stretchW = 0;
-
-            // Pass 2: draw
-            int x = 6;
-            for (int i = 0; i < s->count; ++i) {
-                auto& b = s->btns[i];
-
-                if (b.flags & MTBS_STRETCH) {
-                    x += stretchW;
-                    continue;
-                }
-
-                if (b.flags & MTBS_SEPARATOR) {
-                    // Vertical separator line
-                    int sx = x + 3;
-                    RECT sr = {sx, 6, sx + 1, rc.bottom - 6};
-                    COLORREF sepColor = mtBlend(menuBg, GetSysColor(COLOR_MENUTEXT), 0.3);
-                    HBRUSH sepBr = CreateSolidBrush(sepColor);
-                    FillRect(dc, &sr, sepBr);
-                    DeleteObject(sepBr);
-                    b.rect = {sx, 0, sx + 1, rc.bottom};
-                    x = sx + 8;
-                    continue;
-                }
-
-                SIZE sz; GetTextExtentPoint32W(dc, b.text, (int)wcslen(b.text), &sz);
-                int iconSz = b.icon ? sz.cy : 0;   // match text height
-                int iconW = iconSz + 6;             // icon + padding
-                RECT br = {x, 0, x + sz.cx + 24 + iconW, rc.bottom};
-                bool isHover = (i == s->hover);
-                bool isFocus = (i == s->focus);
-                bool isDisabled = (b.flags & MTBS_DISABLED);
-
-                if (isHover && !isDisabled) {
-                    COLORREF hilight = GetSysColor(COLOR_MENUHILIGHT);
-                    HBRUSH hibr = CreateSolidBrush(hilight);
-                    FillRect(dc, &br, hibr);
-                    DeleteObject(hibr);
-                }
-
-                COLORREF textColor = isDisabled
-                    ? mtBlend(menuBg, GetSysColor(COLOR_MENUTEXT), 0.5)
-                    : GetSysColor(COLOR_MENUTEXT);
-                SetTextColor(dc, textColor);
-
-                // Icon
-                if (b.icon) {
-                    int iy = (rc.bottom - iconSz) / 2;
-                    DrawIconEx(dc, x + 4, iy, b.icon, iconSz, iconSz, 0, nullptr, DI_NORMAL);
-                }
-
-                RECT textRect = br;
-                textRect.left += iconW;
-                DrawTextW(dc, b.text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-                // Focus rectangle
-                if (isFocus && !isDisabled) {
-                    RECT fr = br;
-                    InflateRect(&fr, -2, -3);
-                    DrawFocusRect(dc, &fr);
-                }
-
-                b.rect = br;
-                x = br.right + 2;
-            }
-
-            if (oldFont) SelectObject(dc, oldFont);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HDC memDc = CreateCompatibleDC(dc);
+            HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right - rc.left, rc.bottom - rc.top);
+            HGDIOBJ oldBmp = SelectObject(memDc, bmp);
+            drawToolbar(s, hwnd, memDc);
+            BitBlt(dc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memDc, 0, 0, SRCCOPY);
+            SelectObject(memDc, oldBmp);
+            DeleteObject(bmp);
+            DeleteDC(memDc);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -244,14 +369,14 @@ HWND mtCreate(HWND parent, HINSTANCE inst, HFONT font, int ctrlId) {
         wc.lpfnWndProc = mtProc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_MENU + 1);
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"MenuToolbar";
         RegisterClassW(&wc);
         registered = true;
     }
     return CreateWindowExW(0, L"MenuToolbar", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, 0, 0, 28, parent,
+        0, 0, 0, 42, parent,
         win32_control_id(ctrlId), inst, font);
 }
 
@@ -272,6 +397,15 @@ void mtAddButton(HWND hwnd, const wchar_t* text, int cmdId, HICON icon, bool ena
     if (s && s->count < MT_MAXBTN) {
         int flags = enabled ? 0 : MTBS_DISABLED;
         s->btns[s->count++] = {text, cmdId, flags, icon};
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+}
+
+void mtAddCloseButton(HWND hwnd, const wchar_t* text, int cmdId, bool enabled) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (s && s->count < MT_MAXBTN) {
+        int flags = MTBS_CLOSE | (enabled ? 0 : MTBS_DISABLED);
+        s->btns[s->count++] = {text, cmdId, flags, nullptr};
         InvalidateRect(hwnd, nullptr, TRUE);
     }
 }
@@ -305,9 +439,16 @@ void mtEnableButton(HWND hwnd, int cmdId, bool enable) {
     }
 }
 
+void mtSetActiveButton(HWND hwnd, int cmdId) {
+    auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!s || s->activeId == cmdId) return;
+    s->activeId = cmdId;
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
 int mtGetHeight(HWND hwnd) {
     auto* s = reinterpret_cast<MTState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    return s ? s->btnH : 24;
+    return s ? s->btnH : 42;
 }
 
 #endif

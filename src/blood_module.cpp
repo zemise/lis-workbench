@@ -7,6 +7,7 @@
 #include "resource.h"
 #include "search_app.h"
 #include "search_core.h"
+#include "log.h"
 #include "search_text.h"
 #include "search_ui_columns.h"
 #include "search_ui_layout.h"
@@ -59,13 +60,22 @@ constexpr UINT WM_LIS_RESULTS_DONE = WM_APP + 63;
 constexpr UINT WM_LIS_SUMMARY_DONE = WM_APP + 64;
 constexpr UINT_PTR SEARCH_EDIT_SUBCLASS = 6201;
 constexpr int DEFAULT_DATE_RANGE_DAYS = 7;
-constexpr int DEFAULT_LIS_DAYS = 7;
+constexpr int DEFAULT_LIS_DAYS = 14;
 
 constexpr int IDC_LIS_DAYS = 6301;
 constexpr int IDC_LIS_QUERY = 6302;
 constexpr int IDC_LIS_REPORTS = 6303;
 constexpr int IDC_LIS_RESULTS = 6304;
 constexpr int IDC_LIS_QUERY_NAME = 6305;
+
+enum LisReportColumn {
+    LisReportSampleNo = 0,
+    LisReportInspectTime = 1,
+    LisReportGroupName = 2,
+    LisReportBarcode = 3,
+    LisReportRequester = 4,
+    LisReportReviewer = 5,
+};
 
 constexpr COLORREF COLOR_PAGE_BG = RGB(0xE8, 0xF8, 0xFF);
 constexpr COLORREF COLOR_SEARCH_BUTTON = RGB(0xB2, 0xDC, 0xFC);
@@ -152,8 +162,6 @@ struct BloodState {
     HBRUSH searchBrush = nullptr;
 };
 
-BloodState* g_pending = nullptr;
-
 struct LisState {
     ModuleContext ctx;
     HWND patientNo = nullptr;
@@ -197,7 +205,6 @@ struct LisState {
     int resultGeneration = 0;
 };
 
-LisState* g_pendingLis = nullptr;
 
 void layoutLisWindow(HWND hwnd, LisState* st);
 
@@ -223,6 +230,42 @@ struct LisResultsResult {
     std::vector<search::ResultRow> rows;
     std::string error;
 };
+
+RECT workAreaForWindow(HWND hwnd) {
+    RECT fallback{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &fallback, 0);
+    RECT probe = fallback;
+    if (hwnd) {
+        GetWindowRect(hwnd, &probe);
+    }
+    HMONITOR monitor = MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        return mi.rcWork;
+    }
+    return fallback;
+}
+
+RECT centeredPopupRect(HWND ownerRoot, int desiredW, int desiredH, int minW, int minH) {
+    const RECT work = workAreaForWindow(ownerRoot);
+    const int workW = std::max(1, static_cast<int>(work.right - work.left));
+    const int workH = std::max(1, static_cast<int>(work.bottom - work.top));
+    const int maxW = std::max(minW, workW * 9 / 10);
+    const int maxH = std::max(minH, workH * 9 / 10);
+    const int popupW = std::min(desiredW, maxW);
+    const int popupH = std::min(desiredH, maxH);
+
+    RECT ownerRect{};
+    if (!ownerRoot || !GetWindowRect(ownerRoot, &ownerRect)) {
+        ownerRect = work;
+    }
+    int x = ownerRect.left + (ownerRect.right - ownerRect.left - popupW) / 2;
+    int y = ownerRect.top + (ownerRect.bottom - ownerRect.top - popupH) / 2;
+    x = std::max(static_cast<int>(work.left), std::min(x, static_cast<int>(work.right) - popupW));
+    y = std::max(static_cast<int>(work.top), std::min(y, static_cast<int>(work.bottom) - popupH));
+    return RECT{x, y, x + popupW, y + popupH};
+}
 
 bool isLeapYear(WORD year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
@@ -304,14 +347,6 @@ HFONT createScaledFont(HFONT base, double scale, LONG weight) {
     lf.lfHeight = lf.lfHeight == 0 ? -14 : static_cast<LONG>(lf.lfHeight * scale);
     lf.lfWeight = weight;
     return CreateFontIndirectW(&lf);
-}
-
-void applyFontToChildren(HWND root, HFONT font) {
-    if (!root || !font) return;
-    EnumChildWindows(root, [](HWND child, LPARAM p) -> BOOL {
-        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(p), TRUE);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(font));
 }
 
 void applyLisSummaryFonts(HWND hwnd, LisState* st) {
@@ -914,11 +949,12 @@ int selectedBloodRow(BloodState* st) {
 
 void insertLisReportRow(HWND list, int index, const search::ReportRow& row) {
     insertEmptyRow(list, index);
-    setCell(list, index, 0, dateOnly(row.chk_date));
-    setCell(list, index, 1, row.group_name);
-    setCell(list, index, 2, row.txm_no);
-    setCell(list, index, 3, row.requester);
-    setCell(list, index, 4, row.reviewer);
+    setCell(list, index, LisReportSampleNo, row.oper_no);
+    setCell(list, index, LisReportInspectTime, dateOnly(row.chk_date));
+    setCell(list, index, LisReportGroupName, row.group_name);
+    setCell(list, index, LisReportBarcode, row.txm_no);
+    setCell(list, index, LisReportRequester, row.requester);
+    setCell(list, index, LisReportReviewer, row.reviewer);
 }
 
 void insertLisResultRow(HWND list, int index, const search::ResultRow& row) {
@@ -932,11 +968,12 @@ void insertLisResultRow(HWND list, int index, const search::ResultRow& row) {
 
 std::string lisReportSortValue(const search::ReportRow& row, int col) {
     switch (col) {
-        case 0: return search::trim(row.chk_date);
-        case 1: return search::trim(row.group_name);
-        case 2: return search::trim(row.txm_no);
-        case 3: return search::trim(row.requester);
-        case 4: return search::trim(row.reviewer);
+        case LisReportSampleNo: return search::trim(row.oper_no);
+        case LisReportInspectTime: return search::trim(row.chk_date);
+        case LisReportGroupName: return search::trim(row.group_name);
+        case LisReportBarcode: return search::trim(row.txm_no);
+        case LisReportRequester: return search::trim(row.requester);
+        case LisReportReviewer: return search::trim(row.reviewer);
         default: return "";
     }
 }
@@ -1305,12 +1342,13 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     MoveWindow(st->results, rightX, top, resultW, listH, TRUE);
     MoveWindow(st->status, S(8), h - S(24), w - S(16), S(22), TRUE);
 
-    const int reportFixedW = S(100 + 160 + 105 + 76);
-    ListView_SetColumnWidth(st->reports, 0, S(100));
-    ListView_SetColumnWidth(st->reports, 1, S(160));
-    ListView_SetColumnWidth(st->reports, 2, S(105));
-    ListView_SetColumnWidth(st->reports, 3, S(76));
-    ListView_SetColumnWidth(st->reports, 4, (std::max)(S(90), reportW - reportFixedW - S(8)));
+    const int reportFixedW = S(54 + 100 + 150 + 105 + 56);
+    ListView_SetColumnWidth(st->reports, LisReportSampleNo, S(54));
+    ListView_SetColumnWidth(st->reports, LisReportInspectTime, S(100));
+    ListView_SetColumnWidth(st->reports, LisReportGroupName, S(150));
+    ListView_SetColumnWidth(st->reports, LisReportBarcode, S(105));
+    ListView_SetColumnWidth(st->reports, LisReportRequester, S(56));
+    ListView_SetColumnWidth(st->reports, LisReportReviewer, (std::max)(S(90), reportW - reportFixedW - S(8)));
 
     const int resultFixedW = S(92 + 145 + 86 + 62);
     ListView_SetColumnWidth(st->results, 0, S(92));
@@ -1324,8 +1362,9 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* st = reinterpret_cast<LisState*>(GetPropW(hwnd, PROP_LIS_STATE));
     switch (msg) {
         case WM_CREATE: {
-            st = g_pendingLis;
-            g_pendingLis = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            st = reinterpret_cast<LisState*>(cs->lpCreateParams);
+            if (!st) { LOG_ERROR("WM_CREATE: lpCreateParams is null (LisState)"); return -1; }
             SetPropW(hwnd, PROP_LIS_STATE, reinterpret_cast<HANDLE>(st));
 
             st->bgBrush = CreateSolidBrush(COLOR_PAGE_BG);
@@ -1343,7 +1382,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->patientAge = createValue(hwnd, L"", 0, 0, 0, 0);
             st->patientSex = createValue(hwnd, L"", 0, 0, 0, 0);
             st->days = search::create_edit(hwnd, IDC_LIS_DAYS, 0, 0, 0, 0);
-            SetWindowTextW(st->days, L"7");
+            SetWindowTextW(st->days, L"14");
             st->daysSpin = CreateWindowExW(0, UPDOWN_CLASSW, L"", WS_CHILD | WS_VISIBLE | UDS_SETBUDDYINT | UDS_ARROWKEYS,
                                            0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
             SendMessageW(st->daysSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->days), 0);
@@ -1364,11 +1403,12 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                 0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_REPORTS), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(st->reports, LVS_EX_GRIDLINES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-            search::add_list_column(st->reports, 0, L"检验时间", 100);
-            search::add_list_column(st->reports, 1, L"组合项目", 160);
-            search::add_list_column(st->reports, 2, L"条形码", 105);
-            search::add_list_column(st->reports, 3, L"检验者", 76);
-            search::add_list_column(st->reports, 4, L"审核者", 90);
+            search::add_list_column(st->reports, LisReportSampleNo, L"样本号", 54);
+            search::add_list_column(st->reports, LisReportInspectTime, L"检验时间", 100);
+            search::add_list_column(st->reports, LisReportGroupName, L"组合项目", 150);
+            search::add_list_column(st->reports, LisReportBarcode, L"条形码", 105);
+            search::add_list_column(st->reports, LisReportRequester, L"检验者", 56);
+            search::add_list_column(st->reports, LisReportReviewer, L"审核者", 90);
 
             st->results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -1398,10 +1438,17 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (st) layoutLisWindow(hwnd, st);
             return 0;
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc,
+                     st && st->bgBrush ? st->bgBrush : GetSysColorBrush(COLOR_WINDOW));
+            return 1;
+        }
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFontToChildren(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 applyLisSummaryFonts(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1445,7 +1492,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (nm->idFrom == IDC_LIS_REPORTS && nm->code == LVN_COLUMNCLICK) {
                 auto* clicked = reinterpret_cast<NMLISTVIEW*>(lp);
-                if (clicked->iSubItem >= 0 && clicked->iSubItem <= 4) {
+                if (clicked->iSubItem >= LisReportSampleNo && clicked->iSubItem <= LisReportReviewer) {
                     std::string selectedRepNo;
                     const int selected = ListView_GetNextItem(st->reports, -1, LVNI_SELECTED);
                     if (selected >= 0 && selected < static_cast<int>(st->report_rows.size())) {
@@ -1535,15 +1582,7 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
 
     static bool registered = false;
     if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = lisWndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = CreateSolidBrush(COLOR_PAGE_BG);
-        wc.lpszClassName = LIS_WND_CLASS;
-        RegisterClassExW(&wc);
+        REGISTER_MDI_CHILD_CLASS(ctx.instance, lisWndProc, LIS_WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
         registered = true;
     }
 
@@ -1553,27 +1592,19 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
     st->patient_name = row.patient_name;
     st->patient_age = row.patient_age;
     st->patient_sex = row.patient_sex;
-    g_pendingLis = st;
 
-    constexpr int windowW = 2240;
-    constexpr int windowH = 1440;
-    int x = CW_USEDEFAULT;
-    int y = CW_USEDEFAULT;
-    RECT ownerRect{};
-    if (ownerRoot && GetWindowRect(ownerRoot, &ownerRect)) {
-        x = ownerRect.left + ((ownerRect.right - ownerRect.left) - windowW) / 2;
-        y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - windowH) / 2;
-    }
+    const RECT popupRect = centeredPopupRect(ownerRoot, 2240, 1440, 1100, 720);
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, LIS_WND_CLASS, L"LIS检验信息",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        x, y, windowW, windowH,
-        ownerRoot ? ownerRoot : owner, nullptr, ctx.instance, nullptr);
+        popupRect.left, popupRect.top,
+        popupRect.right - popupRect.left,
+        popupRect.bottom - popupRect.top,
+        ownerRoot ? ownerRoot : owner, nullptr, ctx.instance, st);
     if (hwnd) {
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
     } else {
-        g_pendingLis = nullptr;
         delete st;
     }
 }
@@ -1583,8 +1614,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
         case WM_CREATE: {
-            st = g_pending;
-            g_pending = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            st = reinterpret_cast<BloodState*>(mcs->lParam);
+            if (!st) { LOG_ERROR("WM_CREATE: lpCreateParams is null (BloodState)"); return -1; }
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->bgBrush = CreateSolidBrush(COLOR_PAGE_BG);
             st->searchBrush = CreateSolidBrush(COLOR_SEARCH_BUTTON);
@@ -1600,10 +1633,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (st) layoutBloodWindow(hwnd, st);
             return 0;
+        case WM_ERASEBKGND: {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc,
+                     st && st->bgBrush ? st->bgBrush : GetSysColorBrush(COLOR_WINDOW));
+            return 1;
+        }
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                applyFontToChildren(hwnd, st->ctx.uiFont);
+                search::apply_font_to_children(hwnd, st->ctx.uiFont);
                 layoutBloodWindow(hwnd, st);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -1749,19 +1789,7 @@ HWND create_blood_module(const ModuleContext& ctx) {
         return existing;
     }
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = CreateSolidBrush(COLOR_PAGE_BG);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
-        registered = true;
-    }
+    REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
 
     auto* st = new BloodState;
     st->ctx = ctx;
@@ -1772,10 +1800,14 @@ HWND create_blood_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = st;
+    mcs.lParam = reinterpret_cast<LPARAM>(st);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    if (child) {
+        SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    } else {
+        delete st;
+    }
     return child;
 }
 

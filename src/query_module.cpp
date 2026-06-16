@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "log.h"
 #include "resource.h"
 #include "search_app.h"
 #include "search_controller.h"
@@ -10,14 +11,18 @@
 #include "search_splitter.h"
 #include "search_text.h"
 #include "search_ui_context.h"
+#include "search_ui_columns.h"
 #include "search_ui_events.h"
 #include "search_ui_layout.h"
 #include "search_ui_presenter.h"
 #include "search_view_state.h"
+#include "regular_report_module.h"
 #include "trend_window.h"
 #include <windows.h>
 #include <commctrl.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 
@@ -56,19 +61,6 @@ constexpr const wchar_t* WINDOW_TITLE = L"检验结果查询";
 constexpr UINT WM_QUERY_LOADED = WM_APP + 71;
 constexpr UINT WM_QUERY_RESULT_LOADED = WM_APP + 72;
 
-int clampFontSize(int value) { return value < 8 ? 8 : (value > 24 ? 24 : value); }
-
-HFONT createUiFont(int pointSize) {
-    NONCLIENTMETRICSW nm{};
-    nm.cbSize = sizeof(nm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(nm), &nm, 0);
-    LOGFONTW lf = nm.lfMessageFont;
-    HDC screen = GetDC(nullptr);
-    lf.lfHeight = -MulDiv(pointSize, GetDeviceCaps(screen, LOGPIXELSY), 72);
-    ReleaseDC(nullptr, screen);
-    return CreateFontIndirectW(&lf);
-}
-
 struct QueryState {
     ModuleContext ctx;
     search::MainUiIds ids{IDC_PATIENT_ID, IDC_BARCODE, IDC_NAME, IDC_PATIENT_NO, IDC_OPER,
@@ -83,7 +75,11 @@ struct QueryState {
     int pendingSplitterX = 0;
     int queryGeneration = 0;
     int resultGeneration = 0;
+    int reportSortColumn = -1;
+    bool reportSortAscending = true;
     bool queryLoading = false;
+    std::thread bgThread;
+    std::thread bgResultThread;
 };
 
 struct QueryLoadResult {
@@ -102,8 +98,6 @@ struct ResultLoadResult {
     std::string error;
 };
 
-QueryState* g_pending = nullptr;
-
 search::DbSettings& db(QueryState* q)  { return q->viewState.settings.db; }
 int& fontSize(QueryState* q)          { return q->viewState.settings.ui.font_size; }
 int& splitterX(QueryState* q)         { return q->viewState.settings.ui.splitter_x; }
@@ -113,6 +107,8 @@ auto& roomOpts(QueryState* q)         { return q->viewState.room_options; }
 auto& patientTypeOpts(QueryState* q)  { return q->viewState.patient_type_options; }
 auto& machineOpts(QueryState* q)      { return q->viewState.machine_options; }
 auto& connStr(QueryState* q)          { return q->viewState.connection_string; }
+
+void querySelectedResults(QueryState* q, int selected);
 
 void setStatus(QueryState* q, const std::wstring& text) {
     search::set_status_text(q->ui, text);
@@ -132,6 +128,83 @@ COLORREF resultRowColor(const search::ResultRow& row) {
         case search::ResultRowTone::Low:  return RGB(0, 0, 220);
         default:                          return CLR_INVALID;
     }
+}
+
+std::string reportSortValue(const search::ReportRow& row, int col) {
+    switch (col) {
+        case search::report_columns::SampleNo: return row.oper_no;
+        case search::report_columns::Name: return row.name;
+        case search::report_columns::Barcode: return row.txm_no;
+        case search::report_columns::ReportTime: return row.chk_date;
+        case search::report_columns::Sex: return row.sex;
+        case search::report_columns::Age: return row.age;
+        case search::report_columns::Bed: return row.bed_code;
+        case search::report_columns::PatientType: return row.patient_type;
+        case search::report_columns::Requester: return row.requester;
+        case search::report_columns::Reviewer: return row.reviewer;
+        case search::report_columns::GroupName: return row.group_name;
+        case search::report_columns::ReviewStatus: return search::display_conf(row.conf);
+        case search::report_columns::ConfirmStatus: return search::display_chk_flag(row.chk_flag);
+        case search::report_columns::PrintStatus: return search::display_binary_print_flag(row.zymz_print);
+        case search::report_columns::SelfServicePrintStatus:
+            return search::display_binary_print_flag(row.zzj_print);
+        default: return row.id;
+    }
+}
+
+bool parseSortNumber(const std::string& value, double& out) {
+    const std::string trimmed = search::trim(value);
+    if (trimmed.empty()) return false;
+    char* end = nullptr;
+    out = std::strtod(trimmed.c_str(), &end);
+    return end && *end == '\0';
+}
+
+int compareReportRows(const search::ReportRow& left, const search::ReportRow& right, int col) {
+    const std::string lv = search::trim(reportSortValue(left, col));
+    const std::string rv = search::trim(reportSortValue(right, col));
+    double ln = 0;
+    double rn = 0;
+    if (parseSortNumber(lv, ln) && parseSortNumber(rv, rn) && ln != rn)
+        return ln < rn ? -1 : 1;
+    if (lv != rv) return lv < rv ? -1 : 1;
+    const std::string lid = search::trim(left.id);
+    const std::string rid = search::trim(right.id);
+    return lid < rid ? -1 : (lid == rid ? 0 : 1);
+}
+
+void sortReportRowsByColumn(QueryState* q, int col) {
+    if (!q || !q->ui.reports || reportRows(q).empty() || col < 0) return;
+    if (q->reportSortColumn == col) q->reportSortAscending = !q->reportSortAscending;
+    else {
+        q->reportSortColumn = col;
+        q->reportSortAscending = true;
+    }
+    const bool asc = q->reportSortAscending;
+
+    std::string selectedId;
+    const int selected = ListView_GetNextItem(q->ui.reports, -1, LVNI_SELECTED);
+    if (selected >= 0 && selected < static_cast<int>(reportRows(q).size()))
+        selectedId = search::trim(reportRows(q)[static_cast<size_t>(selected)].id);
+
+    std::stable_sort(reportRows(q).begin(), reportRows(q).end(),
+        [col, asc](const auto& left, const auto& right) {
+            const int cmp = compareReportRows(left, right, col);
+            return asc ? cmp < 0 : cmp > 0;
+        });
+
+    search::present_report_rows(q->ui, reportRows(q));
+    if (!selectedId.empty()) {
+        for (int i = 0; i < static_cast<int>(reportRows(q).size()); ++i) {
+            if (search::trim(reportRows(q)[static_cast<size_t>(i)].id) == selectedId) {
+                ListView_SetItemState(q->ui.reports, i, LVIS_SELECTED | LVIS_FOCUSED,
+                                      LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(q->ui.reports, i, FALSE);
+                return;
+            }
+        }
+    }
+    querySelectedResults(q, -1);
 }
 
 void reloadRoomOptions(QueryState* q) {
@@ -183,15 +256,21 @@ void runQuery(QueryState* q) {
     const search::DbSettings settings = db(q);
     const HWND hwnd = GetParent(q->ui.reports);
     EnableWindow(q->ui.query_button, FALSE);
-    std::thread([hwnd, settings, input, generation]() {
-        auto* result = new QueryLoadResult;
-        result->generation = generation;
-        result->input = input;
-        result->ok = search::run_report_query(settings, input, result->rows, result->connection_string, result->error);
-        if (!PostMessageW(hwnd, WM_QUERY_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
+    if (q->bgThread.joinable()) q->bgThread.join();
+    q->bgThread = std::thread([hwnd, settings, input, generation]() {
+        try {
+            auto* result = new QueryLoadResult;
+            result->generation = generation;
+            result->input = input;
+            result->ok = search::run_report_query(settings, input, result->rows, result->connection_string, result->error);
+            if (!PostMessageW(hwnd, WM_QUERY_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
+                LOG_WARN("PostMessageW WM_QUERY_LOADED failed");
+                delete result;
+            }
+        } catch (...) {
+            LOG_ERROR("Background query thread crashed");
         }
-    }).detach();
+    });
 }
 
 void finishRunQuery(QueryState* q, HWND hwnd, std::unique_ptr<QueryLoadResult> result) {
@@ -205,6 +284,8 @@ void finishRunQuery(QueryState* q, HWND hwnd, std::unique_ptr<QueryLoadResult> r
     }
     q->lastQueryInput = result->input;
     q->hasLastQueryInput = true;
+    q->reportSortColumn = -1;
+    q->reportSortAscending = true;
     reportRows(q) = std::move(result->rows);
     connStr(q) = std::move(result->connection_string);
     search::present_report_rows(q->ui, reportRows(q));
@@ -223,14 +304,15 @@ void querySelectedResults(QueryState* q, int selected) {
     const std::string connection = connStr(q);
     const std::string repNo = reportRows(q)[static_cast<size_t>(selected)].rep_no;
     const HWND hwnd = GetParent(q->ui.results);
-    std::thread([hwnd, connection, repNo, generation]() {
+    if (q->bgResultThread.joinable()) q->bgResultThread.join();
+    q->bgResultThread = std::thread([hwnd, connection, repNo, generation]() {
         auto* result = new ResultLoadResult;
         result->generation = generation;
         result->ok = search::load_result_rows(connection, repNo, result->rows, result->error);
         if (!PostMessageW(hwnd, WM_QUERY_RESULT_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
             delete result;
         }
-    }).detach();
+    });
 }
 
 void finishQuerySelectedResults(QueryState* q, HWND hwnd, std::unique_ptr<ResultLoadResult> result) {
@@ -262,21 +344,53 @@ void showTrend(HWND owner, QueryState* q) {
                               db(q), input);
 }
 
+void openRegularReportForRow(HWND owner, QueryState* q, int index) {
+    if (!q || index < 0 || index >= static_cast<int>(reportRows(q).size())) return;
+    const auto& row = reportRows(q)[static_cast<size_t>(index)];
+    if (search::trim(row.rep_no).empty() || search::trim(row.mach_code).empty()) {
+        MessageBoxW(owner,
+                    L"当前报告缺少报告号或检验仪器代码，无法跳转到常规报告。",
+                    L"常规报告", MB_ICONWARNING);
+        return;
+    }
+    auto* target = new RegularReportOpenTarget;
+    target->rep_no = search::trim(row.rep_no);
+    target->oper_no = search::trim(row.oper_no);
+    target->inspect_date = search::trim(row.inspect_date).empty() ? row.chk_date : row.inspect_date;
+    target->mach_code = search::trim(row.mach_code);
+    target->mach_name = search::trim(row.mach_name);
+    target->room_code = search::trim(row.room_code);
+
+    ModuleContext ctx = q->ctx;
+    ctx.dbSettings = db(q);
+    ctx.uiFont = q->uiFont;
+    ctx.fontSize = fontSize(q);
+    HWND regular = create_regular_report_module(ctx);
+    if (!regular || !PostMessageW(regular, WM_REGULAR_OPEN_REPORT, 0, reinterpret_cast<LPARAM>(target))) {
+        delete target;
+        MessageBoxW(owner, L"常规报告页面打开失败。", L"常规报告", MB_ICONERROR);
+    }
+}
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* q = reinterpret_cast<QueryState*>(GetPropW(hwnd, PROP_STATE));
 
     switch (msg) {
         case WM_CREATE: {
-            q = g_pending;
-            g_pending = nullptr;
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
+            q = reinterpret_cast<QueryState*>(mcs->lParam);
+            if (!q) {
+                LOG_ERROR("WM_CREATE: lpCreateParams is null");
+                return -1;
+            }
             SetPropW(hwnd, PROP_STATE, reinterpret_cast<HANDLE>(q));
 
-            q->uiFont = createUiFont(fontSize(q));
+            q->uiFont = search::create_ui_font(fontSize(q));
             HFONT font = q->uiFont ? q->uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
             search::register_splitter_class(q->ctx.instance);
             search::create_main_controls(hwnd, font, q->ids, q->ui);
-            DestroyWindow(q->ui.settings_button);
-            q->ui.settings_button = nullptr;
+            ShowWindow(q->ui.settings_button, SW_HIDE);
             search::set_date_picker_today(q->ui.start);
             search::set_date_picker_today(q->ui.end);
             search::initialize_report_status_combo(q->ui.report_status);
@@ -352,6 +466,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!q) break;
             search::NotifyEventHandlers handlers;
             handlers.on_report_selected = [q](int i) { querySelectedResults(q, i); };
+            handlers.on_report_activated = [q, hwnd](int i) { openRegularReportForRow(hwnd, q, i); };
+            handlers.on_report_column_clicked = [q](int col) { sortReportRowsByColumn(q, col); };
             handlers.report_row_background = [](const search::ReportRow& r) { return reportRowBg(r); };
             handlers.result_row_color = [](const search::ResultRow& r) { return resultRowColor(r); };
             handlers.report_rows = &reportRows(q);
@@ -361,6 +477,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_DESTROY: {
+            if (q->bgThread.joinable()) q->bgThread.join();
+            if (q->bgResultThread.joinable()) q->bgResultThread.join();
             delete q;
             RemovePropW(hwnd, PROP_STATE);
             break;
@@ -378,15 +496,7 @@ HWND create_query_module(const ModuleContext& ctx) {
 
     static bool classesRegistered = false;
     if (!classesRegistered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = wndProc;
-        wc.hInstance = ctx.instance;
-        wc.hIcon = LoadIconW(ctx.instance, MAKEINTRESOURCEW(IDI_APP));
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = WND_CLASS;
-        RegisterClassExW(&wc);
+        REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
         search::register_splitter_class(ctx.instance);
         classesRegistered = true;
     }
@@ -394,7 +504,7 @@ HWND create_query_module(const ModuleContext& ctx) {
     auto* q = new QueryState;
     q->ctx = ctx;
     q->viewState.settings.db = ctx.dbSettings;
-    fontSize(q) = clampFontSize(ctx.fontSize);
+    fontSize(q) = search::clamp_font_size(ctx.fontSize);
 
     MDICREATESTRUCTW mcs{};
     mcs.szClass = WND_CLASS;
@@ -402,10 +512,14 @@ HWND create_query_module(const ModuleContext& ctx) {
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 
-    g_pending = q;
+    mcs.lParam = reinterpret_cast<LPARAM>(q);
     HWND child = reinterpret_cast<HWND>(SendMessageW(ctx.mdiClient, WM_MDICREATE, 0,
         reinterpret_cast<LPARAM>(&mcs)));
-    SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    if (child) {
+        SendMessageW(ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(child), 0);
+    } else {
+        delete q;
+    }
     return child;
 }
 

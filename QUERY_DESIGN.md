@@ -54,6 +54,8 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 - `ODBC Driver 17 for SQL Server`
 - `SQL Server`
 
+连接层会在本次运行内缓存相同连接串上一次成功的 driver candidate，后续优先尝试该候选，失败时仍回退到完整候选列表。首次分配 ODBC 环境句柄前启用 Driver Manager 连接池，并使用严格连接匹配；DBC 句柄设置 5 秒登录超时，用于限制不可达服务器、网络阻断或不可用驱动导致的建连等待，不限制 SQL 执行时长。
+
 ## 报告列表字段
 
 当前报告列表以 `LS_AS_REPORT` 为主表，部分列通过字典表显示名称：
@@ -113,10 +115,104 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | `LS_AS_PATTYPE` | 病人类型字典 | `TYPE`, `TYPE_NAME` |
 | `LS_AS_SEX` | 性别字典 | `SEX_CODE`, `SEX_NAME` |
 | `LS_AS_ROOM` | 检验科室字典 | `ROOM_CODE`, `ROOM_NAME` |
-| `LS_AS_MACHINE` | 检验仪器字典，筛选 `RUL='启用'` | `MACH_CODE`, `MACH_NAME`, `ROOM_CODE`, `RUL` |
+| `LS_AS_MACHINE` | 检验仪器字典，筛选 `DELETE_BIT=0` 且 `RUL='启用'` | `ROOM_CODE`, `MACH_CODE`, `MACH_NAME`, `PY_CODE`, `WB_CODE`, `RUL` |
 | `LS_AS_BARCODE` | 条码/病人号关联表，用于“病人号”和已签收条码查询 | `BARCODE`, `REG_NO`, `OPER_STATE`, `CANCEL_DATE`, `CANCEL_OPER` |
+| `JC_DEPT_PROPERTY` | 科室字典，覆盖率更高，当前优先用于报告表 `DEPT_CODE -> 科室名称` | `DEPT_ID`, `NAME`, `DELETED` |
+| `JC_dept_mz_zy` | 临床申请科室字典，根据 `TYPE / TYPENAME` 区分门诊或住院后解析 `DEPT_CODE -> DEPT_NAME` | 门诊：`mzksid`, `mzksmc`；住院：`zyksid`, `zyksmc`；`delete_bit` |
 | `JC_EMPLOYEE_PROPERTY` | 人员字典，用于“检验者”和“审核者”显示 | `EMPLOYEE_ID`, `NAME`, `D_CODE`, `YS_CODE`, `TYPENAME` |
 | `LS_AS_RESULTP` | 原候选检验者来源，但实测覆盖率低，当前不作为主来源 | `REP_NO`, `EditName`, `ChkNAME`, `TXM_NO` |
+| `LS_XK_BloodRequestApply` | 输血申请主表，输血结果查询列表主来源 | `ApplyFormNO`, `Apply_Time`, `Plan_Date`, `ApplyForm_Statue`, `Patient_NO`, `Patient_NOType`, `Patient_Name`, `TranProperty` |
+| `LS_XK_BloodRequestApplySon` | 输血申请子表，用于按申请单聚合申请成分 | `ApplyFormNO`, `ApplyComposition`, `ApplyNum`, `ApplyUnit` |
+| `LS_XK_BloodCrossMatch` | 交叉配血记录表，用于按输血申请号关联病人和配血审核信息 | `ApplyFormNO`, `Patient_NO`, `Patient_NOType`, `Patient_Name`, `VerifyState`, `Match_Date` |
+
+### 临床申请科室映射
+
+`LS_AS_BARCODE.DEPT_CODE / DEPT_NAME` 表示临床申请科室，不是检验科室、签收科室或仪器科室。当前默认优先用覆盖率更高的 `JC_DEPT_PROPERTY.DEPT_ID -> NAME` 补全科室名称，查询时应排除 `DELETED=1` 的科室记录。
+
+当确实需要按门诊/住院来源分别确认条码表申请科室时，再使用 `JC_dept_mz_zy` 作为辅助关系：
+
+- 门诊：`DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid`，显示 `JC_dept_mz_zy.mzksmc`。
+- 住院：`DEPT_CODE` 对应 `JC_dept_mz_zy.zyksid`，显示 `JC_dept_mz_zy.zyksmc`。
+
+如果 `LS_AS_BARCODE.DEPT_NAME` 已有值，当前查询展示可优先直接使用；当需要修正空值、代码值或重新计算申请科室名称时，再按上述字典关系补全。当前 `HIV 抗体检测统计` 明细的“科室”列不再依赖 `LS_AS_BARCODE.DEPT_NAME`，而是直接按 `LS_AS_REPORT.DEPT_CODE -> JC_DEPT_PROPERTY.DEPT_ID -> NAME` 取值；字典缺失时回退显示 `LS_AS_REPORT.DEPT_CODE`。
+
+## 输血结果查询
+
+`输血结果查询` 当前以 `LS_XK_BloodRequestApply` 为申请主表做只读检索，并通过 `LS_XK_BloodRequestApplySon.ApplyFormNO` 聚合申请成分。
+
+### 申请主表
+
+| 界面/含义 | 数据库字段 |
+| --- | --- |
+| 申请单号 | `LS_XK_BloodRequestApply.ApplyFormNO` |
+| 输血申请时间 | `Apply_Time` |
+| 输血计划时间 | `Plan_Date` |
+| 申请状态 | `ApplyForm_Statue`，当前已确认值为 `已审核`、`未审核`、`已完结` |
+| 病人号 | `Patient_NO` |
+| 病人类型 | `Patient_NOType` |
+| 病人姓名 | `Patient_Name` |
+| 紧急程度/输血性质 | `TranProperty` |
+
+### 申请成分
+
+`LS_XK_BloodRequestApplySon` 通过 `ApplyFormNO` 与申请主表关联。当前“申请成分”显示格式为：
+
+```text
+ApplyCompositionApplyNumApplyUnit;
+```
+
+如果同一申请单对应多行子表记录，则在同一列表单元格中用分号拼接。
+
+### 交叉配血记录
+
+`LS_XK_BloodCrossMatch` 是交叉配血记录表，表内 `ApplyFormNO` 对应输血申请号，并有索引 `ApplyFormNO + Delete_Bit` 可用于按申请单关联查询。当前已确认字段含义：
+
+| 含义 | 数据库字段 |
+| --- | --- |
+| 输血申请单号 | `ApplyFormNO` |
+| 病人号 | `Patient_NO` |
+| 患者类型 | `Patient_NOType` |
+| 病人姓名 | `Patient_Name` |
+| 审核状态 | `VerifyState`，常见值为 `已审核`、`未审核` |
+| 配血时间 | `Match_Date` |
+
+后续如果输血页面需要展示交叉配血状态或配血时间，可优先按 `ApplyFormNO` 关联 `LS_XK_BloodCrossMatch`，并过滤 `Delete_Bit=0`。
+
+### HIV 统计中的已完结输血单申请号
+
+`HIV 抗体检测统计` 下方明细列表中的“病人号”列直接显示 `LS_AS_REPORT.REG_NO`。“已完结输血单申请号”列用于辅助核对 HIV 明细是否存在已完结输血申请。当前改为直接使用输血申请主表 `LS_XK_BloodRequestApply`，不再绕行 `LS_XK_BloodCrossMatch` 交叉配血表；申请主表自身包含唯一病人号 `Patient_NO`，因此匹配逻辑可简化为按病人号匹配，不再依赖姓名。为避免对每条 HIV 明细逐行扫描输血申请表，当前先按统计月份一次性取出当月已完结输血申请，再在 C++ 内存中按病人号匹配到明细行。当前匹配规则：
+
+```text
+LS_XK_BloodRequestApply.Apply_Time >= 当前统计月第一天
+LS_XK_BloodRequestApply.Apply_Time <  下月第一天
+LS_AS_REPORT.REG_NO = LS_XK_BloodRequestApply.Patient_NO
+LS_XK_BloodRequestApply.ApplyForm_Statue = '已完结'
+LS_XK_BloodRequestApply.Delete_Bit = 0
+```
+
+匹配后显示 `LS_XK_BloodRequestApply.ApplyFormNO`。如果同一病人匹配到多个已完结申请单号，则在同一单元格中用分号拼接。该列只读展示，不修改输血表数据。
+
+上方汇总表中的“受血（制品）前检测”行按下方明细“已完结输血单申请号”列是否非空统计：初筛检测数为该列非空的明细行数，初筛阳性数为这些明细行中 `阳性='是'` 的行数。
+
+上方汇总表中的“术前检测”行按剩余量统计：初筛检测数为总初筛检测数减去“受血（制品）前检测 / 性病门诊 / 其他就诊检测 / 孕产期检查”的初筛检测数，初筛阳性数同理用总初筛阳性数减去这些来源的初筛阳性数；如果分类之间未来出现交叉导致结果为负，则按 0 显示。
+
+HIV 明细查询的性能策略：
+
+- 第一步只查 `LS_AS_REPORT`：按月份、审核状态、发送状态、姓名非空、三组 `MACH_CODE` 和可选 `DEPT_CODE IN (...)` 筛出候选 `REP_NO`。
+- 第二步按候选 `REP_NO` 分批查询 `LS_AS_REPENTRY` 中三个目标 `ITEM_CODE`，每批最多 500 个 `REP_NO`，再在 C++ 中按报告仪器匹配对应 HIV 项目。
+- 明细“方法学”列不额外查表，按 `MACH_CODE` 固定派生：`4005`、`914` 显示 `化学发光法`，`4008` 显示 `酶免法`。
+- 三组候选报告按 `MACH_CODE` 拆成三段 `UNION ALL`，避免一个大 `OR` 条件影响 SQL Server 执行计划。
+- 报告主表查询不直接 JOIN `LS_AS_REPENTRY`，避免在月度范围上直接联查大明细表。
+- `LS_AS_MACHINE`、`LS_AS_PATTYPE`、`JC_DEPT_PROPERTY` 先作为小字典查询到 C++ 内存中，再对明细行做名称映射。
+- `全部 / 新院 / 老院` 来源筛选先根据 `JC_DEPT_PROPERTY.NAME` 分出新院/老院 `DEPT_ID` 集合，再把 `r.DEPT_CODE IN (...)` 下推到三段 HIV 主查询中；C++ 侧仍保留映射后校验，避免主 SQL 使用 `LIKE '%滨水新城%'`。
+
+HIV 统计表导出：
+
+- `导出统计表` 按钮只使用当前页面已加载的 `HivStatSummary` 汇总数据，不额外访问数据库。
+- HIV 统计表 DOCX 模版不随项目、安装包或更新包发布。用户在页面点击 `上传模版` 选择本地 DOCX 后，程序会校验 `{}` 占位符数量并复制到安装目录 `templates\HIVStatisticsTemplate.docx`；未检测到匹配模版时 `导出统计表` 按钮不可用。模板内使用从上到下、从左到右的 `{}` 占位符；客户端不依赖 Office COM 自动化，而是读取 DOCX 包并替换 `word/document.xml` 中的占位符生成新文件，从而保留模板原有版式、字体、合并单元格和页边距。
+- 导出时选择目标文件夹，默认文件名为 `YYYY年M月HIV抗体检测统计表.docx`。
+- 导出内容只填写统计汇总表；下方 listview 明细仅用于页面核对，不导出。非合计行数字为 `0` 时导出为空，合计行保留 `0`；WB 检测数、复检数、报告疫情检测数等未接入字段暂留空。
+- 当前占位符顺序为：统计年份、统计月份、院区文字、20 行样本来源分类的 `初筛检测数/初筛阳性数`、填报日期年/月/日。
 
 ## 已签收条码查询
 
@@ -154,7 +250,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 类型 | `LS_AS_BARCODE.TYPENAME` |
 | 姓名 | `LS_AS_BARCODE.NAME` |
 | 性别 | `LS_AS_BARCODE.SEX` |
-| 申请科室 | `LS_AS_BARCODE.DEPT_NAME` |
+| 申请科室 | 优先 `LS_AS_BARCODE.DEPT_NAME`；需要从代码补全时，根据 `TYPE / TYPENAME` 区分门诊/住院后，用 `DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid / zyksid` 取得 `mzksmc / zyksmc` |
 | 床号 | `LS_AS_BARCODE.BEDNO` |
 | 签收人 | `LS_AS_BARCODE.OPER_CODE` |
 | 签收时间 | `LS_AS_BARCODE.IN_DATE` |
@@ -184,9 +280,11 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 界面输入 | 查询字段 / 规则 |
 | --- | --- |
 | 检验日期 | `LS_AS_REPORT.CHK_DATE >= 日期` 且 `< 日期 + 1 天` |
-| 检验仪器 | 弹窗来源 `LS_AS_ROOM` / `LS_AS_MACHINE`，选定后以 `LS_AS_REPORT.MACH_CODE` 过滤 |
+| 检验仪器 | 弹窗来源 `LS_AS_ROOM` / `LS_AS_MACHINE`，仅加载 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间及其启用仪器，并按 `ROOM_CODE, MACH_CODE` 排序；列表显示仪器代码、仪器名称、项目代码、项目名称、样本和拼音码；项目代码来自同仪器 `LS_AS_GROUP.REP_STYLE='M'` 的首条 `GROUP_CODE`，多条时按 `orderby, GROUP_CODE` 取第一条；项目名称按 `LS_AS_GROUP.GROUP_CODE = LS_CODE_ITEM.ITEM_CODE` 显示 `ITEM_NAME`；样本按 `LS_AS_GROUP.SAMP_CODE = LS_AS_SAMPLE.SAMP_CODE` 显示 `SAMP_NAME`；科室和启用仪器字典在当前常规报告页面内缓存，数据库连接配置变化时自动重载；科室下拉提供 `全部`，无检索内容且用户未主动选择科室时默认展示全部仪器；输入英文或数字时跨科室本地匹配 `PY_CODE` 和 `MACH_CODE`，匹配结果默认选中第一行，检索框回车可直接确认，选中仪器后同步科室下拉框，确认后以 `LS_AS_REPORT.MACH_CODE` 过滤 |
 
-系统设置页可配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，保存到 `[RegularReport] QuickMachine*Code / QuickMachine*Name / QuickMachine*RoomCode`。中文仪器名会以 ASCII 安全编码写入 `ClientConfig.ini`，程序读取时自动还原，避免 Win32 profile API 按系统 ANSI 代码页保存后乱码。配置弹窗复用 `LS_AS_ROOM / LS_AS_MACHINE` 数据源；如果常规报告页当前已有检验仪器，弹窗打开时会优先按当前 `ROOM_CODE` 选中科室，并按当前 `MACH_CODE` 选中仪器；弹窗失焦时只投递关闭消息，不在 `WM_ACTIVATE` 中同步销毁，避免点击主界面时影响主窗口重新激活。点击快捷按钮后只更新当前页的 `检验仪器` 条件，并按当前 `检验日期` 重新查询右侧报告列表。如果当前页面已经是该快捷仪器，则按保留状态刷新处理；切换到其他快捷仪器时仍按普通查询处理。底部快捷按钮按 `MACH_CODE + ROOM_CODE` 与当前页面检验仪器匹配，匹配项用 `[1] / [2] / [3]` 文本标记，不依赖仪器名称；打开页面、手动选择检验仪器、点击快捷按钮和系统设置保存后都会刷新该标记。
+系统设置页可配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，保存到 `[RegularReport] QuickMachine*Code / QuickMachine*Name / QuickMachine*RoomCode`。中文仪器名会以 ASCII 安全编码写入 `ClientConfig.ini`，程序读取时自动还原，避免 Win32 profile API 按系统 ANSI 代码页保存后乱码。配置弹窗复用常规报告仪器弹窗的数据范围，只显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下的启用仪器，并同步展示主项目代码、项目名称和样本；如果常规报告页当前已有检验仪器，弹窗打开时会优先按当前 `ROOM_CODE` 选中科室，并按当前 `MACH_CODE` 选中仪器；弹窗失焦时只投递关闭消息，不在 `WM_ACTIVATE` 中同步销毁，避免点击主界面时影响主窗口重新激活。点击快捷按钮后只更新当前页的 `检验仪器` 条件，并按当前 `检验日期` 重新查询右侧报告列表。如果当前页面已经是该快捷仪器，则按保留状态刷新处理；切换到其他快捷仪器时仍按普通查询处理。底部快捷按钮按 `MACH_CODE + ROOM_CODE` 与当前页面检验仪器匹配，匹配项用 `[1] / [2] / [3]` 文本标记，不依赖仪器名称；打开页面、手动选择检验仪器、点击快捷按钮和系统设置保存后都会刷新该标记。
+
+常规报告页面直接打开时会在窗口初始化完成后尝试静默应用快捷检验仪器 `1`：如果 `QuickMachine1Code` 已配置，则回填左侧 `检验仪器`，按当天 `检验日期` 查询右侧报告列表，并高亮底部 `[1]`；如果未配置则不提示、不查询。从 `检验结果查询` 双击报告行跳转到常规报告时，目标报告跳转消息会取消这次默认快捷仪器加载，避免默认查询覆盖目标报告定位。
 
 ### 右侧信息列表
 
@@ -200,7 +298,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 | 性别 | `LS_AS_REPORT.SEX = LS_AS_SEX.SEX_CODE`，显示 `SEX_NAME` |
 | 年龄 | `LS_AS_REPORT.AGE` |
 | 医嘱内容 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后聚合 `ORDER_TEXT`，多行用 `/` 分隔 |
-| 科室代码 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后取 `DEPT_NAME` |
+| 科室代码 | `LS_AS_REPORT.TXM_NO = LS_AS_BARCODE.BARCODE` 后优先取 `DEPT_NAME`；需要从代码补全时，根据 `LS_AS_BARCODE.TYPE / TYPENAME` 区分门诊/住院后，用 `DEPT_CODE` 对应 `JC_dept_mz_zy.mzksid / zyksid` 取得 `mzksmc / zyksmc` |
 | 床号 | `LS_AS_REPORT.BED_CODE` |
 | 打印 | `LS_AS_REPORT.ZYMZ_PRINT` |
 | 病人类型 | `LS_AS_REPORT.TYPE = LS_AS_PATTYPE.TYPE`，显示 `TYPE_NAME` |
@@ -264,6 +362,17 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 - 开单日期
 - 科室代码
 - 病人号
+
+### 左侧默认值与回填优先级
+
+常规报告左侧区域按业务形态预留为后续“编号样本 / 写入报告主记录”的准备区，`组合项目`、`标本`、`检验单号`、`样本号` 等字段在真实编号流程中会成为写入 `LS_AS_REPORT` 等表的数据来源之一。当前项目仍保持只读查询和界面展示，不执行编号写库，也不向 LIS 业务表插入或更新记录。
+
+在不写库的当前阶段，左侧字段来源按以下规则记录：
+
+- 用户选择左侧 `检验仪器` 后，`组合项目` 和 `标本` 的默认值优先来自仪器选择弹窗当前选中仪器的主项目和样本信息：主项目取 `LS_AS_GROUP.REP_STYLE='M'` 的首条 `GROUP_CODE` 及其 `LS_CODE_ITEM.ITEM_NAME`，样本取同一主项目的 `SAMP_CODE` 及其 `LS_AS_SAMPLE.SAMP_NAME`。
+- 用户选中右侧已有报告行后，左侧 `标本信息 / 病人信息 / 验单信息` 仍以右侧数据库记录回填为准，用于查看既有报告。此时 `组合项目`、`标本` 等展示值来自当前报告行及其关联字典。
+- 如果没有选中右侧报告行，也没有完成编号写库，左侧来自仪器选择器的 `组合项目` 和 `标本` 只作为界面默认展示和后续编号流程的候选值，不代表数据库中已存在报告记录。
+- 后续如果接入编号写库，需要在代码状态中区分“仪器选择器默认值”和“右侧报告行回填值”，避免查看已有报告时误把默认值写回数据库。
 
 ### 左侧和中间联动
 
