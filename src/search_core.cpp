@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -351,13 +352,10 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
 
     std::string cached_candidate;
     const auto candidates = prioritized_odbc_candidates(connection_string, cached_candidate);
+    std::vector<std::string> failed_attempt_logs;
 
     for (const auto& candidate : candidates) {
         const auto driver_name = candidate_driver_name(candidate);
-        if (log) {
-            log(std::string("db try driver=") + driver_name +
-                (candidate == cached_candidate ? " cached" : "") + "\n");
-        }
         const auto wide = utf8_to_wide(candidate);
         SQLWCHAR out_conn[2048] = {};
         SQLSMALLINT out_len = 0;
@@ -368,16 +366,26 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
             remember_odbc_candidate(connection_string, candidate);
             if (log) {
-                log("db connect ok driver=" + driver_name + "\n");
+                log(std::string("db connect ok driver=") + driver_name +
+                    (candidate == cached_candidate ? " cached" : "") + "\n");
             }
             return true;
         }
         if (log) {
-            log("db connect failed driver=" + driver_name + " diag=" + collect_diag(SQL_HANDLE_DBC, db.dbc) + "\n");
+            failed_attempt_logs.push_back(
+                "db connect failed driver=" + driver_name +
+                (candidate == cached_candidate ? " cached" : "") +
+                " diag=" + collect_diag(SQL_HANDLE_DBC, db.dbc) + "\n");
         }
     }
 
     error = "SQLDriverConnect failed: " + collect_diag(SQL_HANDLE_DBC, db.dbc);
+    if (log) {
+        for (const auto& entry : failed_attempt_logs) {
+            log(entry);
+        }
+        log(error + "\n");
+    }
     disconnect(db);
     return false;
 }
