@@ -311,6 +311,62 @@ struct HivStatQuery {
     std::string lab_department;
 };
 
+struct EmergencyStatSummary {
+    int emergency_barcode_count = 0;
+    int not_loaded_count = 0;
+    int loaded_not_reviewed_count = 0;
+    int reviewed_count = 0;
+    int doctor_viewed_count = 0;
+    int sent_count = 0;
+    int unfinished_count = 0;
+    int report_emergency_count = 0;
+    int barcode_emergency_count = 0;
+    int both_emergency_count = 0;
+};
+
+struct EmergencyStatDetailRow {
+    std::string barcode;
+    std::string emergency_source;
+    std::string barcode_status;
+    int min_oper_state = -1;  // Derived display state: REP_NO/CHK_FLAG take priority over delayed OPER_STATE.
+    int wait_minutes = 0;
+    int wait_seconds = 0;
+    std::string sign_oper;
+    std::string sign_dept;
+    std::string lab_department;
+    std::string in_date;
+    std::string req_time;
+    std::string reg_no;
+    std::string type_name;
+    std::string name;
+    std::string sex;
+    std::string age;
+    std::string dept_name;
+    std::string bed_code;
+    std::string order_text;
+    std::string sample_name;
+    std::string rep_no;
+    std::string oper_no;
+    std::string mach_code;
+    std::string mach_name;
+    std::string inspect_date;
+    std::string room_code;
+    std::string chk_flag;
+    std::string conf;
+    std::string create_time;
+    std::string review_time;
+    std::string rep_time;
+};
+
+struct EmergencyStatQuery {
+    std::string connection_string;
+    std::string start_time;
+    std::string end_time;
+    std::string time_field;      // Sign/Apply
+    std::string lab_department;  // 全部/老院/新院
+    bool only_unfinished = false;
+};
+
 using LogFn = std::function<void(const std::string&)>;
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log = {});
@@ -327,5 +383,6 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});
 bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log = {});
+bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSummary& summary, std::vector<EmergencyStatDetailRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search

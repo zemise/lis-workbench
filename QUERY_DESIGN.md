@@ -271,6 +271,49 @@ HIV 统计表导出：
 
 列表不合并同一条形码的多条记录，保持 `LS_AS_BARCODE` 查询结果一行对应一行，避免因聚合造成现场查询变慢。
 
+## 急诊样本统计
+
+`统计分析管理 -> 急诊样本统计` 以急诊条码为主口径做只读统计，目标是让用户快速发现急诊条码是否已上机、是否审核、是否发送，以及签收后已经等待多久。
+
+### 查询口径
+
+第一版默认按签收时间查询，筛选控件精确到分钟，默认范围为当天 `00:00` 到 `23:59`：
+
+| 界面输入 | 查询字段 / 规则 |
+| --- | --- |
+| 开始时间 | `LS_AS_BARCODE.IN_DATE >= 开始时间` |
+| 结束时间 | `LS_AS_BARCODE.IN_DATE < 结束时间 + 1 分钟` |
+| 院区 | SQL 不下推院区过滤；C++ 侧派生后过滤。`sign_dept=102` 为老院，`sign_dept=401` 为新院；`sign_dept` 为空/异常时，申请科室含 `滨水` 为新院，否则为老院 |
+| 只看未完成 | 关联报告未发送，即 `LS_AS_REPORT.CONF <> 'S'` 或为空 |
+
+主统计对象是唯一 `LS_AS_BARCODE.BARCODE`。同一条码对应多条医嘱时，先按条码聚合，再统计和展示：
+
+| 条码级字段 | 聚合规则 |
+| --- | --- |
+| 急诊条码 | 任一有效行 `JZ_FLAG=1`，或关联报告存在 `assaypat_type='0'` |
+| 签收时间 | 最早非空 `IN_DATE` |
+| 申请时间 | 关联报告聚合后的 `LS_AS_REPORT.REP_DATE` |
+| 当前状态 | 由报告链路优先校正后显示：取到 `LS_AS_REPORT.REP_NO` 至少视为已上机，`CHK_FLAG='T'` 至少视为审核完成并按 `CONF` 细分为审核完成未发送/已发送，`OPER_STATE=3` 且已审核时显示医生已查看 |
+| 医嘱内容 / 标本 | SQL 返回条码行级数据；C++ 按 `BARCODE` 聚合，`ORDER_TEXT` 去重后用 `/` 拼接，标本取非空代表值 |
+
+查询实现上，急诊统计主 SQL 返回 `LS_AS_BARCODE` 行级数据，不在 SQL 端按条码聚合，也不使用 `OUTER APPLY + FOR XML PATH` 拼接医嘱；C++ 侧按 `BARCODE` 聚合状态、时间和展示字段，并将同条码多条 `ORDER_TEXT` 去重后用 `/` 拼接。仪器名称不在主 SQL 中 `JOIN LS_AS_MACHINE`，而是先轻量预取 `MACH_CODE -> MACH_NAME` 字典到 C++ `std::map`，fetch 明细后内存映射，查不到时回退显示 `MACH_CODE`。院区筛选同样在 C++ 侧完成，避免主 SQL 追加 `sign_dept` 条件导致空值条码漏查，也避免把 `LIKE '%滨水%'` 放入主查询条件。
+
+急诊统计的展示状态不再直接裸用 `LS_AS_BARCODE.OPER_STATE`，因为该字段可能异步更新。派生规则为：
+
+| 当前状态 | 字段口径 |
+| --- | --- |
+| 未上机 | 未取到有效报告号，且聚合后 `OPER_STATE=0` |
+| 已上机未审核 | 已取到 `LS_AS_REPORT.REP_NO`，或聚合后 `OPER_STATE>=1`，但 `CHK_FLAG<>'T'` |
+| 审核完成未发送 | `LS_AS_REPORT.CHK_FLAG='T'` 且 `LS_AS_REPORT.CONF<>'S'`，且未满足医生已查看 |
+| 审核完成已发送 | `LS_AS_REPORT.CHK_FLAG='T'` 且 `LS_AS_REPORT.CONF='S'`，且未满足医生已查看 |
+| 医生已查看 | `LS_AS_REPORT.CHK_FLAG='T'` 且聚合后 `OPER_STATE=3` |
+
+`签收-审核用时` 由客户端软件在 C++ 中计算：报告 `CHK_FLAG='T'` 时按 `LS_AS_REPORT.REP_TIME - LS_AS_BARCODE.IN_DATE` 显示固定分秒数；未审核条码按当前软件时间持续刷新 `当前时间 - LS_AS_BARCODE.IN_DATE`；未签收或时间缺失显示 `-`。
+
+### 明细字段
+
+明细列表展示院区、样本号、条码号、急诊来源、当前状态、签收-审核用时、签收人、病人号、类型、姓名、性别、年龄、申请科室、床号、医嘱内容、标本、报告号、仪器、申请时间、签收时间、上机时间、报告时间、审核、发送和末尾空白列。时间字段按现场口径对应：申请时间 `LS_AS_REPORT.REP_DATE`、签收时间 `LS_AS_BARCODE.IN_DATE`、上机时间 `LS_AS_REPORT.CREATE_TIME`、审核/报告时间 `LS_AS_REPORT.REP_TIME`，且放在 `仪器` 列之后。院区优先来自 `LS_AS_BARCODE.sign_dept`，`102` 映射为老院，`401` 映射为新院；当 `sign_dept` 缺失时按申请科室是否包含 `滨水` 兜底。审核列显示 `LS_AS_REPORT.CHK_FLAG`，发送列显示 `LS_AS_REPORT.CONF`，其中 `CONF='S'` 表示报告已发送。明细填充时会通过 `WM_SETREDRAW` 暂停 ListView 重绘，完成所有行列填充后再恢复绘制并统一刷新。明细双击会复用常规报告的 `RegularReportOpenTarget + WM_REGULAR_OPEN_REPORT` 机制，携带 `REP_NO`、`OPER_NO`、`MACH_CODE`、`MACH_NAME`、`ROOM_CODE` 和 `CHK_DATE` 跳转到 `常规报告` 并定位目标报告。
+
 ## 常规报告
 
 工具菜单中的 `常规报告` 以三栏工作台形式复用检验结果查询的数据链路。页面打开时不自动查询；用户先选择左侧 `检验仪器`，再按左侧 `检验日期` 查询当天该仪器下的报告主记录。

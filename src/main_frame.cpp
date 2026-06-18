@@ -19,6 +19,7 @@
 #include "app_settings.h"
 #include "app_settings_io.h"
 #include "crash_handler.h"
+#include "emergency_statistics_module.h"
 #include "log.h"
 #include "search_ui_layout.h"
 #include "barcode_module.h"
@@ -248,7 +249,6 @@ void closeActiveMdiChild() {
 
 HWND create_tool4_placeholder(const ModuleContext&) { return createMdiChild(L"工具4"); }
 HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"工具5"); }
-HWND create_stat2_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析2"); }
 HWND create_stat3_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析3"); }
 HWND create_stat4_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析4"); }
 HWND create_stat5_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析5"); }
@@ -264,7 +264,7 @@ const ModuleDef g_modules[] = {
     { L"Tool4",    L"工具",     L"工具4(&4)",           IDM_TOOL4,   create_tool4_placeholder },
     { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
     { L"HivStatistics", L"统计分析管理", L"HIV 抗体检测统计(&1)", IDM_STAT1, create_hiv_statistics_module },
-    { L"Stat2",    L"统计分析管理", L"统计分析2(&2)",    IDM_STAT2,   create_stat2_placeholder },
+    { L"EmergencyStatistics", L"统计分析管理", L"急诊样本统计(&2)", IDM_STAT2, create_emergency_statistics_module },
     { L"Stat3",    L"统计分析管理", L"统计分析3(&3)",    IDM_STAT3,   create_stat3_placeholder },
     { L"Stat4",    L"统计分析管理", L"统计分析4(&4)",    IDM_STAT4,   create_stat4_placeholder },
     { L"Stat5",    L"统计分析管理", L"统计分析5(&5)",    IDM_STAT5,   create_stat5_placeholder },

@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <set>
@@ -25,6 +28,45 @@ std::string sql_escape(std::string value) {
         pos += 2;
     }
     return value;
+}
+
+bool parse_sql_datetime(const std::string& value, std::tm& out) {
+    const std::string text = trim(value);
+    if (text.size() < 10) return false;
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second) < 3) {
+        return false;
+    }
+    out = std::tm{};
+    out.tm_year = year - 1900;
+    out.tm_mon = month - 1;
+    out.tm_mday = day;
+    out.tm_hour = hour;
+    out.tm_min = minute;
+    out.tm_sec = second;
+    out.tm_isdst = -1;
+    return true;
+}
+
+int seconds_between_sql_datetimes(const std::string& start, const std::string& end) {
+    std::tm start_tm{};
+    std::tm end_tm{};
+    if (!parse_sql_datetime(start, start_tm) || !parse_sql_datetime(end, end_tm)) {
+        return -1;
+    }
+    const std::time_t start_time = std::mktime(&start_tm);
+    const std::time_t end_time = std::mktime(&end_tm);
+    if (start_time == static_cast<std::time_t>(-1) || end_time == static_cast<std::time_t>(-1)) {
+        return -1;
+    }
+    const double seconds = std::difftime(end_time, start_time);
+    if (seconds < 0) return -1;
+    return static_cast<int>(seconds);
 }
 
 std::vector<std::string> split(const std::string& text, char delimiter) {
@@ -2165,6 +2207,256 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
     summary.preoperative_positive_count =
         non_negative_difference(summary.positive_count, classified_positive_count);
 
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSummary& summary, std::vector<EmergencyStatDetailRow>& rows, std::string& error, LogFn log) {
+    summary = EmergencyStatSummary{};
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_emergency_statistics is only available on Windows";
+    return false;
+#else
+    const std::string start_time = trim(query.start_time);
+    const std::string end_time = trim(query.end_time);
+    if (start_time.empty() || end_time.empty()) {
+        error = "start_time and end_time are required";
+        return false;
+    }
+
+    const std::string time_field = trim(query.time_field);
+    const char* date_column = time_field == "Apply" ? "b.REQ_TIME" : "b.IN_DATE";
+    const std::string lab_department = trim(query.lab_department);
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) {
+        return false;
+    }
+
+    // Load machine name lookup once to avoid LS_AS_MACHINE JOIN in the main query
+    std::map<std::string, std::string> machine_names;
+    {
+        std::ostringstream mSql;
+        mSql << "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),MACH_CODE))),''),"
+             << " isnull(LTRIM(RTRIM(MACH_NAME)),'')"
+             << " FROM LS_AS_MACHINE WITH (NOLOCK)"
+             << " WHERE isnull(DELETE_BIT,0)=0";
+        if (log) log("exec sql: " + mSql.str() + "\n");
+        SQLHSTMT mStmt = SQL_NULL_HSTMT;
+        if (exec_query(db.dbc, mSql.str(), mStmt, error)) {
+            while (SQLFetch(mStmt) == SQL_SUCCESS) {
+                const std::string code = fetch_column(mStmt, 1);
+                const std::string name = fetch_column(mStmt, 2);
+                if (!code.empty()) machine_names[code] = name;
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, mStmt);
+        }
+    }
+
+    std::ostringstream sql;
+    sql
+        << "SELECT"
+        << " LTRIM(RTRIM(b.BARCODE)) AS BARCODE,"
+        << " CAST(CASE WHEN isnull(b.JZ_FLAG,0)=1 THEN 1 ELSE 0 END AS varchar(10)) AS BARCODE_EMERGENCY,"
+        << " CAST(CASE WHEN r.assaypat_type='0' THEN 1 ELSE 0 END AS varchar(10)) AS REPORT_EMERGENCY,"
+        << " isnull(CONVERT(varchar(19),b.IN_DATE,120),'') AS IN_DATE,"
+        << " isnull(CONVERT(varchar(19),r.REP_DATE,120),'') AS REQ_TIME,"
+        << " isnull(CONVERT(varchar(20),b.OPER_STATE),'') AS OPER_STATE,"
+        << " CAST(CASE WHEN b.CANCEL_DATE IS NOT NULL THEN 1 ELSE 0 END AS varchar(10)) AS HAS_CANCEL,"
+        << " isnull(LTRIM(RTRIM(b.REG_NO)),'') AS REG_NO,"
+        << " isnull(LTRIM(RTRIM(b.TYPENAME)),'') AS TYPE_NAME,"
+        << " isnull(LTRIM(RTRIM(b.NAME)),'') AS NAME,"
+        << " isnull(LTRIM(RTRIM(b.SEX)),'') AS SEX,"
+        << " isnull(LTRIM(RTRIM(b.AGE)),'') AS AGE,"
+        << " isnull(LTRIM(RTRIM(b.DEPT_NAME)),'') AS DEPT_NAME,"
+        << " isnull(LTRIM(RTRIM(b.BEDNO)),'') AS BED_NO,"
+        << " isnull(LTRIM(RTRIM(b.OPER_CODE)),'') AS SIGN_OPER,"
+        << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),b.sign_dept))),'') AS SIGN_DEPT,"
+        << " isnull(LTRIM(RTRIM(b.SAMP_NAME)),'') AS SAMPLE_NAME,"
+        << " isnull(LTRIM(RTRIM(b.ORDER_TEXT)),'') AS ORDER_TEXT,"
+        << " isnull(CONVERT(varchar(20),r.REP_NO),'') AS REP_NO,"
+        << " isnull(LTRIM(RTRIM(r.OPER_NO)),'') AS OPER_NO,"
+        << " isnull(CONVERT(varchar(20),r.MACH_CODE),'') AS MACH_CODE,"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),'') AS INSPECT_DATE,"
+        << " isnull(CONVERT(varchar(20),r.ROOM_CODE),'') AS ROOM_CODE,"
+        << " isnull(r.CHK_FLAG,'') AS CHK_FLAG,"
+        << " isnull(r.CONF,'') AS CONF,"
+        << " CAST(CASE WHEN LTRIM(RTRIM(isnull(r.CHK_FLAG,'')))='T' THEN 1 ELSE 0 END AS varchar(10)) AS REPORT_REVIEWED,"
+        << " CAST(CASE WHEN LTRIM(RTRIM(isnull(r.CONF,'')))='S' THEN 1 ELSE 0 END AS varchar(10)) AS REPORT_SENT,"
+        << " isnull(r.CREATE_TIME,'') AS CREATE_TIME,"
+        << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REVIEW_TIME,"
+        << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME"
+        << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
+        << " LEFT JOIN LS_AS_REPORT r WITH (NOLOCK)"
+        << " ON r.TXM_NO=b.BARCODE AND isnull(r.DELETE_BIT,0)=0"
+        << " WHERE isnull(b.DELETE_BIT,0)=0"
+        << " AND NULLIF(LTRIM(RTRIM(b.BARCODE)),'') IS NOT NULL"
+        << " AND " << date_column << ">='" << sql_escape(start_time) << "'"
+        << " AND " << date_column << "<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
+        << " AND b.CANCEL_DATE IS NULL"
+        << " AND (r.assaypat_type='0' OR EXISTS ("
+        << " SELECT 1 FROM LS_AS_BARCODE be WITH (NOLOCK)"
+        << " WHERE isnull(be.DELETE_BIT,0)=0 AND be.BARCODE=b.BARCODE AND isnull(be.JZ_FLAG,0)=1"
+        << " ))"
+        << " ORDER BY LTRIM(RTRIM(b.BARCODE)), b.ID";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    const auto to_int = [](const std::string& value, int fallback = 0) {
+        const std::string text = trim(value);
+        if (text.empty()) {
+            return fallback;
+        }
+        return std::atoi(text.c_str());
+    };
+    const auto barcode_status = [](int state, bool report_sent) {
+        switch (state) {
+            case 0: return std::string("未上机");
+            case 1: return std::string("已上机未审核");
+            case 2: return report_sent ? std::string("审核完成已发送") : std::string("审核完成未发送");
+            case 3: return std::string("医生已查看");
+            default: return std::string("未知");
+        }
+    };
+    const auto effective_state = [](int barcode_state, bool has_report, bool report_reviewed) {
+        if (report_reviewed && barcode_state == 3) return 3;
+        if (report_reviewed) return 2;
+        if (has_report || barcode_state >= 1) return 1;
+        if (barcode_state == 0) return 0;
+        return -1;
+    };
+    const auto derived_lab_department = [](const std::string& sign_dept, const std::string& dept_name) {
+        const std::string dept = trim(sign_dept);
+        if (dept == "102") return std::string("老院");
+        if (dept == "401") return std::string("新院");
+        return contains_text(dept_name, "滨水") ? std::string("新院") : std::string("老院");
+    };
+    struct AggregatedEmergencyRow {
+        EmergencyStatDetailRow row;
+        int barcode_oper_state = -1;
+        bool has_cancel = false;
+        bool barcode_emergency = false;
+        bool report_emergency = false;
+        bool report_reviewed = false;
+        bool report_sent = false;
+        std::set<std::string> order_texts;
+    };
+    std::vector<AggregatedEmergencyRow> aggregated;
+    std::map<std::string, size_t> barcode_index;
+    const auto assign_if_not_empty = [](std::string& target, const std::string& value) {
+        if (!trim(value).empty()) target = value;
+    };
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        const std::string barcode = fetch_column(stmt, 1);
+        if (trim(barcode).empty()) continue;
+        auto found = barcode_index.find(barcode);
+        if (found == barcode_index.end()) {
+            barcode_index[barcode] = aggregated.size();
+            aggregated.push_back(AggregatedEmergencyRow{});
+            found = barcode_index.find(barcode);
+            aggregated.back().row.barcode = barcode;
+        }
+        auto& agg = aggregated[found->second];
+        auto& row = agg.row;
+        const bool barcode_emergency = to_int(fetch_column(stmt, 2)) == 1;
+        const bool report_emergency = to_int(fetch_column(stmt, 3)) == 1;
+        agg.barcode_emergency = agg.barcode_emergency || barcode_emergency;
+        agg.report_emergency = agg.report_emergency || report_emergency;
+        const std::string in_date = fetch_column(stmt, 4);
+        if (!trim(in_date).empty() && (trim(row.in_date).empty() || in_date < row.in_date)) {
+            row.in_date = in_date;
+        }
+        assign_if_not_empty(row.req_time, fetch_column(stmt, 5));
+        const int barcode_oper_state = to_int(fetch_column(stmt, 6), -1);
+        if (barcode_oper_state >= 0 && (agg.barcode_oper_state < 0 || barcode_oper_state < agg.barcode_oper_state)) {
+            agg.barcode_oper_state = barcode_oper_state;
+        }
+        agg.has_cancel = agg.has_cancel || to_int(fetch_column(stmt, 7)) == 1;
+        assign_if_not_empty(row.reg_no, fetch_column(stmt, 8));
+        assign_if_not_empty(row.type_name, fetch_column(stmt, 9));
+        assign_if_not_empty(row.name, fetch_column(stmt, 10));
+        assign_if_not_empty(row.sex, fetch_column(stmt, 11));
+        assign_if_not_empty(row.age, fetch_column(stmt, 12));
+        assign_if_not_empty(row.dept_name, fetch_column(stmt, 13));
+        assign_if_not_empty(row.bed_code, fetch_column(stmt, 14));
+        assign_if_not_empty(row.sign_oper, fetch_column(stmt, 15));
+        assign_if_not_empty(row.sign_dept, fetch_column(stmt, 16));
+        assign_if_not_empty(row.sample_name, fetch_column(stmt, 17));
+        const std::string order_text = trim(fetch_column(stmt, 18));
+        if (!order_text.empty() && agg.order_texts.insert(order_text).second) {
+            if (!row.order_text.empty()) row.order_text += "/";
+            row.order_text += order_text;
+        }
+        assign_if_not_empty(row.rep_no, fetch_column(stmt, 19));
+        assign_if_not_empty(row.oper_no, fetch_column(stmt, 20));
+        assign_if_not_empty(row.mach_code, fetch_column(stmt, 21));
+        {
+            const auto mit = machine_names.find(row.mach_code);
+            row.mach_name = mit != machine_names.end() && !trim(mit->second).empty()
+                ? mit->second : row.mach_code;
+        }
+        assign_if_not_empty(row.inspect_date, fetch_column(stmt, 22));
+        assign_if_not_empty(row.room_code, fetch_column(stmt, 23));
+        assign_if_not_empty(row.chk_flag, fetch_column(stmt, 24));
+        assign_if_not_empty(row.conf, fetch_column(stmt, 25));
+        const bool report_reviewed = to_int(fetch_column(stmt, 26)) == 1;
+        const bool report_sent = to_int(fetch_column(stmt, 27)) == 1;
+        agg.report_reviewed = agg.report_reviewed || report_reviewed;
+        agg.report_sent = agg.report_sent || report_sent;
+        assign_if_not_empty(row.create_time, fetch_column(stmt, 28));
+        assign_if_not_empty(row.review_time, fetch_column(stmt, 29));
+        assign_if_not_empty(row.rep_time, fetch_column(stmt, 30));
+    }
+
+    for (auto& agg : aggregated) {
+        auto& row = agg.row;
+        if (agg.barcode_emergency && agg.report_emergency) {
+            row.emergency_source = "报告+条码";
+        } else if (agg.barcode_emergency) {
+            row.emergency_source = "条码急诊";
+        } else {
+            row.emergency_source = "报告急诊";
+        }
+        row.lab_department = derived_lab_department(row.sign_dept, row.dept_name);
+        const bool has_report = !trim(row.rep_no).empty();
+        row.min_oper_state = effective_state(agg.barcode_oper_state, has_report, agg.report_reviewed);
+        row.wait_seconds = agg.report_reviewed ? seconds_between_sql_datetimes(row.in_date, row.review_time) : -1;
+        row.wait_minutes = row.wait_seconds < 0 ? 0 : row.wait_seconds / 60;
+        row.barcode_status = agg.has_cancel ? "取消签收" : barcode_status(row.min_oper_state, agg.report_sent);
+
+        if ((lab_department == "老院" || lab_department == "新院") && row.lab_department != lab_department) {
+            continue;
+        }
+        if (query.only_unfinished && agg.report_sent) {
+            continue;
+        }
+
+        ++summary.emergency_barcode_count;
+        if (row.min_oper_state == 0) ++summary.not_loaded_count;
+        if (row.min_oper_state == 1) ++summary.loaded_not_reviewed_count;
+        if (row.min_oper_state == 2) ++summary.reviewed_count;
+        if (row.min_oper_state == 3) ++summary.doctor_viewed_count;
+        if (agg.report_sent) ++summary.sent_count;
+        if (!agg.report_sent) ++summary.unfinished_count;
+        if (agg.barcode_emergency) ++summary.barcode_emergency_count;
+        if (agg.report_emergency) ++summary.report_emergency_count;
+        if (agg.barcode_emergency && agg.report_emergency) ++summary.both_emergency_count;
+
+        rows.push_back(std::move(row));
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
