@@ -36,6 +36,8 @@ constexpr int IDC_END_DATE     = 6006;
 constexpr int IDC_SEARCH       = 6007;
 constexpr int IDC_LIST         = 6008;
 constexpr int IDC_TABS         = 6009;
+constexpr int IDC_HISTORY_LIST = 6010;
+constexpr int BLOOD_TAB_HISTORY = 0;
 
 constexpr int IDC_TOOL_AUDIT       = 6101;
 constexpr int IDC_TOOL_CANCEL      = 6102;
@@ -88,6 +90,8 @@ constexpr COLORREF COLOR_REVIEWED = RGB(0xA6, 0xEB, 0x9A);
 constexpr COLORREF COLOR_COMPLETED = RGB(0xFF, 0xFF, 0x54);
 constexpr COLORREF COLOR_WHITE = RGB(0xFF, 0xFF, 0xFF);
 constexpr COLORREF COLOR_BLACK = RGB(0x00, 0x00, 0x00);
+constexpr COLORREF COLOR_TRUSTED = RGB(0x16, 0x7A, 0x3A);
+constexpr COLORREF COLOR_WARNING_TEXT = RGB(0xB4, 0x56, 0x00);
 
 constexpr const char* STATUS_PENDING_TEXT = "未审核";
 constexpr const char* STATUS_REVIEWED_TEXT = "已审核";
@@ -155,11 +159,15 @@ struct BloodState {
     HWND patientDetailBox = nullptr;
     HWND requestDetailBox = nullptr;
     HWND labBox = nullptr;
+    HWND historyBox = nullptr;
+    HWND historyList = nullptr;
     DetailFields detail;
     std::vector<LayoutItem> layout;
     std::vector<search::BloodRequestRow> rows;
+    std::vector<search::BloodCrossMatchRow> historyRows;
     int selectedCellRow = -1;
     int selectedCellCol = -1;
+    int activeTab = BLOOD_TAB_HISTORY;
     bool emergencyApplyType = false;
     HBRUSH bgBrush = nullptr;
     HBRUSH searchBrush = nullptr;
@@ -183,10 +191,12 @@ struct LisState {
     HWND labelDaysHint = nullptr;
     HWND labelReports = nullptr;
     HWND labelResults = nullptr;
+    HWND identityHint = nullptr;
     HWND reports = nullptr;
     HWND results = nullptr;
     HWND status = nullptr;
     HBRUSH bgBrush = nullptr;
+    COLORREF identityHintColor = COLOR_TRUSTED;
     HFONT summaryFont = nullptr;
     HFONT summaryBoldFont = nullptr;
     RECT summaryRect{};
@@ -225,6 +235,8 @@ struct LisQueryResult {
     int generation = 0;
     bool ok = false;
     bool byName = false;
+    bool phoneFiltered = false;
+    bool phoneLookupAttempted = false;
     std::vector<search::ReportRow> reports;
     std::string error;
 };
@@ -413,6 +425,42 @@ void setCellUtf8(HWND list, int row, int col, const std::string& text) {
     ListView_SetItemText(list, row, col, const_cast<wchar_t*>(wide.c_str()));
 }
 
+void populateBloodHistory(BloodState* st, const std::string& patientNo) {
+    if (!st || !st->historyList) return;
+    st->historyRows.clear();
+    ListView_DeleteAllItems(st->historyList);
+    const std::string conn = search::wide_to_utf8(search::build_connection_string_w(st->ctx.dbSettings));
+    if (conn.empty() || search::trim(patientNo).empty()) return;
+
+    std::string error;
+    if (!search::query_blood_crossmatch_history(conn, patientNo, st->historyRows, error)) {
+        SetWindowTextW(st->status, L"输血历史查询失败。");
+        return;
+    }
+
+    SendMessageW(st->historyList, WM_SETREDRAW, FALSE, 0);
+    for (size_t i = 0; i < st->historyRows.size(); ++i) {
+        const auto& r = st->historyRows[i];
+        const int row = static_cast<int>(i);
+        insertEmptyRow(st->historyList, row);
+        setCellUtf8(st->historyList, row, 0, r.match_date);
+        setCell(st->historyList, row, 1, r.match_man);
+        setCell(st->historyList, row, 2, r.match_recheck_man);
+        setCell(st->historyList, row, 3, r.verify_state);
+        setCellUtf8(st->historyList, row, 4, r.blood_in_id);
+        setCell(st->historyList, row, 5, r.abo);
+        setCell(st->historyList, row, 6, r.rhd);
+        setCell(st->historyList, row, 7, r.cross_method);
+        setCell(st->historyList, row, 8, r.main_result);
+        setCell(st->historyList, row, 9, r.second_result);
+        setCell(st->historyList, row, 10, r.antibody_result);
+        setCell(st->historyList, row, 11, r.tran_property);
+        setCell(st->historyList, row, 12, r.remark);
+    }
+    SendMessageW(st->historyList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(st->historyList, nullptr, TRUE);
+}
+
 LRESULT CALLBACK searchEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                 UINT_PTR subclassId, DWORD_PTR refData) {
     if (msg == WM_KEYDOWN && wp == VK_RETURN) {
@@ -496,6 +544,8 @@ void updateDetail(BloodState* st, int selected) {
         setValue(st->detail.reactionHistory, L"");
         setValue(st->detail.applyType, L"备血");
         st->emergencyApplyType = false;
+        st->historyRows.clear();
+        if (st->historyList) ListView_DeleteAllItems(st->historyList);
         setValue(st->detail.applyAbo, L"未知");
         setValue(st->detail.applyRh, L"未知");
         SetWindowTextW(st->status, L"请选择左侧申请记录。");
@@ -530,6 +580,9 @@ void updateDetail(BloodState* st, int selected) {
         status += search::utf8_to_wide(row.apply_form_no);
     }
     SetWindowTextW(st->status, status.c_str());
+    if (st->activeTab == BLOOD_TAB_HISTORY) {
+        populateBloodHistory(st, row.patient_no);
+    }
 }
 
 void runBloodQuery(BloodState* st) {
@@ -756,7 +809,7 @@ void createBloodControls(HWND hwnd, BloodState* st) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0, 0, 0, 0, hwnd, win32_control_id(IDC_TABS), st->ctx.instance, nullptr);
     const wchar_t* tabTexts[] = {
-        L"用血申请", L"交叉配血", L"检测信息", L"收费信息", L"输血历史", L"不良反应", L"输血效果", L"用血前评估"
+        L"输血历史", L"用血申请", L"交叉配血", L"检测信息", L"收费信息", L"不良反应", L"输血效果", L"用血前评估"
     };
     for (int i = 0; i < static_cast<int>(sizeof(tabTexts) / sizeof(tabTexts[0])); ++i) {
         TCITEMW item{};
@@ -764,6 +817,7 @@ void createBloodControls(HWND hwnd, BloodState* st) {
         item.pszText = const_cast<wchar_t*>(tabTexts[i]);
         TabCtrl_InsertItem(st->tabs, i, &item);
     }
+    TabCtrl_SetCurSel(st->tabs, BLOOD_TAB_HISTORY);
 
     st->patientDetailBox = search::create_groupbox(hwnd, L"患者详细信息", 0, 0, 0, 0);
     addLayout(st, createStatic(hwnd, L"身高(cm)：", SS_RIGHT, 0, 0, 0, 0), LayoutArea::DetailMain, 70, 48, 120, 24);
@@ -806,6 +860,37 @@ void createBloodControls(HWND hwnd, BloodState* st) {
         addLayout(st, createValue(hwnd, labVals[i], 0, 0, 0, 0), LayoutArea::DetailSide, 146, y, 150, 28);
     }
 
+    st->historyBox = search::create_groupbox(hwnd, L"历史配血信息", 0, 0, 0, 0);
+    st->historyList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, 0, 0, 0, hwnd, win32_control_id(IDC_HISTORY_LIST), st->ctx.instance, nullptr);
+    ListView_SetExtendedListViewStyle(st->historyList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    struct HistoryColumnDef {
+        int id;
+        const wchar_t* title;
+        int width;
+    };
+    const HistoryColumnDef historyColumns[] = {
+        {0, L"配血时间", 150},
+        {1, L"配血人", 90},
+        {2, L"复核人", 90},
+        {3, L"审核状态", 90},
+        {4, L"血库ID", 80},
+        {5, L"血型", 70},
+        {6, L"Rh(D)", 70},
+        {7, L"配血方法", 150},
+        {8, L"主侧结果", 160},
+        {9, L"次侧结果", 160},
+        {10, L"抗体结果", 90},
+        {11, L"输血性质", 100},
+        {12, L"备注", 260},
+    };
+    for (const auto& col : historyColumns) {
+        search::add_list_column(st->historyList, col.id, col.title, S(col.width));
+    }
+    ShowWindow(st->historyBox, SW_HIDE);
+    ShowWindow(st->historyList, SW_HIDE);
+
     st->status = createStatic(hwnd, L"请输入条件后查询。", SS_LEFT, 0, 0, 0, 0);
 
     EnumChildWindows(hwnd, [](HWND child, LPARAM p) -> BOOL {
@@ -847,9 +932,17 @@ void layoutBloodWindow(HWND hwnd, BloodState* st) {
     MoveWindow(st->list, 0, listTop, leftW, listH, TRUE);
     MoveWindow(st->summaryBox, rightX, contentTop, rightW, summaryH, TRUE);
     MoveWindow(st->tabs, rightX, tabsY, rightW, tabH, TRUE);
+    const bool showHistory = st->activeTab == BLOOD_TAB_HISTORY;
+    ShowWindow(st->patientDetailBox, showHistory ? SW_HIDE : SW_SHOW);
+    ShowWindow(st->requestDetailBox, showHistory ? SW_HIDE : SW_SHOW);
+    ShowWindow(st->labBox, showHistory ? SW_HIDE : SW_SHOW);
+    ShowWindow(st->historyBox, showHistory ? SW_SHOW : SW_HIDE);
+    ShowWindow(st->historyList, showHistory ? SW_SHOW : SW_HIDE);
     MoveWindow(st->patientDetailBox, rightX + S(10), detailY + S(8), mainW - S(20), S(102), TRUE);
     MoveWindow(st->requestDetailBox, rightX + S(10), detailY + S(120), mainW - S(20), S(198), TRUE);
     MoveWindow(st->labBox, rightX + mainW + gap, detailY + S(8), sideW, detailH - S(8), TRUE);
+    MoveWindow(st->historyBox, rightX + S(10), detailY + S(8), rightW - S(20), detailH - S(8), TRUE);
+    MoveWindow(st->historyList, rightX + S(20), detailY + S(40), rightW - S(40), detailH - S(48), TRUE);
     MoveWindow(st->status, margin, clientH - S(24), clientW - S(16), S(22), TRUE);
 
     for (const auto& item : st->layout) {
@@ -890,9 +983,18 @@ void layoutBloodWindow(HWND hwnd, BloodState* st) {
                 break;
         }
 
-        const int x = originX + S(item.x);
+        const int relX = S(item.x);
+        const int availableW = areaW - relX - S(8);
+        const bool tabHidden = showHistory && (item.area == LayoutArea::DetailMain || item.area == LayoutArea::DetailSide);
+        if (tabHidden || (item.area == LayoutArea::DetailMain && availableW < S(50))) {
+            ShowWindow(item.hwnd, SW_HIDE);
+            continue;
+        }
+        ShowWindow(item.hwnd, SW_SHOW);
+
+        const int x = originX + relX;
         const int y = originY + S(item.y);
-        const int w = (std::min)(S(item.w), (std::max)(S(30), areaW - S(item.x) - S(8)));
+        const int w = (std::min)(S(item.w), (std::max)(S(30), availableW));
         const int h = (std::min)(S(item.h), (std::max)(S(18), areaH - S(item.y) - S(8)));
         MoveWindow(item.hwnd, x, y, w, h, TRUE);
     }
@@ -1267,6 +1369,13 @@ void setLisIdentityEnabled(LisState* st, bool enabled) {
     }
 }
 
+void setLisIdentityHint(LisState* st, const wchar_t* text, COLORREF color) {
+    if (!st || !st->identityHint) return;
+    st->identityHintColor = color;
+    SetWindowTextW(st->identityHint, text ? text : L"");
+    InvalidateRect(st->identityHint, nullptr, TRUE);
+}
+
 void runLisQuery(LisState* st, bool byName = false) {
     setLisIdentityEnabled(st, !byName);
 
@@ -1303,8 +1412,17 @@ void runLisQuery(LisState* st, bool byName = false) {
     filters.lis_blood_type_machines = st->lis_blood_type_machines;
     filters.lis_cbc_machines = st->lis_cbc_machines;
     filters.lis_blood_exclude_machines = st->lis_blood_exclude_machines;
+    const bool phoneLookupAttempted = byName && !search::trim(st->patient_no).empty();
     if (byName) {
         filters.patient_name = st->patient_name;
+        if (phoneLookupAttempted) {
+            std::string phone;
+            std::string phoneError;
+            if (search::query_latest_report_phone_by_reg_no(conn, st->patient_no, phone, phoneError)
+                && !search::trim(phone).empty()) {
+                filters.patient_phone = phone;
+            }
+        }
     } else {
         filters.patient_no = st->patient_no;
     }
@@ -1317,16 +1435,27 @@ void runLisQuery(LisState* st, bool byName = false) {
     ListView_DeleteAllItems(st->reports);
     ListView_DeleteAllItems(st->results);
     setLisSummaryLoading(st);
-    SetWindowTextW(st->status, byName ? L"正在按名字查询检验结果..." : L"正在查询检验结果...");
+    if (byName && !search::trim(filters.patient_phone).empty()) {
+        setLisIdentityHint(st, L"已按姓名 + 电话匹配", COLOR_TRUSTED);
+        SetWindowTextW(st->status, L"正在按姓名和电话查询检验结果...");
+    } else if (byName && !search::trim(st->patient_no).empty()) {
+        setLisIdentityHint(st, L"未获取到电话，仅按姓名查询，可能存在重名", COLOR_WARNING_TEXT);
+        SetWindowTextW(st->status, L"未获取到当前病人电话，正在按名字查询检验结果...");
+    } else {
+        setLisIdentityHint(st, byName ? L"仅按姓名查询，可能存在重名" : L"已按病人号精确匹配", byName ? COLOR_WARNING_TEXT : COLOR_TRUSTED);
+        SetWindowTextW(st->status, byName ? L"正在按名字查询检验结果..." : L"正在查询检验结果...");
+    }
 
     EnableWindow(st->queryButton, FALSE);
     EnableWindow(st->queryNameButton, FALSE);
     const HWND hwnd = GetParent(st->reports);
     const int generation = ++st->queryGeneration;
-    std::thread([hwnd, filters, byName, generation]() {
+    std::thread([hwnd, filters, byName, phoneLookupAttempted, generation]() {
         auto* result = new LisQueryResult;
         result->generation = generation;
         result->byName = byName;
+        result->phoneFiltered = byName && !search::trim(filters.patient_phone).empty();
+        result->phoneLookupAttempted = phoneLookupAttempted;
         result->ok = search::query_blood_lis_reports(filters, result->reports, result->error);
         if (!PostMessageW(hwnd, WM_LIS_QUERY_DONE, 0, reinterpret_cast<LPARAM>(result))) {
             delete result;
@@ -1364,11 +1493,17 @@ void finishLisQuery(HWND hwnd, LisState* st, std::unique_ptr<LisQueryResult> res
     size_t bloodTypeCount = 0;
     size_t cbcCount = 0;
     countLisReportInstrumentMatches(st, bloodTypeCount, cbcCount);
-    wchar_t msg[128]{};
-    std::swprintf(msg, 128,
-                  result->byName ? L"按名字查询完成，共 %zu 条组合项目。血型 %zu，血常规 %zu。"
-                                 : L"查询完成，共 %zu 条组合项目。血型 %zu，血常规 %zu。",
-                  st->report_rows.size(), bloodTypeCount, cbcCount);
+    wchar_t msg[192]{};
+    const wchar_t* prefix = L"查询完成";
+    if (result->byName && result->phoneFiltered) {
+        prefix = L"按姓名+电话查询完成";
+    } else if (result->byName && result->phoneLookupAttempted) {
+        prefix = L"按名字查询完成（未获取到电话）";
+    } else if (result->byName) {
+        prefix = L"按名字查询完成";
+    }
+    std::swprintf(msg, 192, L"%ls，共 %zu 条组合项目。血型 %zu，血常规 %zu。",
+                  prefix, st->report_rows.size(), bloodTypeCount, cbcCount);
     SetWindowTextW(st->status, msg);
     selectLisReport(st, st->report_rows.empty() ? -1 : 0);
 }
@@ -1425,7 +1560,7 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     MoveWindow(st->queryButton, S(390), S(60), S(128), S(36), TRUE);
     MoveWindow(st->queryNameButton, S(530), S(60), S(128), S(36), TRUE);
     const int summaryX = S(676);
-    st->summaryRect = RECT{summaryX, S(52), (std::max)(summaryX, w - S(24)), S(106)};
+    st->summaryRect = RECT{summaryX, S(48), (std::max)(summaryX, w - S(24)), S(108)};
     InvalidateRect(hwnd, &st->summaryRect, TRUE);
 
     const int top = S(132);
@@ -1440,6 +1575,7 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     MoveWindow(st->reports, S(4), top, reportW, listH, TRUE);
     MoveWindow(st->results, rightX, top, resultW, listH, TRUE);
     MoveWindow(st->status, S(8), h - S(24), w - S(16), S(22), TRUE);
+    MoveWindow(st->identityHint, summaryX, S(104), (std::max)(S(260), w - summaryX - S(24)), S(24), TRUE);
 
     const int reportFixedW = S(54 + 100 + 150 + 105 + 56 + 70 + 70);
     ListView_SetColumnWidth(st->reports, LisReportSampleNo, S(54));
@@ -1477,6 +1613,7 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->labelDaysHint = createStatic(hwnd, L"几天之内结果", SS_LEFT, 0, 0, 0, 0);
             st->labelReports = createStatic(hwnd, L"组合项目", SS_LEFT, 0, 0, 0, 0);
             st->labelResults = createStatic(hwnd, L"详情信息", SS_LEFT, 0, 0, 0, 0);
+            st->identityHint = createStatic(hwnd, L"已按病人号精确匹配", SS_LEFT, 0, 0, 0, 0);
 
             st->patientNo = createValue(hwnd, L"", 0, 0, 0, 0);
             st->patientName = createValue(hwnd, L"", 0, 0, 0, 0);
@@ -1658,7 +1795,11 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HDC hdc = reinterpret_cast<HDC>(wp);
             HWND child = reinterpret_cast<HWND>(lp);
             SetBkColor(hdc, COLOR_PAGE_BG);
-            SetTextColor(hdc, child && !IsWindowEnabled(child) ? GetSysColor(COLOR_GRAYTEXT) : COLOR_BLACK);
+            if (child && child == st->identityHint) {
+                SetTextColor(hdc, st->identityHintColor);
+            } else {
+                SetTextColor(hdc, child && !IsWindowEnabled(child) ? GetSysColor(COLOR_GRAYTEXT) : COLOR_BLACK);
+            }
             return reinterpret_cast<LRESULT>(st->bgBrush);
         }
         case WM_CTLCOLOREDIT: {
@@ -1838,6 +1979,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if ((changed->uChanged & LVIF_STATE) &&
                     (changed->uNewState & LVIS_SELECTED) &&
                     !(changed->uOldState & LVIS_SELECTED)) {
+                    st->selectedCellRow = changed->iItem;
+                    st->selectedCellCol = 0;
                     updateDetail(st, changed->iItem);
                 }
                 return 0;
@@ -1867,6 +2010,23 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     return CDRF_NEWFONT;
                 }
+            }
+            if (nm->idFrom == IDC_TABS && nm->code == TCN_SELCHANGE) {
+                st->activeTab = TabCtrl_GetCurSel(st->tabs);
+                if (st->activeTab == BLOOD_TAB_HISTORY) {
+                    int selected = st->selectedCellRow;
+                    if (selected < 0) {
+                        selected = ListView_GetNextItem(st->list, -1, LVNI_SELECTED);
+                    }
+                    if (selected >= 0 && selected < static_cast<int>(st->rows.size())) {
+                        populateBloodHistory(st, st->rows[static_cast<size_t>(selected)].patient_no);
+                    } else {
+                        st->historyRows.clear();
+                        ListView_DeleteAllItems(st->historyList);
+                    }
+                }
+                layoutBloodWindow(hwnd, st);
+                return 0;
             }
             break;
         }

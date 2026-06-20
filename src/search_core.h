@@ -12,6 +12,7 @@ struct QueryFilters {
     std::string barcode;
     std::string patient_name;
     std::string patient_no;
+    std::string patient_phone;
     std::string oper_no;
     std::string start_date;
     std::string end_date;
@@ -148,6 +149,23 @@ struct BloodQueryFilters {
     std::string start_date;      // 开始日期
     std::string end_date;        // 结束日期
     int limit = 500;
+};
+
+struct BloodCrossMatchRow {
+    std::string apply_form_no;
+    std::string match_date;
+    std::string match_man;
+    std::string match_recheck_man;
+    std::string verify_state;
+    std::string blood_in_id;
+    std::string abo;
+    std::string rhd;
+    std::string cross_method;
+    std::string main_result;
+    std::string second_result;
+    std::string antibody_result;
+    std::string tran_property;
+    std::string remark;
 };
 
 struct BarcodeQueryRow {
@@ -380,10 +398,12 @@ bool query_machines(const std::string& connection_string, const std::string& roo
 bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
+bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});
+bool query_blood_crossmatch_history(const std::string& connection_string, const std::string& patient_no, std::vector<BloodCrossMatchRow>& rows, std::string& error, LogFn log = {});
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});

@@ -623,6 +623,10 @@ void add_lis_patient_filters(std::ostringstream& sql, const QueryFilters& filter
     if (!trim(filters.patient_no).empty()) {
         sql << " AND " << report_alias << ".REG_NO='" << sql_escape(trim(filters.patient_no)) << "'";
     }
+    if (!trim(filters.patient_phone).empty()) {
+        sql << " AND LTRIM(RTRIM(isnull(" << report_alias << ".PAT_PHONE,'')))='"
+            << sql_escape(trim(filters.patient_phone)) << "'";
+    }
     if (!trim(filters.start_date).empty()) {
         sql << " AND " << report_alias << ".CHK_DATE >= '" << sql_escape(trim(filters.start_date)) << "'";
     }
@@ -1099,7 +1103,8 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
         << " isnull(r.AGE,''),"
         << " isnull(RTRIM(sx.SEX_NAME),''),"
         << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
-        << " isnull(cast(r.MACH_CODE as varchar(20)),'')"
+        << " isnull(cast(r.MACH_CODE as varchar(20)),''),"
+        << " isnull(LTRIM(RTRIM(r.PAT_PHONE)),'')"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " LEFT JOIN LS_AS_SEX sx WITH (NOLOCK) ON sx.SEX_CODE=r.SEX"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper WITH (NOLOCK) ON emp_oper.EMPLOYEE_ID=r.OPER_CODE"
@@ -1109,6 +1114,9 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
     add_like(sql, "r.NAME", filters.patient_name);
     if (!trim(filters.patient_no).empty()) {
         sql << " AND r.REG_NO='" << sql_escape(trim(filters.patient_no)) << "'";
+    }
+    if (!trim(filters.patient_phone).empty()) {
+        sql << " AND LTRIM(RTRIM(isnull(r.PAT_PHONE,'')))='" << sql_escape(trim(filters.patient_phone)) << "'";
     }
     if (!trim(filters.start_date).empty()) {
         sql << " AND r.CHK_DATE >= '" << sql_escape(trim(filters.start_date)) << "'";
@@ -1141,9 +1149,57 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
         row.sex = fetch_column(stmt, 9);
         row.room_code = fetch_column(stmt, 10);
         row.mach_code = fetch_column(stmt, 11);
+        row.patient_phone = fetch_column(stmt, 12);
         rows.push_back(row);
     }
 
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no,
+                                         std::string& phone, std::string& error, LogFn log) {
+    phone.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)reg_no;
+    (void)log;
+    error = "query_latest_report_phone_by_reg_no is only available on Windows";
+    return false;
+#else
+    const std::string trimmed_reg_no = trim(reg_no);
+    if (trimmed_reg_no.empty()) {
+        error.clear();
+        return true;
+    }
+
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT TOP 1 LTRIM(RTRIM(isnull(PAT_PHONE,'')))"
+        << " FROM LS_AS_REPORT WITH (NOLOCK)"
+        << " WHERE DELETE_BIT=0"
+        << " AND REG_NO='" << sql_escape(trimmed_reg_no) << "'"
+        << " AND NULLIF(LTRIM(RTRIM(isnull(PAT_PHONE,''))),'') IS NOT NULL"
+        << " ORDER BY CHK_DATE DESC,REP_TIME DESC,REP_NO DESC";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        phone = fetch_column(stmt, 1);
+    }
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
@@ -1469,6 +1525,76 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
         row.patient_sex       = fetch_column(stmt, 17);
         row.patient_age       = fetch_column(stmt, 18);
         row.reaction_history  = fetch_column(stmt, 19);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_blood_crossmatch_history(const std::string& connection_string, const std::string& patient_no,
+                                    std::vector<BloodCrossMatchRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)patient_no;
+    (void)log;
+    error = "query_blood_crossmatch_history is only available on Windows";
+    return false;
+#else
+    const std::string no = trim(patient_no);
+    if (no.empty()) {
+        error.clear();
+        return true;
+    }
+
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+
+    std::ostringstream sql;
+    sql << "SELECT "
+        << "isnull(LTRIM(RTRIM(ApplyFormNO)),''),"
+        << "isnull(CONVERT(varchar(19),Match_Date,120),''),"
+        << "isnull(LTRIM(RTRIM(Match_Man)),''),"
+        << "isnull(LTRIM(RTRIM(Match_RecheckMan)),''),"
+        << "isnull(LTRIM(RTRIM(VerifyState)),''),"
+        << "isnull(CONVERT(varchar(20),BloodInID),''),"
+        << "isnull(LTRIM(RTRIM(ABO_Z)),''),"
+        << "isnull(LTRIM(RTRIM(RH_D)),''),"
+        << "isnull(LTRIM(RTRIM(CrossMethed)),''),"
+        << "isnull(LTRIM(RTRIM(MainCrossResult)),''),"
+        << "isnull(LTRIM(RTRIM(SecondCrossResult)),''),"
+        << "isnull(LTRIM(RTRIM(Antibody_Result)),''),"
+        << "isnull(LTRIM(RTRIM(TranProperty)),''),"
+        << "isnull(LTRIM(RTRIM(Remark)),'')"
+        << " FROM LS_XK_BloodCrossMatch WITH (NOLOCK)"
+        << " WHERE Delete_Bit=0"
+        << " AND Patient_NO='" << sql_escape(no) << "'"
+        << " ORDER BY Match_Date DESC,ID DESC";
+
+    if (log) log("exec sql: " + sql.str() + "\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        BloodCrossMatchRow row;
+        row.apply_form_no = fetch_column(stmt, 1);
+        row.match_date = fetch_column(stmt, 2);
+        row.match_man = fetch_column(stmt, 3);
+        row.match_recheck_man = fetch_column(stmt, 4);
+        row.verify_state = fetch_column(stmt, 5);
+        row.blood_in_id = fetch_column(stmt, 6);
+        row.abo = fetch_column(stmt, 7);
+        row.rhd = fetch_column(stmt, 8);
+        row.cross_method = fetch_column(stmt, 9);
+        row.main_result = fetch_column(stmt, 10);
+        row.second_result = fetch_column(stmt, 11);
+        row.antibody_result = fetch_column(stmt, 12);
+        row.tran_property = fetch_column(stmt, 13);
+        row.remark = fetch_column(stmt, 14);
         rows.push_back(row);
     }
 

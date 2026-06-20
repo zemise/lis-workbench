@@ -178,11 +178,15 @@ ApplyCompositionApplyNumApplyUnit;
 
 后续如果输血页面需要展示交叉配血状态或配血时间，可优先按 `ApplyFormNO` 关联 `LS_XK_BloodCrossMatch`，并过滤 `Delete_Bit=0`。
 
+`输血查询` 页面当前将 `输血历史` tab 放在首位并默认展示，按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，展示该病人的历史配血信息。当前表结构可直接支持的列包括配血时间、配血人、复核人、审核状态、`BloodInID`、血型、Rh(D)、配血方法、主侧结果、次侧结果、抗体结果、输血性质和备注。`temp/模版.png` 中的出库时间、出库人、血袋编号、产品码、血液成分、血量、单位等出库字段未出现在 `LS_XK_BloodCrossMatch.sql` 中，后续如需完全复刻模板，需要再确认血袋出库/库存表来源。
+
 ### 查询检验结果报告列表
 
 `输血结果查询 -> 查询检验结果` 弹窗的右侧报告列表使用专用轻量查询 `query_blood_lis_reports()`，不再复用通用 `query_reports()`。该列表只需要展示样本号、检验时间、组合项目、条码、检验者、审核者、科室代码、仪器代码，并在选择报告后按 `REP_NO` 查询明细结果，因此 SQL 只读取 `LS_AS_REPORT.REP_NO / OPER_NO / CHK_DATE / GROUP_NO / TXM_NO / OPER_CODE / REP_OPER / AGE / SEX / ROOM_CODE / MACH_CODE` 及少量人员、性别名称字段。
 
 按病人号查询时使用现场已确认同口径字段：`LS_XK_BloodRequestApply.Patient_NO = LS_AS_REPORT.REG_NO`。因此输血弹窗报告列表和右侧摘要都直接按 `LS_AS_REPORT.REG_NO` 过滤，不再绕行 `LS_AS_BARCODE.REG_NO + BARCODE/TXM_NO` 判断病人归属。该查询避开通用报告列表中的 `LS_AS_PATTYPE / LS_AS_SAMPLE / LS_AS_MACHINE` 等无关字典联查、同条码医嘱内容聚合和条码表相关子查询，减少数据库端行扩展、字符串聚合和逐行 `EXISTS` 成本。
+
+按名字查询用于处理输血申请病人号不足或现场需要按姓名补查的场景，但姓名可能重名。当前会先用当前输血申请病人号按 `LS_AS_REPORT.REG_NO` 查询最近一条非空 `PAT_PHONE`，取到电话后，报告列表和摘要查询都会在 `NAME LIKE` 外额外下推 `LS_AS_REPORT.PAT_PHONE = 当前电话`，使列表和摘要使用同一身份约束；如果当前病人号未能取到电话，则保留原姓名查询。弹窗会在检验摘要区下方显示身份匹配可信度提示：病人号或姓名+电话匹配为绿色提示，仅姓名匹配为橙色提示。
 
 报告列表支持通过系统设置 `[LisSummary] BloodLisExcludeMachines` 排除不想展示的检验科室/仪器，过滤只作用于输血弹窗报告列表，不影响右侧血型/血常规摘要。格式为 `ROOM:;ROOM:MACH1,MACH2;ROOM:MACH`，默认 `3:;71:;8:8004`，表示排除 `ROOM_CODE=3`、`ROOM_CODE=71` 的全部仪器，并额外排除 `ROOM_CODE=8 AND MACH_CODE=8004`。配置为空或无有效片段时不追加排除条件；用户在系统设置中清空该项后会保留空值，不会被默认值覆盖。
 
