@@ -1555,24 +1555,31 @@ bool query_blood_crossmatch_history(const std::string& connection_string, const 
 
     std::ostringstream sql;
     sql << "SELECT "
-        << "isnull(LTRIM(RTRIM(ApplyFormNO)),''),"
-        << "isnull(CONVERT(varchar(19),Match_Date,120),''),"
-        << "isnull(LTRIM(RTRIM(Match_Man)),''),"
-        << "isnull(LTRIM(RTRIM(Match_RecheckMan)),''),"
-        << "isnull(LTRIM(RTRIM(VerifyState)),''),"
-        << "isnull(CONVERT(varchar(20),BloodInID),''),"
-        << "isnull(LTRIM(RTRIM(ABO_Z)),''),"
-        << "isnull(LTRIM(RTRIM(RH_D)),''),"
-        << "isnull(LTRIM(RTRIM(CrossMethed)),''),"
-        << "isnull(LTRIM(RTRIM(MainCrossResult)),''),"
-        << "isnull(LTRIM(RTRIM(SecondCrossResult)),''),"
-        << "isnull(LTRIM(RTRIM(Antibody_Result)),''),"
-        << "isnull(LTRIM(RTRIM(TranProperty)),''),"
-        << "isnull(LTRIM(RTRIM(Remark)),'')"
-        << " FROM LS_XK_BloodCrossMatch WITH (NOLOCK)"
-        << " WHERE Delete_Bit=0"
-        << " AND Patient_NO='" << sql_escape(no) << "'"
-        << " ORDER BY Match_Date DESC,ID DESC";
+        << "isnull(CONVERT(varchar(19),bo.BloodOut_Date,120),''),"
+        << "isnull(LTRIM(RTRIM(bo.BloodOut_Man)),''),"
+        << "isnull(LTRIM(RTRIM(bi.BloodBagNO)),''),"
+        << "isnull(LTRIM(RTRIM(bi.CmpProductCode)),''),"
+        << "isnull(LTRIM(RTRIM(bt.Blood_Type)),''),"
+        << "isnull(LTRIM(RTRIM(rh.Blood_RH)),''),"
+        << "isnull(LTRIM(RTRIM(comp.Blood_Composition)),''),"
+        << "isnull(LTRIM(RTRIM(CONVERT(varchar(32),comp.Norm))),''),"
+        << "isnull(LTRIM(RTRIM(comp.Unit)),''),"
+        << "isnull(LTRIM(RTRIM(cm.CrossMethed)),''),"
+        << "isnull(LTRIM(RTRIM(cm.MainCrossResult)),''),"
+        << "isnull(LTRIM(RTRIM(cm.SecondCrossResult)),''),"
+        << "isnull(CONVERT(varchar(19),cm.Match_Date,120),''),"
+        << "isnull(LTRIM(RTRIM(cm.Match_Man)),''),"
+        << "isnull(LTRIM(RTRIM(src.Sources_Blood)),'')"
+        << " FROM LS_XK_BloodCrossMatch cm WITH (NOLOCK)"
+        << " LEFT JOIN LS_XK_BloodOutInfo bo WITH (NOLOCK) ON bo.BloodInID=cm.BloodInID"
+        << " LEFT JOIN LS_XK_BloodInfo bi WITH (NOLOCK) ON bi.ID=cm.BloodInID"
+        << " LEFT JOIN LS_XK_B_TypeInfo bt WITH (NOLOCK) ON bt.ID=bi.BloodTypeID"
+        << " LEFT JOIN LS_XK_B_RhInfo rh WITH (NOLOCK) ON rh.ID=bi.RhD_ID"
+        << " LEFT JOIN LS_XK_B_CompositionInfo comp WITH (NOLOCK) ON comp.ID=bi.CompositionID"
+        << " LEFT JOIN LS_XK_B_SourceInfo src WITH (NOLOCK) ON src.ID=bi.SourceID"
+        << " WHERE cm.Delete_Bit=0"
+        << " AND cm.Patient_NO='" << sql_escape(no) << "'"
+        << " ORDER BY bo.BloodOut_Date DESC,cm.Match_Date DESC,cm.ID DESC";
 
     if (log) log("exec sql: " + sql.str() + "\n");
 
@@ -1581,20 +1588,21 @@ bool query_blood_crossmatch_history(const std::string& connection_string, const 
 
     while (SQLFetch(stmt) == SQL_SUCCESS) {
         BloodCrossMatchRow row;
-        row.apply_form_no = fetch_column(stmt, 1);
-        row.match_date = fetch_column(stmt, 2);
-        row.match_man = fetch_column(stmt, 3);
-        row.match_recheck_man = fetch_column(stmt, 4);
-        row.verify_state = fetch_column(stmt, 5);
-        row.blood_in_id = fetch_column(stmt, 6);
-        row.abo = fetch_column(stmt, 7);
-        row.rhd = fetch_column(stmt, 8);
-        row.cross_method = fetch_column(stmt, 9);
-        row.main_result = fetch_column(stmt, 10);
-        row.second_result = fetch_column(stmt, 11);
-        row.antibody_result = fetch_column(stmt, 12);
-        row.tran_property = fetch_column(stmt, 13);
-        row.remark = fetch_column(stmt, 14);
+        row.blood_out_date = fetch_column(stmt, 1);
+        row.blood_out_man = fetch_column(stmt, 2);
+        row.blood_bag_no = fetch_column(stmt, 3);
+        row.product_code = fetch_column(stmt, 4);
+        row.blood_type = fetch_column(stmt, 5);
+        row.rhd = fetch_column(stmt, 6);
+        row.composition = fetch_column(stmt, 7);
+        row.norm = fetch_column(stmt, 8);
+        row.unit = fetch_column(stmt, 9);
+        row.cross_method = fetch_column(stmt, 10);
+        row.main_result = fetch_column(stmt, 11);
+        row.second_result = fetch_column(stmt, 12);
+        row.match_date = fetch_column(stmt, 13);
+        row.match_man = fetch_column(stmt, 14);
+        row.source = fetch_column(stmt, 15);
         rows.push_back(row);
     }
 

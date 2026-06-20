@@ -141,7 +141,7 @@
   - `申请状态` 直接对应 `LS_XK_BloodRequestApply.ApplyForm_Statue` 的中文值，支持“未审核 / 已审核 / 已完结”过滤。
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
   - 交叉配血记录表为 `LS_XK_BloodCrossMatch`，可通过 `ApplyFormNO` 关联输血申请；已确认 `Patient_NO` 为病人号、`Patient_NOType` 为患者类型、`Patient_Name` 为病人姓名、`VerifyState` 为配血审核状态、`Match_Date` 为配血时间。
-  - `输血历史` tab 放在首位并默认展示，会按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，只读展示配血时间、配血人、复核人、审核状态、血型、Rh(D)、配血方法、主侧/次侧结果、抗体结果和备注等当前表结构可直接提供的信息。
+  - `输血历史` tab 放在首位并默认展示，会按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，通过 `BloodInID` 联查 `LS_XK_BloodOutInfo / LS_XK_BloodInfo` 及血型、Rh、成分、来源字典表，只读展示出库时间、出库人、血袋编号、产品码、血型、RH(D)、血液成分、血量、单位、配血方法、主侧/次侧结果、配血时间、配血者和血袋来源；出库时间和配血时间由 C++ 端格式化为 `yyyy/M/d H:mm`。
   - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果；已确认输血申请 `Patient_NO` 与 `LS_AS_REPORT.REG_NO` 同口径，按病人号查询时报告列表和摘要均直接过滤 `LS_AS_REPORT.REG_NO`；按名字查询时会先用当前病人号获取 `LS_AS_REPORT.PAT_PHONE`，取到电话后追加姓名+电话约束以减少重名误匹配，并在检验摘要区下方显示身份匹配可信度提示；摘要区根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
   - `查询检验结果` 窗口右侧报告列表的 `样本号` 与检验结果查询页一致，来自 `LS_AS_REPORT.OPER_NO`，并展示 `LS_AS_REPORT.ROOM_CODE / MACH_CODE` 便于配置排除规则；查询完成状态栏会显示命中系统设置中 `血型仪器`、`血常规仪器` 的报告数量。
   - `查询检验结果` 窗口的报告列表使用专用轻量 SQL，仅读取弹窗展示和选择所需字段，并按 `BloodLisExcludeMachines` 下推排除不想展示的科室/仪器；组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。

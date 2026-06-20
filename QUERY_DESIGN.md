@@ -178,7 +178,15 @@ ApplyCompositionApplyNumApplyUnit;
 
 后续如果输血页面需要展示交叉配血状态或配血时间，可优先按 `ApplyFormNO` 关联 `LS_XK_BloodCrossMatch`，并过滤 `Delete_Bit=0`。
 
-`输血查询` 页面当前将 `输血历史` tab 放在首位并默认展示，按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，展示该病人的历史配血信息。当前表结构可直接支持的列包括配血时间、配血人、复核人、审核状态、`BloodInID`、血型、Rh(D)、配血方法、主侧结果、次侧结果、抗体结果、输血性质和备注。`temp/模版.png` 中的出库时间、出库人、血袋编号、产品码、血液成分、血量、单位等出库字段未出现在 `LS_XK_BloodCrossMatch.sql` 中，后续如需完全复刻模板，需要再确认血袋出库/库存表来源。
+`输血查询` 页面当前将 `输血历史` tab 放在首位并默认展示，按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，并通过 `BloodInID` 联查出库、血袋库存和字典表来展示该病人的历史配血信息。字段顺序为：出库时间、出库人、血袋编号、产品码、血型、RH(D)、血液成分、血量、单位、配血方法、主侧结果、次侧结果、配血时间、配血者、血袋来源。其中出库时间和配血时间仍由 SQL 返回标准 `yyyy-mm-dd hh:mm:ss` 文本，列表填充时由 C++ 端格式化为 `yyyy/M/d H:mm`，避免数据库侧承担显示格式转换。
+
+主要字段来源：
+- `LS_XK_BloodCrossMatch.BloodInID = LS_XK_BloodOutInfo.BloodInID`：获取 `BloodOut_Date / BloodOut_Man`。
+- `LS_XK_BloodCrossMatch.BloodInID = LS_XK_BloodInfo.ID`：获取 `BloodBagNO / CmpProductCode`，并继续关联血型、Rh、成分和来源字典。
+- `LS_XK_BloodInfo.BloodTypeID = LS_XK_B_TypeInfo.ID`：获取 `Blood_Type`。
+- `LS_XK_BloodInfo.RhD_ID = LS_XK_B_RhInfo.ID`：获取 `Blood_RH`。
+- `LS_XK_BloodInfo.CompositionID = LS_XK_B_CompositionInfo.ID`：获取 `Blood_Composition / Norm / Unit`。
+- `LS_XK_BloodInfo.SourceID = LS_XK_B_SourceInfo.ID`：获取 `Sources_Blood`。
 
 ### 查询检验结果报告列表
 
@@ -245,6 +253,8 @@ HIV 统计表导出：
 ## 已签收条码查询
 
 工具菜单中的 `已签收条码查询` 以 `LS_AS_BARCODE` 为主表做只读检索，不自动执行查询，等待用户点击 `查询` 或 `刷新`。当前仅开放查询能力，取消签收、取消医嘱签收、取消原因限制、导出 Excel 按钮保持禁用，不执行数据库修改。
+
+查询执行时使用后台线程读取数据库。为减少慢查询期间的视觉闪烁，页面会保留上一轮列表直到新查询成功返回；成功后再暂停 ListView 重绘，清空旧行并一次性填充新结果，最后恢复绘制并统一刷新。
 
 ### 查询条件
 
@@ -345,6 +355,8 @@ HIV 统计表导出：
 ## 常规报告
 
 工具菜单中的 `常规报告` 以三栏工作台形式复用检验结果查询的数据链路。页面打开时不自动查询；用户先选择左侧 `检验仪器`，再按左侧 `检验日期` 查询当天该仪器下的报告主记录。
+
+`检验结果查询` 页面同样复用通用报告查询链路，但该页面报告列表不展示医嘱内容，因此会通过 `skip_order_text` 跳过 `LS_AS_BARCODE.ORDER_TEXT` 的 `FOR XML PATH` 聚合；`常规报告` 仍展示医嘱内容，继续保留聚合逻辑。主查询、检验结果查询、常规报告和已签收条码的批量 ListView 填充会在 C++ 端用 `WM_SETREDRAW` 暂停重绘，完成所有行列更新后统一刷新。
 
 ### 查询入口
 

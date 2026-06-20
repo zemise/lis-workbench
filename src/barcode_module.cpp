@@ -356,7 +356,6 @@ void runQuery(HWND hwnd, BarcodeState* st) {
         return;
     }
     auto filters = collectFilters(st);
-    ListView_DeleteAllItems(st->list);
     setStatus(st, L"正在查询...");
 
     if (st->bgThread.joinable()) st->bgThread.join();
@@ -381,10 +380,13 @@ void finishQuery(HWND hwnd, BarcodeState* st, std::unique_ptr<BarcodeQueryResult
         return;
     }
     st->rows = std::move(result->rows);
+    SendMessageW(st->list, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->list);
     for (size_t i = 0; i < st->rows.size(); ++i) {
         insertRow(st->list, static_cast<int>(i), st->rows[i]);
     }
+    SendMessageW(st->list, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(st->list, nullptr, TRUE);
     setStatus(st, L"查询完成，共 " + std::to_wstring(st->rows.size()) + L" 条。");
 }
 

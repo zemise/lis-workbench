@@ -152,20 +152,21 @@ struct BloodQueryFilters {
 };
 
 struct BloodCrossMatchRow {
-    std::string apply_form_no;
-    std::string match_date;
-    std::string match_man;
-    std::string match_recheck_man;
-    std::string verify_state;
-    std::string blood_in_id;
-    std::string abo;
+    std::string blood_out_date;
+    std::string blood_out_man;
+    std::string blood_bag_no;
+    std::string product_code;
+    std::string blood_type;
     std::string rhd;
+    std::string composition;
+    std::string norm;
+    std::string unit;
     std::string cross_method;
     std::string main_result;
     std::string second_result;
-    std::string antibody_result;
-    std::string tran_property;
-    std::string remark;
+    std::string match_date;
+    std::string match_man;
+    std::string source;
 };
 
 struct BarcodeQueryRow {

@@ -425,6 +425,22 @@ void setCellUtf8(HWND list, int row, int col, const std::string& text) {
     ListView_SetItemText(list, row, col, const_cast<wchar_t*>(wide.c_str()));
 }
 
+std::string slashDateTimeMinute(const std::string& value) {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    if ((std::sscanf(value.c_str(), "%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute) == 5 ||
+         std::sscanf(value.c_str(), "%d/%d/%d %d:%d", &year, &month, &day, &hour, &minute) == 5) &&
+        year > 0 && month > 0 && day > 0) {
+        char buffer[24]{};
+        std::snprintf(buffer, sizeof(buffer), "%d/%d/%d %d:%02d", year, month, day, hour, minute);
+        return buffer;
+    }
+    return value;
+}
+
 void populateBloodHistory(BloodState* st, const std::string& patientNo) {
     if (!st || !st->historyList) return;
     st->historyRows.clear();
@@ -443,19 +459,21 @@ void populateBloodHistory(BloodState* st, const std::string& patientNo) {
         const auto& r = st->historyRows[i];
         const int row = static_cast<int>(i);
         insertEmptyRow(st->historyList, row);
-        setCellUtf8(st->historyList, row, 0, r.match_date);
-        setCell(st->historyList, row, 1, r.match_man);
-        setCell(st->historyList, row, 2, r.match_recheck_man);
-        setCell(st->historyList, row, 3, r.verify_state);
-        setCellUtf8(st->historyList, row, 4, r.blood_in_id);
-        setCell(st->historyList, row, 5, r.abo);
-        setCell(st->historyList, row, 6, r.rhd);
-        setCell(st->historyList, row, 7, r.cross_method);
-        setCell(st->historyList, row, 8, r.main_result);
-        setCell(st->historyList, row, 9, r.second_result);
-        setCell(st->historyList, row, 10, r.antibody_result);
-        setCell(st->historyList, row, 11, r.tran_property);
-        setCell(st->historyList, row, 12, r.remark);
+        setCellUtf8(st->historyList, row, 0, slashDateTimeMinute(r.blood_out_date));
+        setCell(st->historyList, row, 1, r.blood_out_man);
+        setCell(st->historyList, row, 2, r.blood_bag_no);
+        setCellUtf8(st->historyList, row, 3, r.product_code);
+        setCell(st->historyList, row, 4, r.blood_type);
+        setCell(st->historyList, row, 5, r.rhd);
+        setCell(st->historyList, row, 6, r.composition);
+        setCellUtf8(st->historyList, row, 7, r.norm);
+        setCell(st->historyList, row, 8, r.unit);
+        setCell(st->historyList, row, 9, r.cross_method);
+        setCell(st->historyList, row, 10, r.main_result);
+        setCell(st->historyList, row, 11, r.second_result);
+        setCellUtf8(st->historyList, row, 12, slashDateTimeMinute(r.match_date));
+        setCell(st->historyList, row, 13, r.match_man);
+        setCell(st->historyList, row, 14, r.source);
     }
     SendMessageW(st->historyList, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->historyList, nullptr, TRUE);
@@ -871,19 +889,21 @@ void createBloodControls(HWND hwnd, BloodState* st) {
         int width;
     };
     const HistoryColumnDef historyColumns[] = {
-        {0, L"配血时间", 150},
-        {1, L"配血人", 90},
-        {2, L"复核人", 90},
-        {3, L"审核状态", 90},
-        {4, L"血库ID", 80},
-        {5, L"血型", 70},
-        {6, L"Rh(D)", 70},
-        {7, L"配血方法", 150},
-        {8, L"主侧结果", 160},
-        {9, L"次侧结果", 160},
-        {10, L"抗体结果", 90},
-        {11, L"输血性质", 100},
-        {12, L"备注", 260},
+        {0, L"出库时间", 150},
+        {1, L"出库人", 90},
+        {2, L"血袋编号", 140},
+        {3, L"产品码", 90},
+        {4, L"血型", 70},
+        {5, L"RH(D)", 70},
+        {6, L"血液成分", 150},
+        {7, L"血量", 70},
+        {8, L"单位", 60},
+        {9, L"配血方法", 150},
+        {10, L"主侧结果", 150},
+        {11, L"次侧结果", 150},
+        {12, L"配血时间", 150},
+        {13, L"配血者", 90},
+        {14, L"血袋来源", 110},
     };
     for (const auto& col : historyColumns) {
         search::add_list_column(st->historyList, col.id, col.title, S(col.width));
