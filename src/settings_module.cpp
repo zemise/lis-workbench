@@ -78,6 +78,12 @@ constexpr int IDC_TEXT_DATABASE_DISPLAY = 5225;
 constexpr int IDC_TEXT_REPORT_PRINTER = 5226;
 constexpr int IDC_TEXT_REPORT_QUICK = 5227;
 constexpr int IDC_TEXT_SAVE_STATUS = 5228;
+constexpr int IDC_SET_LIS_BLOOD_TYPE_MACHINES = 5229;
+constexpr int IDC_SET_LIS_CBC_MACHINES = 5230;
+constexpr int IDC_LABEL_LIS_BLOOD_TYPE_MACHINES = 5231;
+constexpr int IDC_LABEL_LIS_CBC_MACHINES = 5232;
+constexpr int IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES = 5233;
+constexpr int IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES = 5234;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
@@ -236,7 +242,7 @@ SettingsLayout calculateLayout(HWND hwnd) {
     l.editH = S(26);
     l.rowGap = S(34);
     const int topCardH = S(286);
-    const int bottomCardH = S(224);
+    const int bottomCardH = S(326);
     l.database = RECT{left, top, left + columnW, top + topCardH};
     l.report = RECT{right, top, right + columnW, top + topCardH};
     l.lis = RECT{left, l.database.bottom + S(16), left + columnW, l.database.bottom + S(16) + bottomCardH};
@@ -308,6 +314,9 @@ void layoutSettingsWindow(HWND hwnd) {
     placeRow(l.lis, 1, IDC_LABEL_LIS_RHD_CODES, IDC_SET_LIS_RHD_CODES);
     placeRow(l.lis, 2, IDC_LABEL_LIS_HGB_CODES, IDC_SET_LIS_HGB_CODES);
     placeRow(l.lis, 3, IDC_LABEL_LIS_PLT_CODES, IDC_SET_LIS_PLT_CODES);
+    placeRow(l.lis, 4, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES, IDC_SET_LIS_BLOOD_TYPE_MACHINES);
+    placeRow(l.lis, 5, IDC_LABEL_LIS_CBC_MACHINES, IDC_SET_LIS_CBC_MACHINES);
+    placeRow(l.lis, 6, IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES);
 
     placeSection(IDC_TEXT_SECTION_REPORT, IDC_TEXT_REPORT_HINT, l.report);
     moveChild(hwnd, IDC_TEXT_REPORT_PRINTER,
@@ -825,7 +834,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             createText(hwnd, IDC_TEXT_DATABASE_HINT, L"连接 LIS 数据库，并设置主程序字号。");
             createText(hwnd, IDC_TEXT_DATABASE_DISPLAY, L"界面显示");
             createText(hwnd, IDC_TEXT_SECTION_LIS, L"LIS 摘要项目");
-            createText(hwnd, IDC_TEXT_LIS_HINT, L"多个项目代码用分号分隔，用于输血检验摘要显示。");
+            createText(hwnd, IDC_TEXT_LIS_HINT, L"项目代码用分号分隔；仪器格式：ROOM:MACH1,MACH2；排除整科室用 ROOM:。");
             createText(hwnd, IDC_TEXT_SECTION_REPORT, L"常规报告打印");
             createText(hwnd, IDC_TEXT_REPORT_HINT, L"选择条码打印机，并设置底部 1 / 2 / 3 快捷检验仪器。");
             createText(hwnd, IDC_TEXT_REPORT_PRINTER, L"条码打印机");
@@ -854,6 +863,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::create_edit(hwnd, IDC_SET_LIS_HGB_CODES, 0, 0, S(10), S(24));
             createSettingLabel(hwnd, IDC_LABEL_LIS_PLT_CODES, L"PLT 代码");
             search::create_edit(hwnd, IDC_SET_LIS_PLT_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES, L"血型仪器");
+            search::create_edit(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_CBC_MACHINES, L"血常规仪器");
+            search::create_edit(hwnd, IDC_SET_LIS_CBC_MACHINES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES, L"输血排除仪器");
+            search::create_edit(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES, 0, 0, S(10), S(24));
 
             createSettingLabel(hwnd, IDC_LABEL_BARCODE_PRINTER, L"条码打印机");
             search::create_combo(hwnd, IDC_SET_BARCODE_PRINTER, 0, 0, S(10), S(220), false);
@@ -896,6 +911,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_RHD_CODES), app.lis.rhd_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_HGB_CODES), app.lis.hgb_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_PLT_CODES), app.lis.plt_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES), app.lis.blood_type_machines.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_CBC_MACHINES), app.lis.cbc_machines.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES), app.lis.blood_lis_exclude_machines.c_str());
             for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
                 st->quickMachineCodes[static_cast<size_t>(i)] =
                     search::wide_to_utf8(search::load_module_str(L"RegularReport", quick_machine_code_key(i), L""));
@@ -1034,6 +1052,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->app.lis.rhd_codes = readEdit(hwnd, IDC_SET_LIS_RHD_CODES);
                 st->app.lis.hgb_codes = readEdit(hwnd, IDC_SET_LIS_HGB_CODES);
                 st->app.lis.plt_codes = readEdit(hwnd, IDC_SET_LIS_PLT_CODES);
+                st->app.lis.blood_type_machines = readEdit(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES);
+                st->app.lis.cbc_machines = readEdit(hwnd, IDC_SET_LIS_CBC_MACHINES);
+                st->app.lis.blood_lis_exclude_machines = readEdit(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES);
                 if (!search::save_settings(search::default_ini_path(), st->app)) {
                     setSaveStatus(hwnd, L"");
                     MessageBoxW(hwnd, L"系统设置保存失败，请检查配置文件是否可写。", L"保存失败", MB_ICONERROR);

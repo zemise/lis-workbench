@@ -155,6 +155,139 @@ std::string sql_item_code_list(const std::string& text, const char* fallback) {
     return out.str();
 }
 
+std::string sql_room_machine_filter(const std::string& text, const char* report_alias) {
+    std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+    std::set<std::string> seen_pairs;
+    for (const auto& raw_group : split(text, ';')) {
+        const std::string group = trim(raw_group);
+        const auto colon = group.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        const std::string room = trim(group.substr(0, colon));
+        if (room.empty() || !std::all_of(room.begin(), room.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+            continue;
+        }
+        std::vector<std::string> machines;
+        for (const auto& raw_machine : split(group.substr(colon + 1), ',')) {
+            const std::string machine = trim(raw_machine);
+            if (machine.empty() ||
+                !std::all_of(machine.begin(), machine.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            const std::string key = room + ":" + machine;
+            if (seen_pairs.insert(key).second) {
+                machines.push_back(machine);
+            }
+        }
+        if (!machines.empty()) {
+            groups.push_back({room, machines});
+        }
+    }
+    if (groups.empty()) {
+        return "";
+    }
+
+    std::ostringstream sql;
+    sql << " AND (";
+    for (size_t i = 0; i < groups.size(); ++i) {
+        if (i > 0) sql << " OR ";
+        sql << "(" << report_alias << ".ROOM_CODE=" << groups[i].first
+            << " AND " << report_alias << ".MACH_CODE";
+        if (groups[i].second.size() == 1) {
+            sql << "=" << groups[i].second.front();
+        } else {
+            sql << " IN (";
+            for (size_t j = 0; j < groups[i].second.size(); ++j) {
+                if (j > 0) sql << ",";
+                sql << groups[i].second[j];
+            }
+            sql << ")";
+        }
+        sql << ")";
+    }
+    sql << ")";
+    return sql.str();
+}
+
+std::string sql_room_machine_exclude_filter(const std::string& text, const char* report_alias) {
+    std::set<std::string> rooms;
+    std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+    std::set<std::string> seen_pairs;
+    for (const auto& raw_group : split(text, ';')) {
+        const std::string group = trim(raw_group);
+        const auto colon = group.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        const std::string room = trim(group.substr(0, colon));
+        if (room.empty() || !std::all_of(room.begin(), room.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+            continue;
+        }
+        const std::string machine_text = trim(group.substr(colon + 1));
+        if (machine_text.empty()) {
+            rooms.insert(room);
+            continue;
+        }
+        std::vector<std::string> machines;
+        for (const auto& raw_machine : split(machine_text, ',')) {
+            const std::string machine = trim(raw_machine);
+            if (machine.empty() ||
+                !std::all_of(machine.begin(), machine.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                continue;
+            }
+            const std::string key = room + ":" + machine;
+            if (seen_pairs.insert(key).second) {
+                machines.push_back(machine);
+            }
+        }
+        if (!machines.empty()) {
+            groups.push_back({room, machines});
+        }
+    }
+    if (rooms.empty() && groups.empty()) {
+        return "";
+    }
+
+    std::ostringstream sql;
+    sql << " AND NOT (";
+    bool need_or = false;
+    if (!rooms.empty()) {
+        sql << "isnull(" << report_alias << ".ROOM_CODE,-1)";
+        if (rooms.size() == 1) {
+            sql << "=" << *rooms.begin();
+        } else {
+            sql << " IN (";
+            size_t idx = 0;
+            for (const auto& room : rooms) {
+                if (idx++ > 0) sql << ",";
+                sql << room;
+            }
+            sql << ")";
+        }
+        need_or = true;
+    }
+    for (const auto& group : groups) {
+        if (need_or) sql << " OR ";
+        sql << "(isnull(" << report_alias << ".ROOM_CODE,-1)=" << group.first
+            << " AND isnull(" << report_alias << ".MACH_CODE,-1)";
+        if (group.second.size() == 1) {
+            sql << "=" << group.second.front();
+        } else {
+            sql << " IN (";
+            for (size_t i = 0; i < group.second.size(); ++i) {
+                if (i > 0) sql << ",";
+                sql << group.second[i];
+            }
+            sql << ")";
+        }
+        sql << ")";
+        need_or = true;
+    }
+    sql << ")";
+    return sql.str();
+}
+
 std::map<std::string, std::string> parse_connection_kv(const std::string& text) {
     std::map<std::string, std::string> values;
     for (const auto& part : split(text, ';')) {
@@ -488,10 +621,7 @@ void add_lis_patient_filters(std::ostringstream& sql, const QueryFilters& filter
         sql << " AND " << report_alias << ".NAME LIKE '%" << sql_escape(trim(filters.patient_name)) << "%'";
     }
     if (!trim(filters.patient_no).empty()) {
-        sql << " AND EXISTS (SELECT 1 FROM LS_AS_BARCODE b WITH (NOLOCK)"
-            << " WHERE isnull(b.DELETE_BIT,0)=0"
-            << " AND b.REG_NO='" << sql_escape(trim(filters.patient_no)) << "'"
-            << " AND b.BARCODE = " << report_alias << ".TXM_NO)";
+        sql << " AND " << report_alias << ".REG_NO='" << sql_escape(trim(filters.patient_no)) << "'";
     }
     if (!trim(filters.start_date).empty()) {
         sql << " AND " << report_alias << ".CHK_DATE >= '" << sql_escape(trim(filters.start_date)) << "'";
@@ -821,7 +951,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(RTRIM(emp_rep.NAME),''),isnull(r.GROUP_NO,''),"
         << " isnull(r.CONF,''),isnull(r.CHK_FLAG,''),cast(isnull(r.ZYMZ_PRINT,0) as varchar(20)),"
         << " cast(isnull(r.ZZJ_PRINT,0) as varchar(20)),isnull(r.REG_NO,''),"
-        << " isnull(LTRIM(RTRIM(bar.DEPT_NAME)),''),isnull(ord.ORDER_TEXT,''),"
+        << " isnull(LTRIM(RTRIM(bar.DEPT_NAME)),''),"
+        << (filters.skip_order_text ? "''" : "isnull(ord.ORDER_TEXT,'')") << ","
         << " isnull(LTRIM(RTRIM(samp.SAMP_NAME)),''),isnull(r.NOTE,''),"
         << " isnull(cast(r.OPER_CODE as varchar(20)),''),isnull(CONVERT(varchar(19),bar.IN_DATE,120),''),"
         << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),isnull(CONVERT(varchar(19),r.REP_TIME,120),''),"
@@ -844,15 +975,17 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_dean ON emp_dean.EMPLOYEE_ID = r.DEAN_OPER"
         << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_req ON emp_req.EMPLOYEE_ID = r.REQ_DR"
         << " OUTER APPLY (SELECT TOP 1 b.DEPT_NAME,b.IN_DATE,b.JZ_FLAG FROM LS_AS_BARCODE b WITH (NOLOCK)"
-        << " WHERE isnull(b.DELETE_BIT,0)=0 AND b.BARCODE=r.TXM_NO ORDER BY b.ID DESC) bar"
-        << " OUTER APPLY (SELECT STUFF(("
-        << " SELECT '/' + LTRIM(RTRIM(b2.ORDER_TEXT))"
-        << " FROM LS_AS_BARCODE b2 WITH (NOLOCK)"
-        << " WHERE isnull(b2.DELETE_BIT,0)=0 AND b2.BARCODE=r.TXM_NO"
-        << " AND NULLIF(LTRIM(RTRIM(b2.ORDER_TEXT)),'') IS NOT NULL"
-        << " ORDER BY b2.ID"
-        << " FOR XML PATH(''),TYPE).value('.','varchar(max)'),1,1,'') AS ORDER_TEXT) ord"
-        << " WHERE r.DELETE_BIT=0";
+        << " WHERE isnull(b.DELETE_BIT,0)=0 AND b.BARCODE=r.TXM_NO ORDER BY b.ID DESC) bar";
+    if (!filters.skip_order_text) {
+        sql << " OUTER APPLY (SELECT STUFF(("
+            << " SELECT '/' + LTRIM(RTRIM(b2.ORDER_TEXT))"
+            << " FROM LS_AS_BARCODE b2 WITH (NOLOCK)"
+            << " WHERE isnull(b2.DELETE_BIT,0)=0 AND b2.BARCODE=r.TXM_NO"
+            << " AND NULLIF(LTRIM(RTRIM(b2.ORDER_TEXT)),'') IS NOT NULL"
+            << " ORDER BY b2.ID"
+            << " FOR XML PATH(''),TYPE).value('.','varchar(max)'),1,1,'') AS ORDER_TEXT) ord";
+    }
+    sql << " WHERE r.DELETE_BIT=0";
 
     add_eq(sql, "r.REG_NO", filters.patient_id);
     add_eq(sql, "r.TXM_NO", filters.barcode);
@@ -929,6 +1062,85 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.mach_code = fetch_column(stmt, 35);
         row.mach_name = fetch_column(stmt, 36);
         row.room_code = fetch_column(stmt, 37);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)filters;
+    (void)log;
+    error = "query_blood_lis_reports is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(filters.connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT ";
+    if (filters.limit > 0) {
+        sql << "TOP " << filters.limit << " ";
+    }
+    sql << "CAST(r.REP_NO AS varchar(20)),"
+        << " isnull(r.OPER_NO,''),"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
+        << " isnull(r.GROUP_NO,''),"
+        << " isnull(r.TXM_NO,''),"
+        << " isnull(RTRIM(emp_oper.NAME),''),"
+        << " isnull(RTRIM(emp_rep.NAME),''),"
+        << " isnull(r.AGE,''),"
+        << " isnull(RTRIM(sx.SEX_NAME),''),"
+        << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
+        << " isnull(cast(r.MACH_CODE as varchar(20)),'')"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " LEFT JOIN LS_AS_SEX sx WITH (NOLOCK) ON sx.SEX_CODE=r.SEX"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper WITH (NOLOCK) ON emp_oper.EMPLOYEE_ID=r.OPER_CODE"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_rep WITH (NOLOCK) ON emp_rep.EMPLOYEE_ID=r.REP_OPER"
+        << " WHERE r.DELETE_BIT=0";
+
+    add_like(sql, "r.NAME", filters.patient_name);
+    if (!trim(filters.patient_no).empty()) {
+        sql << " AND r.REG_NO='" << sql_escape(trim(filters.patient_no)) << "'";
+    }
+    if (!trim(filters.start_date).empty()) {
+        sql << " AND r.CHK_DATE >= '" << sql_escape(trim(filters.start_date)) << "'";
+    }
+    if (!trim(filters.end_date).empty()) {
+        sql << " AND r.CHK_DATE < DATEADD(day,1,'" << sql_escape(trim(filters.end_date)) << "')";
+    }
+    sql << sql_room_machine_exclude_filter(filters.lis_blood_exclude_machines, "r");
+    sql << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        ReportRow row;
+        row.rep_no = fetch_column(stmt, 1);
+        row.oper_no = fetch_column(stmt, 2);
+        row.chk_date = fetch_column(stmt, 3);
+        row.group_name = fetch_column(stmt, 4);
+        row.txm_no = fetch_column(stmt, 5);
+        row.requester = fetch_column(stmt, 6);
+        row.reviewer = fetch_column(stmt, 7);
+        row.age = fetch_column(stmt, 8);
+        row.sex = fetch_column(stmt, 9);
+        row.room_code = fetch_column(stmt, 10);
+        row.mach_code = fetch_column(stmt, 11);
         rows.push_back(row);
     }
 
@@ -1110,6 +1322,8 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
     const std::string plt_codes = sql_item_code_list(filters.lis_plt_codes, "91678;90897;1019;92569;90949");
     const std::string blood_codes = abo_codes + "," + rhd_codes;
     const std::string cbc_codes = hgb_codes + "," + plt_codes;
+    const std::string blood_machine_filter = sql_room_machine_filter(filters.lis_blood_type_machines, "r");
+    const std::string cbc_machine_filter = sql_room_machine_filter(filters.lis_cbc_machines, "r");
 
     // Single round-trip via OUTER APPLY: blood and CBC are independent subqueries
     // from the same base tables, executed together to avoid two network round-trips.
@@ -1125,7 +1339,8 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
-        << " AND e.ITEM_CODE IN (" << blood_codes << ")";
+        << " AND e.ITEM_CODE IN (" << blood_codes << ")"
+        << blood_machine_filter;
     add_lis_patient_filters(sql, filters, "r");
     sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"
@@ -1143,7 +1358,8 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
-        << " AND e.ITEM_CODE IN (" << cbc_codes << ")";
+        << " AND e.ITEM_CODE IN (" << cbc_codes << ")"
+        << cbc_machine_filter;
     add_lis_patient_filters(sql, filters, "r");
     sql
         << " GROUP BY r.REP_NO,r.CHK_DATE"

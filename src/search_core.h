@@ -25,7 +25,11 @@ struct QueryFilters {
     std::string lis_rhd_codes;
     std::string lis_hgb_codes;
     std::string lis_plt_codes;
+    std::string lis_blood_type_machines;
+    std::string lis_cbc_machines;
+    std::string lis_blood_exclude_machines;
     int limit = 300;
+    bool skip_order_text = false;
 };
 
 struct ReportRow {
@@ -375,6 +379,7 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
 bool query_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
+bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});

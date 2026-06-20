@@ -21,6 +21,9 @@ struct LisSummaryCodeSettings {
     std::wstring rhd_codes = L"91964;11103";
     std::wstring hgb_codes = L"91672;90891;1013;92563;90943;89786";
     std::wstring plt_codes = L"91678;90897;1019;92569;90949";
+    std::wstring blood_type_machines = L"11:11101;64:626";
+    std::wstring cbc_machines = L"1:1002,1011,1012;61:613,615";
+    std::wstring blood_lis_exclude_machines = L"3:;71:;8:8004";
 };
 
 struct AppSettings {

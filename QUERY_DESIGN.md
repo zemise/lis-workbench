@@ -178,6 +178,30 @@ ApplyCompositionApplyNumApplyUnit;
 
 后续如果输血页面需要展示交叉配血状态或配血时间，可优先按 `ApplyFormNO` 关联 `LS_XK_BloodCrossMatch`，并过滤 `Delete_Bit=0`。
 
+### 查询检验结果报告列表
+
+`输血结果查询 -> 查询检验结果` 弹窗的右侧报告列表使用专用轻量查询 `query_blood_lis_reports()`，不再复用通用 `query_reports()`。该列表只需要展示样本号、检验时间、组合项目、条码、检验者、审核者、科室代码、仪器代码，并在选择报告后按 `REP_NO` 查询明细结果，因此 SQL 只读取 `LS_AS_REPORT.REP_NO / OPER_NO / CHK_DATE / GROUP_NO / TXM_NO / OPER_CODE / REP_OPER / AGE / SEX / ROOM_CODE / MACH_CODE` 及少量人员、性别名称字段。
+
+按病人号查询时使用现场已确认同口径字段：`LS_XK_BloodRequestApply.Patient_NO = LS_AS_REPORT.REG_NO`。因此输血弹窗报告列表和右侧摘要都直接按 `LS_AS_REPORT.REG_NO` 过滤，不再绕行 `LS_AS_BARCODE.REG_NO + BARCODE/TXM_NO` 判断病人归属。该查询避开通用报告列表中的 `LS_AS_PATTYPE / LS_AS_SAMPLE / LS_AS_MACHINE` 等无关字典联查、同条码医嘱内容聚合和条码表相关子查询，减少数据库端行扩展、字符串聚合和逐行 `EXISTS` 成本。
+
+报告列表支持通过系统设置 `[LisSummary] BloodLisExcludeMachines` 排除不想展示的检验科室/仪器，过滤只作用于输血弹窗报告列表，不影响右侧血型/血常规摘要。格式为 `ROOM:;ROOM:MACH1,MACH2;ROOM:MACH`，默认 `3:;71:;8:8004`，表示排除 `ROOM_CODE=3`、`ROOM_CODE=71` 的全部仪器，并额外排除 `ROOM_CODE=8 AND MACH_CODE=8004`。配置为空或无有效片段时不追加排除条件；用户在系统设置中清空该项后会保留空值，不会被默认值覆盖。
+
+报告列表还会复用 `[LisSummary] BloodTypeMachines / CbcMachines` 判断当前行是否属于血型仪器或血常规仪器。查询完成状态栏会显示当前列表命中的血型/血常规行数，便于核对配置是否匹配实际 `ROOM_CODE:MACH_CODE`；列表行本身保持系统默认绘制，不额外设置背景色。
+
+### 查询检验结果摘要
+
+`查询检验结果` 窗口右侧摘要按当前病人号或姓名查询最近一次血型鉴定、血红蛋白和血小板。摘要查询使用 `LS_AS_REPORT` 联查 `LS_AS_REPENTRY`，并在血型分支、血常规分支分别下推可配置仪器范围。配置保存到 `ClientConfig.ini` 的 `[LisSummary]`：
+
+摘要显示层由弹窗父窗口在 `WM_PAINT` 中一次性绘制两行文本，不再用多个 `STATIC` 控件拼接日期和值。这样查询开始时的“正在读取最近检验摘要...”和查询完成后的摘要结果只刷新同一块摘要区域，减少耗时查询期间控件各自擦除、重排导致的文字短暂断裂。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `BloodTypeMachines` | `11:11101;64:626` | 血型鉴定摘要仪器范围 |
+| `CbcMachines` | `1:1002,1011,1012;61:613,615` | 血红蛋白/血小板摘要仪器范围 |
+| `BloodLisExcludeMachines` | `3:;71:;8:8004` | 输血弹窗报告列表排除科室/仪器；清空则不排除 |
+
+仪器范围使用成对表达：分号分组，冒号左侧为 `ROOM_CODE`，冒号右侧为该科室下允许的 `MACH_CODE`，多个仪器用逗号分隔。程序只接受数字片段，非法片段忽略；配置为空或无有效片段时不限制仪器。该过滤用于减少无关报告参与聚合。当前按现场确认口径执行强过滤：如果某一侧摘要在限定仪器范围内查不到，不再自动去掉仪器条件做二次兜底查询。
+
 ### HIV 统计中的已完结输血单申请号
 
 `HIV 抗体检测统计` 下方明细列表中的“病人号”列直接显示 `LS_AS_REPORT.REG_NO`。“已完结输血单申请号”列用于辅助核对 HIV 明细是否存在已完结输血申请。当前改为直接使用输血申请主表 `LS_XK_BloodRequestApply`，不再绕行 `LS_XK_BloodCrossMatch` 交叉配血表；申请主表自身包含唯一病人号 `Patient_NO`，因此匹配逻辑可简化为按病人号匹配，不再依赖姓名。为避免对每条 HIV 明细逐行扫描输血申请表，当前先按统计月份一次性取出当月已完结输血申请，再在 C++ 内存中按病人号匹配到明细行。当前匹配规则：
