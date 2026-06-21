@@ -7,7 +7,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-project(lis_workbench LANGUAGES CXX)
+project(lis_workbench LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,20 @@ if(WIN32)
         _WIN32_WINNT=0x0601
         NTDDI_VERSION=0x06010000
     )
+endif()
+
+add_library(sqlite3_amalgamation STATIC
+    external/sqlite/sqlite3.c
+)
+target_include_directories(sqlite3_amalgamation SYSTEM PUBLIC external/sqlite)
+target_compile_definitions(sqlite3_amalgamation PRIVATE
+    SQLITE_DEFAULT_FOREIGN_KEYS=1
+    SQLITE_OMIT_LOAD_EXTENSION
+    SQLITE_THREADSAFE=1
+    ${LIS_WIN7_COMPAT_DEFINITIONS}
+)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(sqlite3_amalgamation PRIVATE -Wno-stringop-overread)
 endif()
 
 # ── Core library ──────────────────────────────────────────────
@@ -144,6 +158,10 @@ add_executable(main_app WIN32
     src/blood_module.cpp
     src/emergency_statistics_module.cpp
     src/hiv_statistics_module.cpp
+    src/quality_control_import.cpp
+    src/quality_control_module.cpp
+    src/quality_control_settings_dialog.cpp
+    src/quality_control_store.cpp
     src/query_module.cpp
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
@@ -158,7 +176,7 @@ add_executable(main_app WIN32
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE search_ui_core search_core update_core comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool dbghelp)
+target_link_libraries(main_app PRIVATE search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 iphlpapi ws2_32 winspool dbghelp)
 if(LIS_HAS_LABELPRINT)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)

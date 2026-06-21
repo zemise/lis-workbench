@@ -109,6 +109,35 @@ struct ResultRow {
     std::string critical_high_bound;  // LS_AS_DEF_ITEMSCOPE.DNBOUND1
 };
 
+struct QualityControlLisQuery {
+    std::string connection_string;
+    std::string start_date;
+    std::string end_date;
+    std::string mach_code;
+    std::string sample_no;
+};
+
+struct QualityControlLisRow {
+    std::string entry_id;
+    std::string rep_no;
+    std::string room_code;
+    std::string mach_code;
+    std::string mach_name;
+    std::string sample_no;
+    std::string barcode_no;
+    std::string report_date;
+    std::string inspect_date;
+    std::string report_time;
+    std::string effective_time;
+    std::string chk_flag;
+    std::string conf;
+    std::string item_code;
+    std::string item_name;
+    std::string result;
+    std::string unit;
+    std::string normal;
+};
+
 struct LisSummary {
     std::string abo;
     std::string rhd;
@@ -401,6 +430,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
+bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});

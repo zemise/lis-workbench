@@ -27,6 +27,7 @@
 #include "hiv_statistics_module.h"
 #include "menu_toolbar.h"
 #include "module_registry.h"
+#include "quality_control_module.h"
 #include "query_module.h"
 #include "regular_report_module.h"
 #include "settings_module.h"
@@ -249,7 +250,6 @@ void closeActiveMdiChild() {
 
 HWND create_tool4_placeholder(const ModuleContext&) { return createMdiChild(L"工具4"); }
 HWND create_tool5_placeholder(const ModuleContext&) { return createMdiChild(L"工具5"); }
-HWND create_stat3_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析3"); }
 HWND create_stat4_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析4"); }
 HWND create_stat5_placeholder(const ModuleContext&) { return createMdiChild(L"统计分析5"); }
 
@@ -265,7 +265,7 @@ const ModuleDef g_modules[] = {
     { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
     { L"HivStatistics", L"统计分析管理", L"HIV 抗体检测统计(&1)", IDM_STAT1, create_hiv_statistics_module },
     { L"EmergencyStatistics", L"统计分析管理", L"急诊样本统计(&2)", IDM_STAT2, create_emergency_statistics_module },
-    { L"Stat3",    L"统计分析管理", L"统计分析3(&3)",    IDM_STAT3,   create_stat3_placeholder },
+    { L"QualityControl", L"统计分析管理", L"质控分析(&3)", IDM_STAT3, create_quality_control_module },
     { L"Stat4",    L"统计分析管理", L"统计分析4(&4)",    IDM_STAT4,   create_stat4_placeholder },
     { L"Stat5",    L"统计分析管理", L"统计分析5(&5)",    IDM_STAT5,   create_stat5_placeholder },
     { L"Settings", L"系统",     L"系统设置(&S)...",     IDM_SETTINGS, create_settings_module  },

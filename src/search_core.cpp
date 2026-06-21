@@ -1290,6 +1290,97 @@ bool query_results(const std::string& connection_string, const std::string& rep_
 #endif
 }
 
+bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_quality_control_lis_results is only available on Windows";
+    return false;
+#else
+    if (trim(query.mach_code).empty() || trim(query.sample_no).empty()) {
+        error = "missing quality control machine code or sample number";
+        return false;
+    }
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT "
+        << " CAST(e.ID AS varchar(30)),"
+        << " CAST(r.REP_NO AS varchar(30)),"
+        << " isnull(CAST(r.ROOM_CODE AS varchar(20)),''),"
+        << " isnull(CAST(r.MACH_CODE AS varchar(20)),''),"
+        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(CAST(r.MACH_CODE AS varchar(20)),'')),"
+        << " isnull(r.OPER_NO,''),"
+        << " isnull(r.TXM_NO,''),"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
+        << " isnull(CONVERT(varchar(19),r.REP_TIME,120),''),"
+        << " isnull(CONVERT(varchar(19),COALESCE(r.REP_TIME,r.CHK_DATE,r.REP_DATE),120),''),"
+        << " isnull(r.CHK_FLAG,''),"
+        << " isnull(r.CONF,''),"
+        << " isnull(CAST(e.ITEM_CODE AS varchar(20)),''),"
+        << " isnull(i.ITEM_NAME,e.ITEM_NAME),"
+        << " isnull(e.RESULT,''),"
+        << " isnull(RTRIM(i.UNIT),''),"
+        << " isnull(e.NORMAL,'')"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON e.ITEM_CODE=i.ITEM_CODE AND isnull(i.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND isnull(mach.DELETE_BIT,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND r.MACH_CODE='" << sql_escape(trim(query.mach_code)) << "'"
+        << " AND r.OPER_NO='" << sql_escape(trim(query.sample_no)) << "'";
+    if (!trim(query.start_date).empty()) {
+        sql << " AND r.CHK_DATE >= '" << sql_escape(trim(query.start_date)) << "'";
+    }
+    if (!trim(query.end_date).empty()) {
+        sql << " AND r.CHK_DATE < DATEADD(day,1,'" << sql_escape(trim(query.end_date)) << "')";
+    }
+    sql << " ORDER BY r.CHK_DATE ASC,r.REP_NO ASC,e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        QualityControlLisRow row;
+        row.entry_id = fetch_column(stmt, 1);
+        row.rep_no = fetch_column(stmt, 2);
+        row.room_code = fetch_column(stmt, 3);
+        row.mach_code = fetch_column(stmt, 4);
+        row.mach_name = fetch_column(stmt, 5);
+        row.sample_no = fetch_column(stmt, 6);
+        row.barcode_no = fetch_column(stmt, 7);
+        row.report_date = fetch_column(stmt, 8);
+        row.inspect_date = fetch_column(stmt, 9);
+        row.report_time = fetch_column(stmt, 10);
+        row.effective_time = fetch_column(stmt, 11);
+        row.chk_flag = fetch_column(stmt, 12);
+        row.conf = fetch_column(stmt, 13);
+        row.item_code = fetch_column(stmt, 14);
+        row.item_name = fetch_column(stmt, 15);
+        row.result = fetch_column(stmt, 16);
+        row.unit = fetch_column(stmt, 17);
+        row.normal = fetch_column(stmt, 18);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no,
                           std::vector<unsigned char>& picture, std::string& error, LogFn log) {
     picture.clear();
