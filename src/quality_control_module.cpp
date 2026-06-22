@@ -35,6 +35,7 @@ namespace {
 
 constexpr const wchar_t* WND_CLASS = L"QualityControlModuleChild";
 constexpr const wchar_t* CHART_WND_CLASS = L"QualityControlChartWindow";
+constexpr const wchar_t* CARD_WND_CLASS = L"QualityControlCardPane";
 constexpr const wchar_t* WINDOW_TITLE = L"质控分析";
 constexpr const wchar_t* PROP_STATE = L"QualityControlSt";
 constexpr const wchar_t* PROP_CHART = L"QualityControlChartData";
@@ -56,6 +57,8 @@ enum ControlId {
     IDC_LJ_CHART = 6813,
     IDC_CHART_LIST = 6814,
     IDC_STATUS_FILTER = 6815,
+    IDC_SIDE_LIST = 6816,
+    IDC_SIDE_DETAILS = 6817,
 };
 
 struct GroupRow {
@@ -65,6 +68,7 @@ struct GroupRow {
     std::string sample_no;
     std::string item_code;
     std::string item_name;
+    std::string item_eng;
     std::string level;
     std::string qc_name;
     int count = 0;
@@ -80,6 +84,35 @@ struct GroupRow {
     int in_control_count = 0;
     int warning_count = 0;
     int out_of_control_count = 0;
+};
+
+struct CardLevelStatus {
+    std::string level;
+    std::string sample_no;
+    std::string status;
+    int count = 0;
+    int evaluated_count = 0;
+    int warning_count = 0;
+    int out_of_control_count = 0;
+    int group_index = -1;
+};
+
+struct CardRow {
+    std::string key;
+    std::string mach_code;
+    std::string item_code;
+    std::string item_name;
+    std::string item_eng;
+    std::string qc_name;
+    std::string latest_time;
+    std::string latest_result;
+    std::string tester_name;
+    int count = 0;
+    int warning_count = 0;
+    int out_of_control_count = 0;
+    int evaluated_count = 0;
+    int representative_group = -1;
+    std::vector<CardLevelStatus> levels;
 };
 
 struct State {
@@ -104,13 +137,22 @@ struct State {
     HWND summary = nullptr;
     HWND cards = nullptr;
     HWND details = nullptr;
+    HWND sideTitle = nullptr;
+    HWND sideChartButton = nullptr;
+    HWND sideDetailsButton = nullptr;
+    HWND sideExportButton = nullptr;
+    HWND sideList = nullptr;
     HWND status = nullptr;
     HBRUSH bgBrush = nullptr;
     bool busy = false;
     bool suppressSelectionNotify = false;
+    bool detailsExpanded = false;
+    int cardScrollY = 0;
+    int selectedCard = -1;
     std::string selectedMachineCode;
     std::vector<qc::Result> rows;
     std::vector<GroupRow> groupsRows;
+    std::vector<CardRow> cardsRows;
     int selectedGroup = -1;
 };
 
@@ -239,13 +281,15 @@ bool hasVisibleRows(const State* st) {
 }
 
 void updateExportButton(State* st) {
-    if (!st || !st->exportButton) return;
-    EnableWindow(st->exportButton, !st->busy && hasVisibleRows(st));
+    if (!st) return;
+    const BOOL enabled = !st->busy && hasVisibleRows(st);
+    if (st->exportButton) EnableWindow(st->exportButton, enabled);
 }
 
 void updateChartButton(State* st) {
-    if (!st || !st->chartButton) return;
-    EnableWindow(st->chartButton, !st->busy && !st->groupsRows.empty());
+    if (!st) return;
+    const BOOL enabled = !st->busy && !st->groupsRows.empty();
+    if (st->chartButton) EnableWindow(st->chartButton, enabled);
 }
 
 void setCell(HWND list, int row, int col, const std::string& text) {
@@ -316,6 +360,73 @@ std::string groupTitleText(const GroupRow& group) {
     if (!group.level.empty()) title += " / " + group.level;
     if (!group.sample_no.empty()) title += " / 样本号 " + group.sample_no;
     return title;
+}
+
+std::string itemTitleText(const std::string& itemEng, const std::string& itemName, const std::string& itemCode) {
+    const std::string name = search::trim(itemName).empty() ? search::trim(itemCode) : search::trim(itemName);
+    const std::string eng = search::trim(itemEng);
+    if (!eng.empty() && !name.empty()) return "（" + eng + "）" + name;
+    if (!name.empty()) return name;
+    return eng;
+}
+
+std::string itemIdentity(const std::string& itemCode, const std::string& itemName, const std::string& qcName) {
+    const std::string code = search::trim(itemCode);
+    if (!code.empty()) return code;
+    const std::string name = search::trim(itemName);
+    if (!name.empty()) return name;
+    return search::trim(qcName);
+}
+
+std::string cardKey(const GroupRow& group) {
+    return group.mach_code + "\x1f" + itemIdentity(group.item_code, group.item_name, group.qc_name);
+}
+
+std::string rowCardKey(const qc::Result& row) {
+    return row.mach_code + "\x1f" + itemIdentity(row.item_code, row.item_name, row.qc_name);
+}
+
+std::string cardStatusText(const CardRow& card) {
+    if (card.count <= 0) return "无数据";
+    if (card.out_of_control_count > 0) return "失控";
+    if (card.warning_count > 0) return "警告";
+    if (card.evaluated_count <= 0) return "未判定";
+    return "在控";
+}
+
+std::string cardTitleText(const CardRow& card) {
+    return itemTitleText(card.item_eng, card.item_name, card.item_code);
+}
+
+std::string selectedQcDate(State* st) {
+    if (!st) return "";
+    std::string date = search::trim(dateText(st->endDate));
+    if (date.empty()) date = search::trim(dateText(st->startDate));
+    return date;
+}
+
+bool datePartEquals(const std::string& value, const std::string& date) {
+    const std::string trimmedValue = search::trim(value);
+    const std::string trimmedDate = search::trim(date);
+    if (trimmedValue.size() < 10 || trimmedDate.size() < 10) return false;
+    return trimmedValue.compare(0, 10, trimmedDate, 0, 10) == 0;
+}
+
+bool rowInSelectedQcDate(State* st, const qc::Result& row) {
+    const std::string date = selectedQcDate(st);
+    if (date.empty()) return true;
+    return datePartEquals(row.effective_time, date) ||
+           datePartEquals(row.inspect_date, date) ||
+           datePartEquals(row.report_date, date) ||
+           datePartEquals(row.report_time, date);
+}
+
+std::string levelStatusText(const CardLevelStatus& level) {
+    if (level.count <= 0) return "无数据";
+    if (level.out_of_control_count > 0) return "失控";
+    if (level.warning_count > 0) return "警告";
+    if (level.evaluated_count <= 0) return "未判定";
+    return "在控";
 }
 
 std::string joinRules(const std::vector<std::string>& rules) {
@@ -848,6 +959,7 @@ void buildGroups(State* st, bool applyStatusFilter = true) {
             group.sample_no = row.sample_no;
             group.item_code = row.item_code;
             group.item_name = row.item_name;
+            group.item_eng = row.item_eng;
             group.level = row.level;
             group.qc_name = row.qc_name;
             st->groupsRows.push_back(std::move(group));
@@ -884,6 +996,101 @@ void buildGroups(State* st, bool applyStatusFilter = true) {
     }
 }
 
+int levelSortRank(const std::string& level) {
+    const std::string trimmed = search::trim(level);
+    if (trimmed == "L1" || trimmed == "1") return 1;
+    if (trimmed == "L2" || trimmed == "2") return 2;
+    if (trimmed == "L3" || trimmed == "3") return 3;
+    return 100;
+}
+
+void buildCards(State* st) {
+    st->cardsRows.clear();
+    std::map<std::string, size_t> cardIndex;
+    std::map<std::string, std::pair<size_t, size_t>> levelIndex;
+    for (int i = 0; i < static_cast<int>(st->groupsRows.size()); ++i) {
+        const auto& group = st->groupsRows[static_cast<size_t>(i)];
+        const std::string key = cardKey(group);
+        auto found = cardIndex.find(key);
+        if (found == cardIndex.end()) {
+            cardIndex[key] = st->cardsRows.size();
+            CardRow card;
+            card.key = key;
+            card.mach_code = group.mach_code;
+            card.item_code = group.item_code;
+            card.item_name = group.item_name;
+            card.item_eng = group.item_eng;
+            card.qc_name = group.qc_name;
+            card.representative_group = i;
+            st->cardsRows.push_back(std::move(card));
+            found = cardIndex.find(key);
+        }
+
+        auto& card = st->cardsRows[found->second];
+        CardLevelStatus level;
+        level.level = group.level;
+        level.sample_no = group.sample_no;
+        level.status = "无数据";
+        level.group_index = i;
+        card.levels.push_back(std::move(level));
+        levelIndex[group.key] = {found->second, card.levels.size() - 1};
+    }
+
+    for (const auto& row : st->rows) {
+        if (!rowVisibleByStatus(st, row)) continue;
+        if (!rowInSelectedQcDate(st, row)) continue;
+        const auto cardFound = cardIndex.find(rowCardKey(row));
+        if (cardFound == cardIndex.end()) continue;
+        auto& card = st->cardsRows[cardFound->second];
+
+        ++card.count;
+        if (!row.qc_status.empty()) ++card.evaluated_count;
+        if (row.qc_status == "out_of_control") {
+            ++card.out_of_control_count;
+        } else if (row.qc_status == "warning") {
+            ++card.warning_count;
+        }
+        if (row.effective_time >= card.latest_time) {
+            card.latest_time = row.effective_time;
+            card.latest_result = row.result_text;
+            card.tester_name = row.tester_name;
+        }
+
+        const auto levelFound = levelIndex.find(rowGroupKey(row));
+        if (levelFound != levelIndex.end()) {
+            auto& level = st->cardsRows[levelFound->second.first].levels[levelFound->second.second];
+            ++level.count;
+            if (!row.qc_status.empty()) ++level.evaluated_count;
+            if (row.qc_status == "out_of_control") {
+                ++level.out_of_control_count;
+            } else if (row.qc_status == "warning") {
+                ++level.warning_count;
+            }
+        }
+        if (row.qc_status == "out_of_control") {
+            const auto levelFoundForGroup = levelIndex.find(rowGroupKey(row));
+            if (levelFoundForGroup != levelIndex.end()) {
+                card.representative_group = st->cardsRows[levelFoundForGroup->second.first]
+                                                .levels[levelFoundForGroup->second.second]
+                                                .group_index;
+            }
+        }
+    }
+
+    for (auto& card : st->cardsRows) {
+        for (auto& level : card.levels) {
+            level.status = levelStatusText(level);
+        }
+        std::sort(card.levels.begin(), card.levels.end(), [](const CardLevelStatus& a, const CardLevelStatus& b) {
+            const int ar = levelSortRank(a.level);
+            const int br = levelSortRank(b.level);
+            if (ar != br) return ar < br;
+            if (a.level != b.level) return a.level < b.level;
+            return a.sample_no < b.sample_no;
+        });
+    }
+}
+
 void populateGroups(State* st) {
     ListView_DeleteAllItems(st->groups);
     for (int i = 0; i < static_cast<int>(st->groupsRows.size()); ++i) {
@@ -912,64 +1119,243 @@ void populateGroups(State* st) {
 
 void updateSummary(State* st) {
     if (!st || !st->summary) return;
-    int outOfControlGroups = 0;
-    int warningGroups = 0;
-    int inControlGroups = 0;
-    int undecidedGroups = 0;
-    int pointCount = 0;
-    int outOfControlPoints = 0;
-    int warningPoints = 0;
-    for (const auto& group : st->groupsRows) {
-        pointCount += group.count;
-        outOfControlPoints += group.out_of_control_count;
-        warningPoints += group.warning_count;
-        const std::string status = groupStatusText(group);
+    int outOfControlCards = 0;
+    int warningCards = 0;
+    int inControlCards = 0;
+    int noDataCards = 0;
+    int undecidedCards = 0;
+    for (const auto& card : st->cardsRows) {
+        const std::string status = cardStatusText(card);
         if (status == "失控") {
-            ++outOfControlGroups;
+            ++outOfControlCards;
         } else if (status == "警告") {
-            ++warningGroups;
+            ++warningCards;
         } else if (status == "在控") {
-            ++inControlGroups;
+            ++inControlCards;
+        } else if (status == "无数据") {
+            ++noDataCards;
         } else {
-            ++undecidedGroups;
+            ++undecidedCards;
         }
     }
-    const std::wstring text = L"今日质控概览    分组 " + std::to_wstring(st->groupsRows.size()) +
-                              L"    失控 " + std::to_wstring(outOfControlGroups) +
-                              L"    警告 " + std::to_wstring(warningGroups) +
-                              L"    在控 " + std::to_wstring(inControlGroups) +
-                              L"    未判定 " + std::to_wstring(undecidedGroups) +
-                              L"    明细 " + std::to_wstring(pointCount) +
-                              L"    失控点 " + std::to_wstring(outOfControlPoints) +
-                              L"    警告点 " + std::to_wstring(warningPoints);
+    const std::wstring text = L"今日质控概览    项目 " + std::to_wstring(st->cardsRows.size()) +
+                              L"    失控 " + std::to_wstring(outOfControlCards) +
+                              L"    警告 " + std::to_wstring(warningCards) +
+                              L"    在控 " + std::to_wstring(inControlCards) +
+                              L"    无数据 " + std::to_wstring(noDataCards) +
+                              L"    未判定 " + std::to_wstring(undecidedCards);
     SetWindowTextW(st->summary, text.c_str());
 }
 
+int cardGap(HWND hwnd) {
+    return S(hwnd, 12);
+}
+
+int cardMinWidth(HWND hwnd) {
+    return S(hwnd, 286);
+}
+
+int cardPreferredWidth(HWND hwnd) {
+    return S(hwnd, 300);
+}
+
+int cardHeight(HWND hwnd) {
+    return S(hwnd, 158);
+}
+
+int cardColumns(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int gap = cardGap(hwnd);
+    const int width = std::max(1, static_cast<int>(rc.right - rc.left));
+    return std::max(1, (width - gap) / (cardPreferredWidth(hwnd) + gap));
+}
+
+int cardActualWidth(HWND hwnd, int columns) {
+    (void)columns;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int gap = cardGap(hwnd);
+    const int width = std::max(1, static_cast<int>(rc.right - rc.left));
+    const int available = std::max(1, width - gap * 2);
+    if (available < cardMinWidth(hwnd)) return available;
+    return std::min(cardPreferredWidth(hwnd), available);
+}
+
+int cardContentHeight(HWND hwnd, const State* st) {
+    if (!st || st->cardsRows.empty()) return 0;
+    const int columns = cardColumns(hwnd);
+    const int rows = (static_cast<int>(st->cardsRows.size()) + columns - 1) / columns;
+    return cardGap(hwnd) + rows * (cardHeight(hwnd) + cardGap(hwnd));
+}
+
+int maxCardScroll(HWND hwnd, const State* st) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    return std::max(0, cardContentHeight(hwnd, st) - std::max(0, static_cast<int>(rc.bottom - rc.top)));
+}
+
+void updateCardScrollBar(HWND hwnd, State* st) {
+    if (!st) return;
+    st->cardScrollY = std::clamp(st->cardScrollY, 0, maxCardScroll(hwnd, st));
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = std::max(0, cardContentHeight(hwnd, st) - 1);
+    si.nPage = static_cast<UINT>(std::max(1, static_cast<int>(rc.bottom - rc.top)));
+    si.nPos = st->cardScrollY;
+    SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+}
+
+RECT cardRectForIndex(HWND hwnd, const State* st, int index) {
+    (void)st;
+    const int gap = cardGap(hwnd);
+    const int columns = cardColumns(hwnd);
+    const int w = cardActualWidth(hwnd, columns);
+    const int h = cardHeight(hwnd);
+    const int row = index / columns;
+    const int col = index % columns;
+    const int x = gap + col * (w + gap);
+    const int y = gap + row * (h + gap);
+    return RECT{x, y, x + w, y + h};
+}
+
+COLORREF statusColor(const std::string& status) {
+    if (status == "失控") return RGB(235, 64, 55);
+    if (status == "警告") return RGB(255, 224, 82);
+    if (status == "在控") return RGB(54, 202, 65);
+    return RGB(205, 211, 218);
+}
+
+COLORREF cardStatusColor(const CardRow& card) {
+    return statusColor(cardStatusText(card));
+}
+
+COLORREF cardTextColor(const CardRow& card) {
+    const std::string status = cardStatusText(card);
+    return status == "警告" || status == "未判定" || status == "无数据" ? RGB(35, 45, 58) : RGB(255, 255, 255);
+}
+
+void fillSolid(HDC dc, const RECT& rc, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(dc, &rc, brush);
+    DeleteObject(brush);
+}
+
+void drawCardText(HDC dc, RECT rc, const std::wstring& text, UINT format, COLORREF color) {
+    SetTextColor(dc, color);
+    DrawTextW(dc, text.c_str(), -1, &rc, format);
+}
+
+void drawStatusDot(HDC dc, int cx, int cy, int radius, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(235, 240, 235));
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    Ellipse(dc, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+void drawChartGlyph(HDC dc, const RECT& rc, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, 2, color);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    const int left = rc.left + 3;
+    const int right = rc.right - 3;
+    const int top = rc.top + 4;
+    const int bottom = rc.bottom - 4;
+    MoveToEx(dc, left, bottom, nullptr);
+    LineTo(dc, left + (right - left) / 3, top + (bottom - top) / 2);
+    LineTo(dc, left + (right - left) * 2 / 3, bottom - (bottom - top) / 3);
+    LineTo(dc, right, top);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawQualityCard(HDC dc, HWND hwnd, State* st, int index, RECT rc) {
+    const auto& card = st->cardsRows[static_cast<size_t>(index)];
+    const bool selected = index == st->selectedCard;
+    fillSolid(dc, rc, selected ? RGB(18, 96, 168) : RGB(170, 185, 200));
+    RECT inner{rc.left + 2, rc.top + 2, rc.right - 2, rc.bottom - 2};
+    fillSolid(dc, inner, RGB(255, 255, 255));
+
+    RECT header{inner.left, inner.top, inner.right, inner.top + S(hwnd, 42)};
+    fillSolid(dc, header, cardStatusColor(card));
+
+    const COLORREF headerTextColor = cardTextColor(card);
+    const int pad = S(hwnd, 8);
+    RECT glyph{header.right - S(hwnd, 30), header.top + S(hwnd, 10), header.right - S(hwnd, 10), header.bottom - S(hwnd, 10)};
+    drawChartGlyph(dc, glyph, headerTextColor);
+    RECT title{header.left + pad, header.top + S(hwnd, 5), glyph.left - S(hwnd, 6), header.bottom - S(hwnd, 4)};
+    std::wstring titleText = search::utf8_to_wide(cardTitleText(card));
+    drawCardText(dc, title, titleText, DT_LEFT | DT_TOP | DT_END_ELLIPSIS | DT_WORDBREAK, headerTextColor);
+
+    const COLORREF bodyText = RGB(42, 52, 60);
+    const std::string latest = card.latest_result.empty() ? "-" : card.latest_result;
+    RECT result{inner.left + pad, inner.top + S(hwnd, 50), inner.right - S(hwnd, 76), inner.top + S(hwnd, 72)};
+    drawCardText(dc, result, L"今日结果: " + search::utf8_to_wide(latest), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+
+    RECT tester{inner.left + pad, inner.top + S(hwnd, 74), inner.right - S(hwnd, 76), inner.top + S(hwnd, 96)};
+    drawCardText(dc, tester, L"操作人: " + search::utf8_to_wide(card.tester_name.empty() ? "-" : card.tester_name),
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+
+    RECT status{inner.left + pad, inner.bottom - S(hwnd, 24), inner.right - S(hwnd, 76), inner.bottom - S(hwnd, 4)};
+    drawCardText(dc, status, L"状态: " + search::utf8_to_wide(cardStatusText(card)),
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+
+    const int dotX = inner.right - S(hwnd, 16);
+    const int dotRadius = S(hwnd, 6);
+    const int startY = inner.top + S(hwnd, 60);
+    const int rowH = S(hwnd, 24);
+    for (int i = 0; i < static_cast<int>(card.levels.size()) && i < 4; ++i) {
+        const auto& level = card.levels[static_cast<size_t>(i)];
+        const int y = startY + i * rowH;
+        RECT levelText{inner.right - S(hwnd, 62), y - S(hwnd, 10), inner.right - S(hwnd, 22), y + S(hwnd, 10)};
+        drawCardText(dc, levelText, search::utf8_to_wide(level.level.empty() ? "-" : level.level),
+                     DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+        drawStatusDot(dc, dotX, y, dotRadius, statusColor(level.status));
+    }
+}
+
+int hitQualityCard(HWND hwnd, State* st, int x, int y) {
+    if (!st) return -1;
+    POINT pt{x, y + st->cardScrollY};
+    for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
+        RECT rc = cardRectForIndex(hwnd, st, i);
+        if (PtInRect(&rc, pt)) return i;
+    }
+    return -1;
+}
+
+int hitQualityCardHeader(HWND hwnd, State* st, int x, int y) {
+    if (!st) return -1;
+    POINT pt{x, y + st->cardScrollY};
+    for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
+        RECT rc = cardRectForIndex(hwnd, st, i);
+        RECT header{rc.left + 2, rc.top + 2, rc.right - 2, rc.top + S(hwnd, 44)};
+        if (PtInRect(&header, pt)) return i;
+    }
+    return -1;
+}
+
 bool rowInSelectedGroup(const State* st, const qc::Result& row) {
+    if (st && st->selectedCard >= 0 && st->selectedCard < static_cast<int>(st->cardsRows.size())) {
+        return rowVisibleByStatus(st, row) && rowCardKey(row) == st->cardsRows[static_cast<size_t>(st->selectedCard)].key;
+    }
     if (!st || st->selectedGroup < 0 || st->selectedGroup >= static_cast<int>(st->groupsRows.size())) return true;
     const auto& group = st->groupsRows[static_cast<size_t>(st->selectedGroup)];
     return rowVisibleByStatus(st, row) && rowGroupKey(row) == group.key;
 }
 
 void populateCards(State* st) {
-    ListView_DeleteAllItems(st->cards);
-    int out = 0;
-    for (const auto& group : st->groupsRows) {
-        LVITEMW item{};
-        item.mask = LVIF_TEXT;
-        item.iItem = out;
-        const auto titleW = search::utf8_to_wide(groupTitleText(group));
-        item.pszText = const_cast<wchar_t*>(titleW.c_str());
-        ListView_InsertItem(st->cards, &item);
-        setCell(st->cards, out, 1, groupStatusText(group));
-        setCell(st->cards, out, 2, group.latest_result);
-        setCell(st->cards, out, 3, group.latest_time);
-        setCell(st->cards, out, 4, std::to_string(group.count));
-        setCell(st->cards, out, 5, std::to_string(group.out_of_control_count) + " / " + std::to_string(group.warning_count));
-        setCell(st->cards, out, 6, group.mach_name.empty() ? group.mach_code : group.mach_name);
-        setCell(st->cards, out, 7, "双击");
-        ++out;
-    }
+    if (!st || !st->cards) return;
+    updateCardScrollBar(st->cards, st);
+    InvalidateRect(st->cards, nullptr, FALSE);
 }
 
 void populateDetails(State* st) {
@@ -990,14 +1376,45 @@ void populateDetails(State* st) {
         setCell(st->details, out, 4, row.tester_name);
         setCell(st->details, out, 5, row.item_name);
         setCell(st->details, out, 6, row.level);
-        setCell(st->details, out, 7, row.result_text);
-        setCell(st->details, out, 8, row.unit);
-        setCell(st->details, out, 9, qcStatusText(row.qc_status));
-        setCell(st->details, out, 10, row.qc_rules);
-        setCell(st->details, out, 11, row.has_qc_z ? formatNumber(row.qc_z) : "");
-        setCell(st->details, out, 12, "LIS");
+        setCell(st->details, out, 7, row.lot_no.empty() ? "-" : row.lot_no);
+        setCell(st->details, out, 8, row.result_text);
+        setCell(st->details, out, 9, row.unit);
+        setCell(st->details, out, 10, qcStatusText(row.qc_status));
+        setCell(st->details, out, 11, row.qc_rules);
+        setCell(st->details, out, 12, row.has_qc_z ? formatNumber(row.qc_z) : "");
+        setCell(st->details, out, 13, "LIS");
         ++out;
     }
+}
+
+void updateSidePanel(State* st) {
+    if (!st) return;
+    if (st->sideList) {
+        ListView_DeleteAllItems(st->sideList);
+        for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
+            const auto& card = st->cardsRows[static_cast<size_t>(i)];
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = i;
+            const auto title = search::utf8_to_wide(cardTitleText(card));
+            item.pszText = const_cast<wchar_t*>(title.c_str());
+            ListView_InsertItem(st->sideList, &item);
+            setCell(st->sideList, i, 1, cardStatusText(card));
+        }
+        if (st->selectedCard >= 0 && st->selectedCard < static_cast<int>(st->cardsRows.size())) {
+            st->suppressSelectionNotify = true;
+            ListView_SetItemState(st->sideList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_SetItemState(st->sideList, st->selectedCard, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(st->sideList, st->selectedCard, FALSE);
+            st->suppressSelectionNotify = false;
+        }
+    }
+
+    const bool hasSelection = st->selectedCard >= 0 && st->selectedCard < static_cast<int>(st->cardsRows.size());
+    if (st->sideTitle) SetWindowTextW(st->sideTitle, L"筛选条件");
+    if (st->sideChartButton) EnableWindow(st->sideChartButton, hasSelection && !st->busy);
+    if (st->sideDetailsButton) EnableWindow(st->sideDetailsButton, hasSelection && !st->busy);
+    if (st->sideExportButton) EnableWindow(st->sideExportButton, hasSelection && !st->busy && hasVisibleRows(st));
 }
 
 std::vector<const qc::Result*> visibleDetails(State* st) {
@@ -1013,11 +1430,14 @@ std::vector<const qc::Result*> visibleDetails(State* st) {
 void refreshVisibleResults(State* st) {
     if (!st) return;
     buildGroups(st);
+    buildCards(st);
     if (st->selectedGroup >= static_cast<int>(st->groupsRows.size())) st->selectedGroup = -1;
+    if (st->selectedCard >= static_cast<int>(st->cardsRows.size())) st->selectedCard = -1;
     populateGroups(st);
     updateSummary(st);
     populateCards(st);
     populateDetails(st);
+    updateSidePanel(st);
     updateExportButton(st);
     updateChartButton(st);
 }
@@ -1026,12 +1446,20 @@ void clearCurrentResults(State* st) {
     if (!st) return;
     st->rows.clear();
     st->groupsRows.clear();
+    st->cardsRows.clear();
     st->selectedGroup = -1;
+    st->selectedCard = -1;
     refreshVisibleResults(st);
 }
 
 const GroupRow* selectedOrFirstGroup(State* st) {
     if (!st || st->groupsRows.empty()) return nullptr;
+    if (st->selectedCard >= 0 && st->selectedCard < static_cast<int>(st->cardsRows.size())) {
+        const int group = st->cardsRows[static_cast<size_t>(st->selectedCard)].representative_group;
+        if (group >= 0 && group < static_cast<int>(st->groupsRows.size())) {
+            return &st->groupsRows[static_cast<size_t>(group)];
+        }
+    }
     if (st->selectedGroup >= 0 && st->selectedGroup < static_cast<int>(st->groupsRows.size())) {
         return &st->groupsRows[static_cast<size_t>(st->selectedGroup)];
     }
@@ -1041,6 +1469,7 @@ const GroupRow* selectedOrFirstGroup(State* st) {
 void selectGroup(State* st, int index) {
     if (!st || index < 0 || index >= static_cast<int>(st->groupsRows.size())) return;
     st->selectedGroup = index;
+    st->selectedCard = -1;
     st->suppressSelectionNotify = true;
     if (st->groups) {
         ListView_SetItemState(st->groups, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1048,12 +1477,46 @@ void selectGroup(State* st, int index) {
         ListView_EnsureVisible(st->groups, index, FALSE);
     }
     if (st->cards) {
-        ListView_SetItemState(st->cards, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_SetItemState(st->cards, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(st->cards, index, FALSE);
+        updateCardScrollBar(st->cards, st);
+        InvalidateRect(st->cards, nullptr, FALSE);
     }
     st->suppressSelectionNotify = false;
     populateDetails(st);
+    updateSidePanel(st);
+    updateExportButton(st);
+    updateChartButton(st);
+}
+
+void selectCard(State* st, int index) {
+    if (!st || index < 0 || index >= static_cast<int>(st->cardsRows.size())) return;
+    st->selectedCard = index;
+    const int groupIndex = st->cardsRows[static_cast<size_t>(index)].representative_group;
+    if (groupIndex >= 0 && groupIndex < static_cast<int>(st->groupsRows.size())) {
+        st->selectedGroup = groupIndex;
+    }
+    st->suppressSelectionNotify = true;
+    if (st->groups && st->selectedGroup >= 0) {
+        ListView_SetItemState(st->groups, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->groups, st->selectedGroup, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->groups, st->selectedGroup, FALSE);
+    }
+    if (st->cards) {
+        RECT client{};
+        GetClientRect(st->cards, &client);
+        RECT card = cardRectForIndex(st->cards, st, index);
+        if (card.top < st->cardScrollY) {
+            st->cardScrollY = card.top;
+        } else if (card.bottom > st->cardScrollY + (client.bottom - client.top)) {
+            st->cardScrollY = card.bottom - (client.bottom - client.top);
+        }
+        updateCardScrollBar(st->cards, st);
+        InvalidateRect(st->cards, nullptr, FALSE);
+    }
+    st->suppressSelectionNotify = false;
+    populateDetails(st);
+    updateSidePanel(st);
+    updateExportButton(st);
+    updateChartButton(st);
 }
 
 bool rowInGroup(const GroupRow& group, const qc::Result& row) {
@@ -1169,6 +1632,143 @@ void openLeveyJenningsChart(HWND hwnd, State* st) {
     }
 }
 
+LRESULT CALLBACK cardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* st = reinterpret_cast<State*>(GetPropW(GetParent(hwnd), PROP_STATE));
+    switch (msg) {
+        case WM_SIZE:
+            updateCardScrollBar(hwnd, st);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_VSCROLL: {
+            if (!st) break;
+            SCROLLINFO si{};
+            si.cbSize = sizeof(si);
+            si.fMask = SIF_ALL;
+            GetScrollInfo(hwnd, SB_VERT, &si);
+            int next = st->cardScrollY;
+            switch (LOWORD(wp)) {
+                case SB_LINEUP:
+                    next -= S(hwnd, 32);
+                    break;
+                case SB_LINEDOWN:
+                    next += S(hwnd, 32);
+                    break;
+                case SB_PAGEUP:
+                    next -= static_cast<int>(si.nPage);
+                    break;
+                case SB_PAGEDOWN:
+                    next += static_cast<int>(si.nPage);
+                    break;
+                case SB_THUMBTRACK:
+                case SB_THUMBPOSITION:
+                    next = si.nTrackPos;
+                    break;
+                default:
+                    break;
+            }
+            st->cardScrollY = std::clamp(next, 0, maxCardScroll(hwnd, st));
+            updateCardScrollBar(hwnd, st);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_MOUSEWHEEL:
+            if (st) {
+                const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+                st->cardScrollY = std::clamp(st->cardScrollY - delta * S(hwnd, 72) / WHEEL_DELTA, 0, maxCardScroll(hwnd, st));
+                updateCardScrollBar(hwnd, st);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        case WM_MOUSEMOVE:
+            SetCursor(LoadCursorW(nullptr, hitQualityCardHeader(hwnd, st, static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp))) >= 0
+                                               ? IDC_HAND
+                                               : IDC_ARROW));
+            return 0;
+        case WM_LBUTTONDOWN:
+            if (st) {
+                SetFocus(hwnd);
+                const int headerIndex = hitQualityCardHeader(hwnd, st, static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp)));
+                if (headerIndex >= 0) {
+                    selectCard(st, headerIndex);
+                    openLeveyJenningsChart(GetParent(hwnd), st);
+                } else {
+                    const int index = hitQualityCard(hwnd, st, static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp)));
+                    if (index >= 0) selectCard(st, index);
+                }
+            }
+            return 0;
+        case WM_SETCURSOR: {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            SetCursor(LoadCursorW(nullptr, hitQualityCardHeader(hwnd, st, pt.x, pt.y) >= 0 ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+        }
+        case WM_LBUTTONDBLCLK:
+            if (st) {
+                const int headerIndex = hitQualityCardHeader(hwnd, st, static_cast<short>(LOWORD(lp)), static_cast<short>(HIWORD(lp)));
+                if (headerIndex >= 0) {
+                    selectCard(st, headerIndex);
+                    openLeveyJenningsChart(GetParent(hwnd), st);
+                }
+            }
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HDC memDc = CreateCompatibleDC(dc);
+            const int clientW = std::max(1, static_cast<int>(client.right - client.left));
+            const int clientH = std::max(1, static_cast<int>(client.bottom - client.top));
+            HBITMAP bitmap = CreateCompatibleBitmap(dc, clientW, clientH);
+            HGDIOBJ oldBitmap = SelectObject(memDc, bitmap);
+            fillSolid(memDc, client, RGB(246, 249, 252));
+            SetBkMode(memDc, TRANSPARENT);
+            HGDIOBJ oldFont = nullptr;
+            if (st && st->ctx.uiFont) oldFont = SelectObject(memDc, st->ctx.uiFont);
+            if (st && st->cardsRows.empty()) {
+                RECT empty{client.left, client.top, client.right, client.bottom};
+                drawCardText(memDc, empty, L"暂无质控概览。请选择仪器并点击“查询/刷新 LIS”。",
+                             DT_CENTER | DT_VCENTER | DT_SINGLELINE, RGB(90, 100, 112));
+            } else if (st) {
+                for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
+                    RECT rc = cardRectForIndex(hwnd, st, i);
+                    OffsetRect(&rc, 0, -st->cardScrollY);
+                    RECT visible{};
+                    if (IntersectRect(&visible, &client, &rc)) drawQualityCard(memDc, hwnd, st, i, rc);
+                }
+            }
+            BitBlt(dc, 0, 0, clientW, clientH, memDc, 0, 0, SRCCOPY);
+            if (oldFont) SelectObject(memDc, oldFont);
+            SelectObject(memDc, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(memDc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ensureCardWindowClass() {
+    static bool registered = false;
+    if (registered) return;
+    WNDCLASSW wc{};
+    wc.style = CS_DBLCLKS;
+    wc.lpfnWndProc = cardWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = CARD_WND_CLASS;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    RegisterClassW(&wc);
+    registered = true;
+}
+
 std::string csvEscape(const std::string& text) {
     const bool quote = text.find_first_of(",\"\r\n") != std::string::npos;
     std::string out;
@@ -1260,7 +1860,7 @@ void exportVisibleDetailsCsv(HWND hwnd, State* st) {
 
     std::ostringstream csv;
     csv << "\xEF\xBB\xBF";
-    csv << "时间,样本号,报告号,仪器,检验者,项目,水平,结果,单位,状态,规则,Z值,来源\n";
+    csv << "时间,样本号,报告号,仪器,检验者,项目,水平,批号,结果,单位,状态,规则,Z值,来源\n";
     for (const auto* row : rows) {
         csv << csvEscape(row->effective_time) << ','
             << csvEscape(row->sample_no) << ','
@@ -1269,6 +1869,7 @@ void exportVisibleDetailsCsv(HWND hwnd, State* st) {
             << csvEscape(row->tester_name) << ','
             << csvEscape(row->item_name) << ','
             << csvEscape(row->level) << ','
+            << csvEscape(row->lot_no) << ','
             << csvEscape(row->result_text) << ','
             << csvEscape(row->unit) << ','
             << csvEscape(qcStatusText(row->qc_status)) << ','
@@ -1289,34 +1890,55 @@ void resizeLayout(HWND hwnd, State* st) {
     GetClientRect(hwnd, &rc);
     const int pad = S(hwnd, 10);
     const int statusH = S(hwnd, 24);
-    const int topH = S(hwnd, 74);
     const int summaryH = S(hwnd, 28);
-    const int bottomH = std::max(S(hwnd, 190), static_cast<int>((rc.bottom - rc.top) / 3));
-    const int leftW = std::max(S(hwnd, 260), static_cast<int>((rc.right - rc.left) / 4));
-    int x = pad;
-    MoveWindow(st->startLabel, x, pad, S(hwnd, 64), S(hwnd, 24), TRUE);
-    MoveWindow(st->startDate, x + S(hwnd, 70), pad, S(hwnd, 120), S(hwnd, 24), TRUE);
-    MoveWindow(st->endLabel, x + S(hwnd, 195), pad, S(hwnd, 20), S(hwnd, 24), TRUE);
-    MoveWindow(st->endDate, x + S(hwnd, 220), pad, S(hwnd, 120), S(hwnd, 24), TRUE);
-    MoveWindow(st->machLabel, x + S(hwnd, 345), pad, S(hwnd, 50), S(hwnd, 24), TRUE);
-    MoveWindow(st->machCode, x + S(hwnd, 400), pad, S(hwnd, 110), S(hwnd, 24), TRUE);
-    MoveWindow(st->machPick, x + S(hwnd, 514), pad - S(hwnd, 2), S(hwnd, 34), S(hwnd, 28), TRUE);
-    MoveWindow(st->itemLabel, x, pad + S(hwnd, 34), S(hwnd, 64), S(hwnd, 24), TRUE);
-    MoveWindow(st->itemCode, x + S(hwnd, 70), pad + S(hwnd, 34), S(hwnd, 120), S(hwnd, 24), TRUE);
-    MoveWindow(st->levelLabel, x + S(hwnd, 195), pad + S(hwnd, 34), S(hwnd, 50), S(hwnd, 24), TRUE);
-    MoveWindow(st->level, x + S(hwnd, 250), pad + S(hwnd, 34), S(hwnd, 90), S(hwnd, 160), TRUE);
-    MoveWindow(st->statusFilterLabel, x + S(hwnd, 345), pad + S(hwnd, 34), S(hwnd, 50), S(hwnd, 24), TRUE);
-    MoveWindow(st->statusFilter, x + S(hwnd, 400), pad + S(hwnd, 34), S(hwnd, 120), S(hwnd, 180), TRUE);
-    MoveWindow(st->queryButton, x + S(hwnd, 535), pad + S(hwnd, 32), S(hwnd, 120), S(hwnd, 28), TRUE);
-    MoveWindow(st->chartButton, x + S(hwnd, 665), pad + S(hwnd, 32), S(hwnd, 76), S(hwnd, 28), TRUE);
-    MoveWindow(st->exportButton, x + S(hwnd, 750), pad + S(hwnd, 32), S(hwnd, 96), S(hwnd, 28), TRUE);
-    MoveWindow(st->groups, pad, pad + topH, leftW, rc.bottom - pad * 3 - topH - bottomH - statusH, TRUE);
-    MoveWindow(st->summary, pad * 2 + leftW, pad + topH,
-               rc.right - leftW - pad * 3, summaryH, TRUE);
-    MoveWindow(st->cards, pad * 2 + leftW, pad + topH + summaryH + S(hwnd, 6),
-               rc.right - leftW - pad * 3, rc.bottom - pad * 3 - topH - bottomH - statusH - summaryH - S(hwnd, 6), TRUE);
-    MoveWindow(st->details, pad, rc.bottom - bottomH - statusH - pad,
-               rc.right - pad * 2, bottomH, TRUE);
+    const int clientW = std::max(0, static_cast<int>(rc.right - rc.left));
+    const int clientH = std::max(0, static_cast<int>(rc.bottom - rc.top));
+    const int bottomH = st->detailsExpanded ? std::clamp(clientH / 4, S(hwnd, 150), S(hwnd, 220)) : 0;
+    const int sideW = std::clamp(clientW / 5, S(hwnd, 340), S(hwnd, 390));
+    const int sideLeft = rc.right - pad - sideW;
+    const int sideInnerW = sideW - S(hwnd, 16);
+    const int sideX = sideLeft + S(hwnd, 8);
+    int sy = pad;
+    MoveWindow(st->sideTitle, sideLeft, sy, sideW, S(hwnd, 26), TRUE);
+    sy += S(hwnd, 30);
+    MoveWindow(st->startLabel, sideX, sy, S(hwnd, 64), S(hwnd, 24), TRUE);
+    MoveWindow(st->startDate, sideX + S(hwnd, 70), sy, S(hwnd, 120), S(hwnd, 24), TRUE);
+    MoveWindow(st->endLabel, sideX + S(hwnd, 196), sy, S(hwnd, 20), S(hwnd, 24), TRUE);
+    MoveWindow(st->endDate, sideX + S(hwnd, 220), sy, S(hwnd, 120), S(hwnd, 24), TRUE);
+    sy += S(hwnd, 34);
+    MoveWindow(st->machLabel, sideX, sy, S(hwnd, 50), S(hwnd, 24), TRUE);
+    MoveWindow(st->machCode, sideX + S(hwnd, 56), sy, sideInnerW - S(hwnd, 96), S(hwnd, 24), TRUE);
+    MoveWindow(st->machPick, sideX + sideInnerW - S(hwnd, 34), sy - S(hwnd, 2), S(hwnd, 34), S(hwnd, 28), TRUE);
+    ShowWindow(st->itemLabel, SW_HIDE);
+    ShowWindow(st->itemCode, SW_HIDE);
+    sy += S(hwnd, 34);
+    MoveWindow(st->levelLabel, sideX, sy, S(hwnd, 38), S(hwnd, 24), TRUE);
+    MoveWindow(st->level, sideX + S(hwnd, 42), sy, S(hwnd, 76), S(hwnd, 160), TRUE);
+    MoveWindow(st->statusFilterLabel, sideX + S(hwnd, 132), sy, S(hwnd, 38), S(hwnd, 24), TRUE);
+    MoveWindow(st->statusFilter, sideX + S(hwnd, 174), sy, sideInnerW - S(hwnd, 174), S(hwnd, 180), TRUE);
+    sy += S(hwnd, 34);
+    MoveWindow(st->queryButton, sideX, sy - S(hwnd, 2), sideInnerW, S(hwnd, 30), TRUE);
+    ShowWindow(st->chartButton, SW_HIDE);
+    ShowWindow(st->exportButton, SW_HIDE);
+    ShowWindow(st->groups, SW_HIDE);
+    MoveWindow(st->summary, pad, pad, sideLeft - pad * 2, summaryH, TRUE);
+    MoveWindow(st->cards, pad, pad + summaryH + S(hwnd, 6),
+               sideLeft - pad * 2, rc.bottom - pad * 3 - bottomH - statusH - summaryH - S(hwnd, 6), TRUE);
+    updateCardScrollBar(st->cards, st);
+    sy += S(hwnd, 44);
+    MoveWindow(st->sideChartButton, sideX, sy, S(hwnd, 72), S(hwnd, 28), TRUE);
+    MoveWindow(st->sideDetailsButton, sideX + S(hwnd, 80), sy, S(hwnd, 72), S(hwnd, 28), TRUE);
+    MoveWindow(st->sideExportButton, sideX + S(hwnd, 160), sy, S(hwnd, 82), S(hwnd, 28), TRUE);
+    sy += S(hwnd, 38);
+    MoveWindow(st->sideList, sideLeft, sy, sideW, std::max(0, static_cast<int>(rc.bottom - sy - statusH - pad)), TRUE);
+    if (st->detailsExpanded) {
+        ShowWindow(st->details, SW_SHOW);
+        MoveWindow(st->details, pad, rc.bottom - bottomH - statusH - pad,
+                   sideLeft - pad * 2, bottomH, TRUE);
+    } else {
+        ShowWindow(st->details, SW_HIDE);
+        MoveWindow(st->details, pad, rc.bottom - statusH - pad, sideLeft - pad * 2, 0, TRUE);
+    }
     MoveWindow(st->status, pad, rc.bottom - statusH, rc.right - pad * 2, statusH, TRUE);
 }
 
@@ -1325,7 +1947,7 @@ qc::Query buildQuery(State* st) {
     query.start_date = dateText(st->startDate);
     query.end_date = dateText(st->endDate);
     query.mach_code = search::trim(st->selectedMachineCode);
-    query.item_code = search::wide_to_utf8(editText(st->itemCode));
+    query.item_code.clear();
     query.level = comboText(st->level);
     if (query.level == "全部") query.level.clear();
     return query;
@@ -1343,6 +1965,20 @@ bool rowMatchesQuery(const qc::Query& request, const qc::Config& cfg, const sear
     return true;
 }
 
+std::string datePart(const std::string& text) {
+    const std::string trimmed = search::trim(text);
+    return trimmed.size() >= 10 ? trimmed.substr(0, 10) : trimmed;
+}
+
+bool configInEffectiveDate(const qc::Config& cfg, const std::string& effectiveTime) {
+    const std::string date = datePart(effectiveTime);
+    const std::string from = search::trim(cfg.lot_valid_from);
+    const std::string to = search::trim(cfg.lot_valid_to);
+    if (from.empty()) return true;
+    if (date.empty()) return false;
+    return date >= from && (to.empty() || date <= to);
+}
+
 qc::Result toResult(const search::QualityControlLisRow& item, const qc::Config& cfg) {
     qc::Result row;
     row.source_rep_no = item.rep_no;
@@ -1358,12 +1994,16 @@ qc::Result toResult(const search::QualityControlLisRow& item, const qc::Config& 
     row.effective_time = item.effective_time;
     row.item_code = item.item_code;
     row.item_name = item.item_name.empty() ? cfg.item_name : item.item_name;
+    row.item_eng = item.item_eng;
     row.result_text = item.result;
     row.has_numeric_value = parseNumber(item.result, row.result_value);
     row.unit = item.unit;
     row.normal = item.normal;
     row.qc_name = cfg.qc_name;
     row.level = cfg.level;
+    row.lot_no = cfg.lot_no;
+    row.lot_valid_from = cfg.lot_valid_from;
+    row.lot_valid_to = cfg.lot_valid_to;
     row.target_mean = cfg.target_mean;
     row.target_sd = cfg.target_sd;
     return row;
@@ -1374,7 +2014,7 @@ bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vecto
     rows.clear();
     configCount = 0;
     std::vector<qc::Config> configs;
-    if (!qc::load_configs(configs, error)) return false;
+    if (!qc::load_analysis_configs(configs, error)) return false;
 
     std::vector<qc::Config> active;
     const std::string requestedMachine = search::trim(request.mach_code);
@@ -1386,7 +2026,9 @@ bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vecto
         if (!requestedLevel.empty() && search::trim(cfg.level) != requestedLevel) continue;
         active.push_back(cfg);
     }
-    configCount = static_cast<int>(active.size());
+    std::set<int> activeItems;
+    for (const auto& cfg : active) activeItems.insert(cfg.sample_item_id);
+    configCount = static_cast<int>(activeItems.size());
     if (active.empty()) return true;
 
     const std::string connection = search::wide_to_utf8(search::build_connection_string_w(ctx.dbSettings));
@@ -1418,15 +2060,16 @@ bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vecto
 
         const auto configIt = configsByMachineSample.find(key);
         if (configIt == configsByMachineSample.end()) continue;
-        for (const auto& item : items) {
-            for (const auto& itemCfg : configIt->second) {
-                if (!rowMatchesQuery(request, itemCfg, item)) continue;
-                const std::string uniqueKey = search::trim(item.rep_no) + "\x1f" + search::trim(item.entry_id);
-                if (!emittedKeys.insert(uniqueKey).second) break;
-                rows.push_back(toResult(item, itemCfg));
-                break;
+            for (const auto& item : items) {
+                for (const auto& itemCfg : configIt->second) {
+                    if (!rowMatchesQuery(request, itemCfg, item)) continue;
+                    if (!configInEffectiveDate(itemCfg, item.effective_time)) continue;
+                    const std::string uniqueKey = search::trim(item.rep_no) + "\x1f" + search::trim(item.entry_id);
+                    if (!emittedKeys.insert(uniqueKey).second) break;
+                    rows.push_back(toResult(item, itemCfg));
+                    break;
+                }
             }
-        }
     }
 
     std::sort(rows.begin(), rows.end(), [](const qc::Result& a, const qc::Result& b) {
@@ -1468,6 +2111,7 @@ void runLisQuery(HWND hwnd, State* st) {
     EnableWindow(st->queryButton, FALSE);
     EnableWindow(st->exportButton, FALSE);
     EnableWindow(st->chartButton, FALSE);
+    updateSidePanel(st);
     setStatus(st, L"正在查询 LIS 质控结果...");
     const qc::Query query = buildQuery(st);
     const ModuleContext ctx = st->ctx;
@@ -1540,23 +2184,34 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                          0, 0, 0, 0, hwnd, win32_control_id(IDC_GROUPS), GetModuleHandleW(nullptr), nullptr);
             st->summary = CreateWindowExW(0, L"STATIC", L"今日质控概览", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
                                           0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-            st->cards = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+            ensureCardWindowClass();
+            st->cards = CreateWindowExW(WS_EX_CLIENTEDGE, CARD_WND_CLASS, L"",
+                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_CLIPSIBLINGS,
                                         0, 0, 0, 0, hwnd, win32_control_id(IDC_CARDS), GetModuleHandleW(nullptr), nullptr);
             st->details = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                           WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                           0, 0, 0, 0, hwnd, win32_control_id(IDC_DETAILS), GetModuleHandleW(nullptr), nullptr);
+            st->sideTitle = CreateWindowExW(0, L"STATIC", L"筛选条件", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                                            0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            st->sideChartButton = button(hwnd, IDC_LJ_CHART, L"L-J图");
+            st->sideDetailsButton = button(hwnd, IDC_SIDE_DETAILS, L"明细");
+            st->sideExportButton = button(hwnd, IDC_EXPORT_CSV, L"导出");
+            EnableWindow(st->sideChartButton, FALSE);
+            EnableWindow(st->sideDetailsButton, FALSE);
+            EnableWindow(st->sideExportButton, FALSE);
+            st->sideList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                           WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+                                           0, 0, 0, 0, hwnd, win32_control_id(IDC_SIDE_LIST), GetModuleHandleW(nullptr), nullptr);
             st->status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
                                          0, 0, 0, 0, hwnd, win32_control_id(IDC_STATUS), GetModuleHandleW(nullptr), nullptr);
             setupList(st->groups, {{L"项目", 150}, {L"水平", 70}, {L"样本号", 80}, {L"点数", 60},
                                    {L"均值", 70}, {L"SD", 70}, {L"CV%", 70}, {L"基准", 60},
                                    {L"状态", 70}, {L"失控", 56}, {L"警告", 56}, {L"最近时间", 140}});
-            setupList(st->cards, {{L"质控项目", 260}, {L"状态", 80}, {L"最近结果", 110}, {L"最近时间", 140},
-                                  {L"点数", 60}, {L"失控/警告", 90}, {L"仪器", 150}, {L"L-J图", 70}});
             setupList(st->details, {{L"时间", 140}, {L"样本号", 90}, {L"报告号", 90}, {L"仪器", 160},
-                                    {L"检验者", 90}, {L"项目", 180}, {L"水平", 60}, {L"结果", 90},
-                                    {L"单位", 70}, {L"状态", 70}, {L"规则", 90}, {L"Z值", 70},
-                                    {L"来源", 70}});
+                                    {L"检验者", 90}, {L"项目", 180}, {L"水平", 60}, {L"批号", 90},
+                                    {L"结果", 90}, {L"单位", 70}, {L"状态", 70}, {L"规则", 90},
+                                    {L"Z值", 70}, {L"来源", 70}});
+            setupList(st->sideList, {{L"项目", 205}, {L"状态", 70}});
             setTodayRange(st);
             search::apply_font_to_children(hwnd, st->ctx.uiFont);
             resizeLayout(hwnd, st);
@@ -1590,8 +2245,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 openLeveyJenningsChart(hwnd, st);
                 return 0;
             }
+            if (LOWORD(wp) == IDC_SIDE_DETAILS) {
+                st->detailsExpanded = !st->detailsExpanded;
+                SetWindowTextW(st->sideDetailsButton, st->detailsExpanded ? L"收起" : L"明细");
+                resizeLayout(hwnd, st);
+                return 0;
+            }
             if (LOWORD(wp) == IDC_STATUS_FILTER && HIWORD(wp) == CBN_SELCHANGE) {
                 st->selectedGroup = -1;
+                st->selectedCard = -1;
                 refreshVisibleResults(st);
                 const auto rows = visibleDetails(st);
                 setStatus(st, L"已应用状态筛选：当前显示 " + std::to_wstring(rows.size()) + L" 条质控明细。");
@@ -1613,19 +2275,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 openLeveyJenningsChart(hwnd, st);
                 return 0;
             }
-            if (st && nm->idFrom == IDC_CARDS && nm->code == LVN_ITEMCHANGED && !st->suppressSelectionNotify) {
+            if (st && nm->idFrom == IDC_SIDE_LIST && nm->code == LVN_ITEMCHANGED && !st->suppressSelectionNotify) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
-                if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED) &&
-                    lv->iItem >= 0 && lv->iItem < static_cast<int>(st->groupsRows.size())) {
-                    selectGroup(st, lv->iItem);
-                }
-                return 0;
-            }
-            if (st && nm->idFrom == IDC_CARDS && nm->code == NM_DBLCLK) {
-                auto* item = reinterpret_cast<NMITEMACTIVATE*>(lp);
-                if (item->iItem >= 0 && item->iItem < static_cast<int>(st->groupsRows.size())) {
-                    selectGroup(st, item->iItem);
-                    openLeveyJenningsChart(hwnd, st);
+                if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED)) {
+                    selectCard(st, lv->iItem);
                 }
                 return 0;
             }
@@ -1641,6 +2294,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->busy = false;
             EnableWindow(st->queryButton, TRUE);
             if (!done->ok) {
+                updateSidePanel(st);
                 updateExportButton(st);
                 updateChartButton(st);
                 setStatus(st, L"查询失败：" + search::utf8_to_wide(done->error));
@@ -1649,6 +2303,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             st->rows = std::move(done->rows);
             st->selectedGroup = -1;
+            st->selectedCard = -1;
             buildGroups(st, false);
             evaluateWestgardRules(st);
             refreshVisibleResults(st);

@@ -1326,6 +1326,7 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         << " isnull(r.CONF,''),"
         << " isnull(CAST(e.ITEM_CODE AS varchar(20)),''),"
         << " isnull(i.ITEM_NAME,e.ITEM_NAME),"
+        << " isnull(nullif(RTRIM(i.ENG_NAME),''),isnull(e.ITEM_ENG,'')),"
         << " isnull(e.RESULT,''),"
         << " isnull(RTRIM(i.UNIT),''),"
         << " isnull(e.NORMAL,'')"
@@ -1372,9 +1373,86 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         row.conf = fetch_column(stmt, 14);
         row.item_code = fetch_column(stmt, 15);
         row.item_name = fetch_column(stmt, 16);
-        row.result = fetch_column(stmt, 17);
-        row.unit = fetch_column(stmt, 18);
-        row.normal = fetch_column(stmt, 19);
+        row.item_eng = fetch_column(stmt, 17);
+        row.result = fetch_column(stmt, 18);
+        row.unit = fetch_column(stmt, 19);
+        row.normal = fetch_column(stmt, 20);
+        rows.push_back(row);
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_quality_control_sample_items is only available on Windows";
+    return false;
+#else
+    if (trim(query.mach_code).empty() || trim(query.sample_no).empty() || trim(query.inspect_date).empty()) {
+        error = "missing quality control machine code, sample number, or inspect date";
+        return false;
+    }
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) {
+        return false;
+    }
+
+    const std::string mach = sql_escape(trim(query.mach_code));
+    const std::string sample = sql_escape(trim(query.sample_no));
+    const std::string date = sql_escape(trim(query.inspect_date));
+    std::ostringstream sql;
+    sql << "WITH src AS ("
+        << " SELECT"
+        << " CAST(e.ID AS varchar(30)) AS entry_id,"
+        << " CAST(r.REP_NO AS varchar(30)) AS rep_no,"
+        << " isnull(CAST(e.ITEM_CODE AS varchar(20)),'') AS item_code,"
+        << " isnull(i.ITEM_NAME,e.ITEM_NAME) AS item_name,"
+        << " isnull(nullif(RTRIM(i.ENG_NAME),''),isnull(e.ITEM_ENG,'')) AS item_eng,"
+        << " isnull(RTRIM(i.UNIT),'') AS unit,"
+        << " isnull(e.RESULT,'') AS result_text,"
+        << " isnull(CONVERT(varchar(19),COALESCE(r.REP_TIME,r.CHK_DATE,r.REP_DATE),120),'') AS effective_time,"
+        << " ROW_NUMBER() OVER (PARTITION BY e.ITEM_CODE ORDER BY COALESCE(r.REP_TIME,r.CHK_DATE,r.REP_DATE) DESC,r.REP_NO DESC,e.ID DESC) AS rn,"
+        << " COUNT(*) OVER (PARTITION BY e.ITEM_CODE) AS point_count"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON e.ITEM_CODE=i.ITEM_CODE AND isnull(i.DELETE_BIT,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND r.MACH_CODE='" << mach << "'"
+        << " AND r.OPER_NO='" << sample << "'"
+        << " AND r.CHK_DATE>='" << date << "'"
+        << " AND r.CHK_DATE<DATEADD(day,1,'" << date << "')"
+        << ")"
+        << " SELECT item_code,item_name,item_eng,unit,result_text,effective_time,rep_no,entry_id,point_count"
+        << " FROM src WHERE rn=1 ORDER BY item_code";
+
+    if (log) {
+        log("exec sql: " + sql.str() + "\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        QualityControlSampleItemRow row;
+        row.item_code = fetch_column(stmt, 1);
+        row.item_name = fetch_column(stmt, 2);
+        row.item_eng = fetch_column(stmt, 3);
+        row.unit = fetch_column(stmt, 4);
+        row.latest_result = fetch_column(stmt, 5);
+        row.latest_time = fetch_column(stmt, 6);
+        row.latest_rep_no = fetch_column(stmt, 7);
+        row.latest_entry_id = fetch_column(stmt, 8);
+        const std::string count = fetch_column(stmt, 9);
+        row.point_count = count.empty() ? 0 : std::atoi(count.c_str());
         rows.push_back(row);
     }
 

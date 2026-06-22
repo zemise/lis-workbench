@@ -134,9 +134,29 @@ struct QualityControlLisRow {
     std::string conf;
     std::string item_code;
     std::string item_name;
+    std::string item_eng;
     std::string result;
     std::string unit;
     std::string normal;
+};
+
+struct QualityControlSampleItemsQuery {
+    std::string connection_string;
+    std::string inspect_date;
+    std::string mach_code;
+    std::string sample_no;
+};
+
+struct QualityControlSampleItemRow {
+    std::string item_code;
+    std::string item_name;
+    std::string item_eng;
+    std::string unit;
+    std::string latest_result;
+    std::string latest_time;
+    std::string latest_rep_no;
+    std::string latest_entry_id;
+    int point_count = 0;
 };
 
 struct LisSummary {
@@ -432,6 +452,7 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
+bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});

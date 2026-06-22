@@ -5,6 +5,7 @@
 #include "machine_picker_popup.h"
 #include "quality_control_store.h"
 #include "resource.h"
+#include "search_core.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
@@ -13,6 +14,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -51,6 +54,13 @@ enum ControlId {
     IDC_LIST_HINT = 6921,
     IDC_FORM_TITLE = 6922,
     IDC_FORM_HINT = 6923,
+    IDC_LOT_NO = 6924,
+    IDC_VALID_FROM = 6925,
+    IDC_VALID_TO = 6926,
+    IDC_LOT_NOTE = 6927,
+    IDC_DELETE_LOT = 6928,
+    IDC_READ_DATE = 6929,
+    IDC_READ_ITEMS = 6930,
 };
 
 struct State {
@@ -91,8 +101,20 @@ struct State {
     HWND targetMean = nullptr;
     HWND targetSdLabel = nullptr;
     HWND targetSd = nullptr;
+    HWND lotNoLabel = nullptr;
+    HWND lotNo = nullptr;
+    HWND validFromLabel = nullptr;
+    HWND validFrom = nullptr;
+    HWND validToLabel = nullptr;
+    HWND validTo = nullptr;
+    HWND lotNoteLabel = nullptr;
+    HWND lotNote = nullptr;
+    HWND readDateLabel = nullptr;
+    HWND readDate = nullptr;
     std::vector<qc::Config> rows;
+    std::vector<qc::Lot> lots;
     int currentId = 0;
+    int currentLotId = 0;
 };
 
 HFONT createDerivedFont(HFONT base, int pointDelta, LONG weight) {
@@ -138,6 +160,16 @@ HWND edit(HWND parent, int id) {
     return search::create_edit(parent, id, 0, 0, 10, 24);
 }
 
+HWND datePicker(HWND parent, int id, bool allowBlank) {
+    DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | DTS_SHORTDATECENTURYFORMAT;
+    if (allowBlank) style |= DTS_SHOWNONE;
+    HWND hwnd = CreateWindowExW(0, DATETIMEPICK_CLASSW, L"", style,
+                                0, 0, 10, 24, parent, win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
+    DateTime_SetFormat(hwnd, L"yyyy-MM-dd");
+    if (allowBlank) DateTime_SetSystemtime(hwnd, GDT_NONE, nullptr);
+    return hwnd;
+}
+
 HWND button(HWND parent, int id, const wchar_t* text) {
     return search::create_button(parent, id, text, 0, 0, 76, 28);
 }
@@ -150,6 +182,53 @@ std::string textUtf8(HWND hwnd) {
 
 void setText(HWND hwnd, const std::string& value) {
     SetWindowTextW(hwnd, search::utf8_to_wide(value).c_str());
+}
+
+bool parseDate(const std::string& value, SYSTEMTIME& out) {
+    const std::string text = search::trim(value);
+    if (text.size() < 10) return false;
+    int y = 0;
+    int m = 0;
+    int d = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%d", &y, &m, &d) != 3) return false;
+    if (y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+    ZeroMemory(&out, sizeof(out));
+    out.wYear = static_cast<WORD>(y);
+    out.wMonth = static_cast<WORD>(m);
+    out.wDay = static_cast<WORD>(d);
+    return true;
+}
+
+std::string dateText(HWND hwnd) {
+    if (!hwnd) return "";
+    SYSTEMTIME st{};
+    if (DateTime_GetSystemtime(hwnd, &st) != GDT_VALID) return "";
+    char buffer[16]{};
+    std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buffer;
+}
+
+void setDate(HWND hwnd, const std::string& value, bool allowBlank) {
+    if (!hwnd) return;
+    SYSTEMTIME st{};
+    if (parseDate(value, st)) {
+        DateTime_SetSystemtime(hwnd, GDT_VALID, &st);
+    } else if (allowBlank) {
+        DateTime_SetSystemtime(hwnd, GDT_NONE, nullptr);
+    }
+}
+
+std::string todayDate() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    char buffer[16]{};
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    return buffer;
+}
+
+void setToday(HWND hwnd) {
+    setDate(hwnd, todayDate(), false);
 }
 
 void setCell(HWND list, int row, int col, const std::string& text) {
@@ -187,7 +266,28 @@ void populateList(State* st) {
         setCell(st->list, i, 3, row.qc_name);
         setCell(st->list, i, 4, row.level);
         setCell(st->list, i, 5, row.item_code);
+        std::vector<qc::Lot> lots;
+        std::string lotError;
+        if (qc::load_lots_for_config(row.id, lots, lotError) && !lots.empty()) {
+            const auto found = std::find_if(lots.begin(), lots.end(), [](const qc::Lot& lot) {
+                return lot.enabled && search::trim(lot.valid_to).empty();
+            });
+            const qc::Lot& lot = found == lots.end() ? lots.front() : *found;
+            setCell(st->list, i, 6, lot.lot_no);
+            setCell(st->list, i, 7, lot.valid_from);
+            setCell(st->list, i, 8, lot.valid_to.empty() ? "当前" : lot.valid_to);
+        }
     }
+}
+
+void clearLotForm(State* st) {
+    if (!st) return;
+    st->currentLotId = 0;
+    st->lots.clear();
+    SetWindowTextW(st->lotNo, L"");
+    setDate(st->validFrom, "", true);
+    setDate(st->validTo, "", true);
+    SetWindowTextW(st->lotNote, L"");
 }
 
 void showMachinePicker(HWND owner, State* st) {
@@ -210,6 +310,7 @@ void showMachinePicker(HWND owner, State* st) {
 
 void clearForm(State* st) {
     st->currentId = 0;
+    clearLotForm(st);
     SendMessageW(st->enabled, BM_SETCHECK, BST_CHECKED, 0);
     SetWindowTextW(st->roomCode, L"");
     SetWindowTextW(st->machCode, L"");
@@ -221,6 +322,30 @@ void clearForm(State* st) {
     SetWindowTextW(st->itemName, L"");
     SetWindowTextW(st->targetMean, L"");
     SetWindowTextW(st->targetSd, L"");
+    setToday(st->readDate);
+}
+
+void loadLatestLot(State* st) {
+    clearLotForm(st);
+    if (!st || st->currentId <= 0) return;
+    std::string error;
+    if (!qc::load_lots_for_config(st->currentId, st->lots, error)) {
+        MessageBoxW(st->list, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+        return;
+    }
+    if (st->lots.empty()) return;
+    auto found = std::find_if(st->lots.begin(), st->lots.end(), [](const qc::Lot& lot) {
+        return lot.enabled && search::trim(lot.valid_to).empty();
+    });
+    if (found == st->lots.end()) found = st->lots.begin();
+    st->currentLotId = found->id;
+    setText(st->lotNo, found->lot_no);
+    setText(st->targetMean, found->target_mean);
+    setText(st->targetSd, found->target_sd);
+    setDate(st->validFrom, found->valid_from, true);
+    setDate(st->validTo, found->valid_to, true);
+    setText(st->lotNote, found->note);
+    if (dateText(st->readDate).empty()) setDate(st->readDate, found->valid_from.empty() ? todayDate() : found->valid_from, false);
 }
 
 void loadForm(State* st, int index) {
@@ -238,6 +363,7 @@ void loadForm(State* st, int index) {
     setText(st->itemName, row.item_name);
     setText(st->targetMean, row.target_mean);
     setText(st->targetSd, row.target_sd);
+    loadLatestLot(st);
 }
 
 bool collectForm(State* st, qc::Config& row) {
@@ -260,6 +386,109 @@ bool collectForm(State* st, qc::Config& row) {
     return true;
 }
 
+bool collectLotForm(State* st, int configId, qc::Lot& row, bool& hasLot) {
+    row.id = st->currentLotId;
+    row.config_id = configId;
+    row.enabled = true;
+    row.lot_no = search::trim(textUtf8(st->lotNo));
+    row.target_mean = search::trim(textUtf8(st->targetMean));
+    row.target_sd = search::trim(textUtf8(st->targetSd));
+    row.valid_from = dateText(st->validFrom);
+    row.valid_to = dateText(st->validTo);
+    row.note = search::trim(textUtf8(st->lotNote));
+    hasLot = !row.lot_no.empty() || !row.valid_from.empty() || !row.valid_to.empty();
+    if (!hasLot) return true;
+    if (row.lot_no.empty() || row.valid_from.empty()) {
+        MessageBoxW(st->list, L"维护批号时，批号和开始日期不能为空。", L"质控品设置", MB_ICONWARNING);
+        return false;
+    }
+    auto found = std::find_if(st->lots.begin(), st->lots.end(), [st](const qc::Lot& lot) {
+        return lot.id == st->currentLotId;
+    });
+    if (found != st->lots.end() &&
+        (search::trim(found->lot_no) != row.lot_no || search::trim(found->valid_from) != row.valid_from)) {
+        row.id = 0;
+    }
+    return true;
+}
+
+bool collectSampleConfigForm(State* st, qc::SampleConfig& row) {
+    row.enabled = SendMessageW(st->enabled, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    row.room_code = search::trim(textUtf8(st->roomCode));
+    row.mach_code = search::trim(textUtf8(st->machCode));
+    row.mach_name = search::trim(textUtf8(st->machName));
+    row.sample_no = search::trim(textUtf8(st->sampleNo));
+    row.qc_name = search::trim(textUtf8(st->qcName));
+    row.level = search::trim(textUtf8(st->level));
+    if (row.mach_code.empty() || row.sample_no.empty()) {
+        MessageBoxW(st->list, L"仪器代码和样本号不能为空。", L"质控品设置", MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+void readItemsFromLis(HWND hwnd, State* st) {
+    if (!st) return;
+    qc::SampleConfig sample;
+    if (!collectSampleConfigForm(st, sample)) return;
+    const std::string date = dateText(st->readDate);
+    if (date.empty()) {
+        MessageBoxW(hwnd, L"读取日期不能为空。", L"质控品设置", MB_ICONWARNING);
+        return;
+    }
+    std::string error;
+    if (!qc::save_sample_config(sample, error)) {
+        MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+        return;
+    }
+    search::QualityControlSampleItemsQuery query;
+    query.connection_string = search::wide_to_utf8(search::build_connection_string_w(st->dbSettings));
+    query.mach_code = sample.mach_code;
+    query.sample_no = sample.sample_no;
+    query.inspect_date = date;
+    std::vector<search::QualityControlSampleItemRow> items;
+    if (!search::query_quality_control_sample_items(query, items, error)) {
+        MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+        return;
+    }
+    int order = 0;
+    int savedCount = 0;
+    bool filledFirstItem = false;
+    for (const auto& item : items) {
+        if (search::trim(item.item_code).empty()) continue;
+        qc::SampleItem row;
+        row.sample_config_id = sample.id;
+        row.enabled = true;
+        row.item_code = item.item_code;
+        row.item_name = item.item_name;
+        row.item_eng = item.item_eng;
+        row.unit = item.unit;
+        row.sort_order = order++;
+        if (!qc::save_sample_item(row, error)) {
+            MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+            return;
+        }
+        if (!filledFirstItem) {
+            setText(st->itemCode, row.item_code);
+            setText(st->itemName, row.item_name);
+            filledFirstItem = true;
+        }
+        ++savedCount;
+    }
+    populateList(st);
+    if (!st->rows.empty()) {
+        for (int i = 0; i < static_cast<int>(st->rows.size()); ++i) {
+            if (st->rows[static_cast<size_t>(i)].sample_config_id == sample.id) {
+                ListView_SetItemState(st->list, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(st->list, i, FALSE);
+                loadForm(st, i);
+                break;
+            }
+        }
+    }
+    MessageBoxW(hwnd, (L"已读取并保存项目数：" + std::to_wstring(savedCount)).c_str(), L"质控品设置", MB_ICONINFORMATION);
+}
+
 void layout(HWND hwnd, State* st) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
@@ -271,7 +500,8 @@ void layout(HWND hwnd, State* st) {
     const int clientW = std::max(0, static_cast<int>(rc.right - rc.left));
     const int gap = S(18);
     const int contentW = std::max(S(760), clientW - pad * 2);
-    const int listW = std::max(S(400), std::min(S(580), (contentW - gap) * 3 / 5));
+    const int desiredFormW = S(640);
+    const int listW = std::max(S(360), std::min(S(520), contentW - gap - desiredFormW));
     const int formW = std::max(S(360), contentW - listW - gap);
     const RECT listCard{pad, top, pad + listW, std::max(top + S(360), static_cast<int>(rc.bottom) - S(24))};
     const RECT formCard{listCard.right + gap, top, listCard.right + gap + formW, listCard.bottom};
@@ -280,17 +510,20 @@ void layout(HWND hwnd, State* st) {
     const int editH = S(26);
     const int formX = formCard.left + cardPadX;
     const int formInnerW = formCard.right - formCard.left - cardPadX * 2;
-    const int editW = std::max(S(170), formInnerW - labelW - S(10));
     if (st->embedded) {
         const int innerPad = S(0);
         const int embeddedGap = S(16);
-        const int embeddedListW = std::max(S(360), std::min(S(560), (clientW - embeddedGap) / 2));
+        const int embeddedListW = std::max(S(320), std::min(S(420), clientW * 2 / 5));
         const int embeddedFormX = embeddedListW + embeddedGap;
         const int embeddedFormW = std::max(S(320), clientW - embeddedFormX);
         const int embeddedLabelW = S(78);
         const int embeddedRowH = S(32);
         const int embeddedEditH = S(26);
-        const int embeddedEditW = std::max(S(160), embeddedFormW - embeddedLabelW - S(10));
+        const int embeddedColGap = S(18);
+        const int embeddedColW = std::max(S(220), (embeddedFormW - embeddedColGap) / 2);
+        const int embeddedLeftX = embeddedFormX;
+        const int embeddedRightX = embeddedFormX + embeddedColW + embeddedColGap;
+        const int embeddedEditW = std::max(S(110), embeddedColW - embeddedLabelW - S(10));
         ShowWindow(st->title, SW_HIDE);
         ShowWindow(st->subtitle, SW_HIDE);
         ShowWindow(st->listTitle, SW_HIDE);
@@ -299,36 +532,44 @@ void layout(HWND hwnd, State* st) {
         ShowWindow(st->formHint, SW_HIDE);
         MoveWindow(st->list, innerPad, innerPad,
                    embeddedListW, std::max(S(160), static_cast<int>(rc.bottom - rc.top)), TRUE);
-        const auto placeEmbedded = [&](int row, HWND labelHwnd, HWND ctrl) {
+        const auto placeEmbedded = [&](int colX, int row, HWND labelHwnd, HWND ctrl) {
             const int y = innerPad + row * embeddedRowH;
-            MoveWindow(labelHwnd, embeddedFormX, y, embeddedLabelW, embeddedEditH, TRUE);
-            MoveWindow(ctrl, embeddedFormX + embeddedLabelW + S(10), y, embeddedEditW, embeddedEditH, TRUE);
+            MoveWindow(labelHwnd, colX, y, embeddedLabelW, embeddedEditH, TRUE);
+            MoveWindow(ctrl, colX + embeddedLabelW + S(10), y, embeddedEditW, embeddedEditH, TRUE);
         };
-        placeEmbedded(0, st->roomCodeLabel, st->roomCode);
+        MoveWindow(st->enabled, embeddedLeftX + embeddedLabelW + S(10), innerPad,
+                   S(90), embeddedEditH, TRUE);
+        placeEmbedded(embeddedLeftX, 1, st->roomCodeLabel, st->roomCode);
         {
-            const int y = innerPad + embeddedRowH;
+            const int y = innerPad + 2 * embeddedRowH;
             const int pickW = S(76);
             const int editOnlyW = std::max(S(80), embeddedEditW - pickW - S(8));
-            MoveWindow(st->machCodeLabel, embeddedFormX, y, embeddedLabelW, embeddedEditH, TRUE);
-            MoveWindow(st->machCode, embeddedFormX + embeddedLabelW + S(10), y, editOnlyW, embeddedEditH, TRUE);
-            MoveWindow(st->pickMachine, embeddedFormX + embeddedLabelW + S(10) + editOnlyW + S(8),
+            MoveWindow(st->machCodeLabel, embeddedLeftX, y, embeddedLabelW, embeddedEditH, TRUE);
+            MoveWindow(st->machCode, embeddedLeftX + embeddedLabelW + S(10), y, editOnlyW, embeddedEditH, TRUE);
+            MoveWindow(st->pickMachine, embeddedLeftX + embeddedLabelW + S(10) + editOnlyW + S(8),
                        y - S(1), pickW, embeddedEditH + S(2), TRUE);
         }
-        placeEmbedded(2, st->machNameLabel, st->machName);
-        placeEmbedded(3, st->sampleNoLabel, st->sampleNo);
-        placeEmbedded(4, st->qcNameLabel, st->qcName);
-        placeEmbedded(5, st->levelLabel, st->level);
-        placeEmbedded(6, st->itemCodeLabel, st->itemCode);
-        placeEmbedded(7, st->itemNameLabel, st->itemName);
-        placeEmbedded(8, st->targetMeanLabel, st->targetMean);
-        placeEmbedded(9, st->targetSdLabel, st->targetSd);
-        MoveWindow(st->enabled, embeddedFormX + embeddedLabelW + S(10), innerPad + 10 * embeddedRowH,
-                   S(90), embeddedEditH, TRUE);
-        const int btnY = innerPad + 11 * embeddedRowH;
+        placeEmbedded(embeddedLeftX, 3, st->machNameLabel, st->machName);
+        placeEmbedded(embeddedLeftX, 4, st->sampleNoLabel, st->sampleNo);
+        placeEmbedded(embeddedLeftX, 5, st->qcNameLabel, st->qcName);
+        placeEmbedded(embeddedLeftX, 6, st->levelLabel, st->level);
+        placeEmbedded(embeddedLeftX, 7, st->readDateLabel, st->readDate);
+        MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS), embeddedLeftX + embeddedLabelW + S(10),
+                   innerPad + 8 * embeddedRowH - S(1), S(98), embeddedEditH + S(2), TRUE);
+        placeEmbedded(embeddedRightX, 0, st->itemCodeLabel, st->itemCode);
+        placeEmbedded(embeddedRightX, 1, st->itemNameLabel, st->itemName);
+        placeEmbedded(embeddedRightX, 2, st->lotNoLabel, st->lotNo);
+        placeEmbedded(embeddedRightX, 3, st->validFromLabel, st->validFrom);
+        placeEmbedded(embeddedRightX, 4, st->validToLabel, st->validTo);
+        placeEmbedded(embeddedRightX, 5, st->targetMeanLabel, st->targetMean);
+        placeEmbedded(embeddedRightX, 6, st->targetSdLabel, st->targetSd);
+        placeEmbedded(embeddedRightX, 7, st->lotNoteLabel, st->lotNote);
+        const int btnY = innerPad + 9 * embeddedRowH;
         MoveWindow(GetDlgItem(hwnd, IDC_NEW), embeddedFormX, btnY, S(76), S(30), TRUE);
         MoveWindow(GetDlgItem(hwnd, IDC_SAVE), embeddedFormX + S(86), btnY, S(76), S(30), TRUE);
         MoveWindow(GetDlgItem(hwnd, IDC_DELETE), embeddedFormX + S(172), btnY, S(76), S(30), TRUE);
-        MoveWindow(GetDlgItem(hwnd, IDC_CLOSE), embeddedFormX + S(258), btnY, S(76), S(30), TRUE);
+        MoveWindow(GetDlgItem(hwnd, IDC_DELETE_LOT), embeddedFormX + S(258), btnY, S(90), S(30), TRUE);
+        MoveWindow(GetDlgItem(hwnd, IDC_CLOSE), embeddedFormX + S(356), btnY, S(76), S(30), TRUE);
         ShowWindow(GetDlgItem(hwnd, IDC_CLOSE), SW_HIDE);
         return;
     }
@@ -340,33 +581,46 @@ void layout(HWND hwnd, State* st) {
                listW - cardPadX * 2, listCard.bottom - listCard.top - S(92), TRUE);
     MoveWindow(st->formTitle, formCard.left + cardPadX, formCard.top + S(16), formW - cardPadX * 2, S(22), TRUE);
     MoveWindow(st->formHint, formCard.left + cardPadX, formCard.top + S(42), formW - cardPadX * 2, S(22), TRUE);
-    const auto place = [&](int row, HWND labelHwnd, HWND ctrl) {
+    const int formColGap = S(18);
+    const int formColW = std::max(S(220), (formInnerW - formColGap) / 2);
+    const int formLeftX = formX;
+    const int formRightX = formX + formColW + formColGap;
+    const int formEditW = std::max(S(110), formColW - labelW - S(10));
+    const auto place = [&](int colX, int row, HWND labelHwnd, HWND ctrl) {
         const int y = formCard.top + S(74) + row * rowH;
-        MoveWindow(labelHwnd, formX, y, labelW, editH, TRUE);
-        MoveWindow(ctrl, formX + labelW + S(10), y, editW, editH, TRUE);
+        MoveWindow(labelHwnd, colX, y, labelW, editH, TRUE);
+        MoveWindow(ctrl, colX + labelW + S(10), y, formEditW, editH, TRUE);
     };
-    place(1, st->roomCodeLabel, st->roomCode);
+    MoveWindow(st->enabled, formLeftX + labelW + S(10), formCard.top + S(74), S(90), editH, TRUE);
+    place(formLeftX, 1, st->roomCodeLabel, st->roomCode);
     {
         const int y = formCard.top + S(74) + 2 * rowH;
         const int pickW = S(76);
-        const int editOnlyW = std::max(S(80), editW - pickW - S(8));
-        MoveWindow(st->machCodeLabel, formX, y, labelW, editH, TRUE);
-        MoveWindow(st->machCode, formX + labelW + S(10), y, editOnlyW, editH, TRUE);
-        MoveWindow(st->pickMachine, formX + labelW + S(10) + editOnlyW + S(8), y - S(1), pickW, editH + S(2), TRUE);
+        const int editOnlyW = std::max(S(80), formEditW - pickW - S(8));
+        MoveWindow(st->machCodeLabel, formLeftX, y, labelW, editH, TRUE);
+        MoveWindow(st->machCode, formLeftX + labelW + S(10), y, editOnlyW, editH, TRUE);
+        MoveWindow(st->pickMachine, formLeftX + labelW + S(10) + editOnlyW + S(8), y - S(1), pickW, editH + S(2), TRUE);
     }
-    place(3, st->machNameLabel, st->machName);
-    place(4, st->sampleNoLabel, st->sampleNo);
-    place(5, st->qcNameLabel, st->qcName);
-    place(6, st->levelLabel, st->level);
-    place(7, st->itemCodeLabel, st->itemCode);
-    place(8, st->itemNameLabel, st->itemName);
-    place(9, st->targetMeanLabel, st->targetMean);
-    place(10, st->targetSdLabel, st->targetSd);
-    MoveWindow(st->enabled, formX + labelW + S(10), formCard.top + S(74), S(90), editH, TRUE);
+    place(formLeftX, 3, st->machNameLabel, st->machName);
+    place(formLeftX, 4, st->sampleNoLabel, st->sampleNo);
+    place(formLeftX, 5, st->qcNameLabel, st->qcName);
+    place(formLeftX, 6, st->levelLabel, st->level);
+    place(formLeftX, 7, st->readDateLabel, st->readDate);
+    MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS), formLeftX + labelW + S(10),
+               formCard.top + S(74) + 8 * rowH - S(1), S(98), editH + S(2), TRUE);
+    place(formRightX, 0, st->itemCodeLabel, st->itemCode);
+    place(formRightX, 1, st->itemNameLabel, st->itemName);
+    place(formRightX, 2, st->lotNoLabel, st->lotNo);
+    place(formRightX, 3, st->validFromLabel, st->validFrom);
+    place(formRightX, 4, st->validToLabel, st->validTo);
+    place(formRightX, 5, st->targetMeanLabel, st->targetMean);
+    place(formRightX, 6, st->targetSdLabel, st->targetSd);
+    place(formRightX, 7, st->lotNoteLabel, st->lotNote);
     const int btnY = formCard.bottom - S(52);
     MoveWindow(GetDlgItem(hwnd, IDC_NEW), formX, btnY, S(76), S(30), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDC_SAVE), formX + S(86), btnY, S(76), S(30), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDC_DELETE), formX + S(172), btnY, S(76), S(30), TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDC_DELETE_LOT), formX + S(258), btnY, S(90), S(30), TRUE);
     MoveWindow(GetDlgItem(hwnd, IDC_CLOSE), formCard.right - cardPadX - S(76), btnY, S(76), S(30), TRUE);
 }
 
@@ -383,7 +637,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->cardBrush = CreateSolidBrush(COLOR_CARD_BG);
             st->editBrush = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
             st->title = text(hwnd, IDC_TITLE, L"质控品设置");
-            st->subtitle = text(hwnd, IDC_SUBTITLE, L"维护仪器固定质控样本号、质控水平、项目靶值和 SD。");
+            st->subtitle = text(hwnd, IDC_SUBTITLE, L"维护仪器固定质控样本号、项目水平，以及质控批号、有效期、靶值和 SD。");
             st->listTitle = text(hwnd, IDC_LIST_TITLE, L"质控配置");
             st->listHint = text(hwnd, IDC_LIST_HINT, L"左侧显示本机已维护的质控规则。");
             st->formTitle = text(hwnd, IDC_FORM_TITLE, L"配置明细");
@@ -398,6 +652,9 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             addColumn(st->list, 3, L"质控名称", 140);
             addColumn(st->list, 4, L"水平", 70);
             addColumn(st->list, 5, L"项目", 90);
+            addColumn(st->list, 6, L"批号", 100);
+            addColumn(st->list, 7, L"开始", 90);
+            addColumn(st->list, 8, L"结束", 90);
             st->enabled = CreateWindowExW(0, L"BUTTON", L"启用", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                                           0, 0, 0, 0, hwnd, win32_control_id(IDC_ENABLED), GetModuleHandleW(nullptr), nullptr);
             SendMessageW(st->enabled, BM_SETCHECK, BST_CHECKED, 0);
@@ -418,13 +675,26 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->itemCode = edit(hwnd, IDC_ITEM_CODE);
             st->itemNameLabel = label(hwnd, L"项目名称");
             st->itemName = edit(hwnd, IDC_ITEM_NAME);
+            st->readDateLabel = label(hwnd, L"读取日期");
+            st->readDate = datePicker(hwnd, IDC_READ_DATE, false);
+            setToday(st->readDate);
+            st->lotNoLabel = label(hwnd, L"质控批号");
+            st->lotNo = edit(hwnd, IDC_LOT_NO);
+            st->validFromLabel = label(hwnd, L"开始日期");
+            st->validFrom = datePicker(hwnd, IDC_VALID_FROM, true);
+            st->validToLabel = label(hwnd, L"结束日期");
+            st->validTo = datePicker(hwnd, IDC_VALID_TO, true);
             st->targetMeanLabel = label(hwnd, L"靶值");
             st->targetMean = edit(hwnd, IDC_TARGET_MEAN);
             st->targetSdLabel = label(hwnd, L"SD");
             st->targetSd = edit(hwnd, IDC_TARGET_SD);
+            st->lotNoteLabel = label(hwnd, L"批号备注");
+            st->lotNote = edit(hwnd, IDC_LOT_NOTE);
             button(hwnd, IDC_NEW, L"新增");
             button(hwnd, IDC_SAVE, L"保存");
             button(hwnd, IDC_DELETE, L"删除");
+            button(hwnd, IDC_DELETE_LOT, L"删批号");
+            button(hwnd, IDC_READ_ITEMS, L"读取项目");
             button(hwnd, IDC_CLOSE, L"关闭");
             search::apply_font_to_children(hwnd, st->font);
             SendMessageW(st->title, WM_SETFONT, reinterpret_cast<WPARAM>(st->titleFont), TRUE);
@@ -524,11 +794,23 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 showMachinePicker(hwnd, st);
                 return 0;
             }
+            if (LOWORD(wp) == IDC_READ_ITEMS) {
+                readItemsFromLis(hwnd, st);
+                return 0;
+            }
             if (LOWORD(wp) == IDC_SAVE) {
                 qc::Config row;
                 if (!collectForm(st, row)) return 0;
+                qc::Lot lot;
+                bool hasLot = false;
+                if (!collectLotForm(st, row.id, lot, hasLot)) return 0;
                 std::string error;
                 if (!qc::save_config(row, error)) {
+                    MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+                    return 0;
+                }
+                lot.config_id = row.id;
+                if (hasLot && !qc::save_lot(lot, error)) {
                     MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
                     return 0;
                 }
@@ -546,6 +828,18 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 populateList(st);
                 clearForm(st);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_DELETE_LOT) {
+                if (st->currentLotId <= 0) return 0;
+                if (MessageBoxW(hwnd, L"确定删除当前质控批号记录？", L"质控品设置", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+                std::string error;
+                if (!qc::delete_lot(st->currentLotId, error)) {
+                    MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+                    return 0;
+                }
+                loadLatestLot(st);
+                populateList(st);
                 return 0;
             }
             break;
