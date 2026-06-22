@@ -90,6 +90,7 @@ add_library(search_ui_core STATIC
     src/search_ui_layout.cpp
     src/trend_window.cpp
     src/trend_chart_renderer.cpp
+    src/quality_control_chart_renderer.cpp
 )
 target_include_directories(search_ui_core PUBLIC src resource)
 target_compile_definitions(search_ui_core PUBLIC UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
@@ -158,7 +159,7 @@ add_executable(main_app WIN32
     src/blood_module.cpp
     src/emergency_statistics_module.cpp
     src/hiv_statistics_module.cpp
-    src/quality_control_import.cpp
+    src/machine_picker_popup.cpp
     src/quality_control_module.cpp
     src/quality_control_settings_dialog.cpp
     src/quality_control_store.cpp

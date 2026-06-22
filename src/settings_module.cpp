@@ -983,7 +983,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::create_button(hwnd, IDC_SET_TEST, L"测试连接", 0, 0, S(92), S(30));
             search::create_button(hwnd, IDC_SET_SAVE, L"保存", 0, 0, S(84), S(30));
             search::create_button(hwnd, IDC_SET_CANCEL, L"取消", 0, 0, S(84), S(30));
-            st->qualityControlPanel = create_quality_control_settings_panel(hwnd, st->ctx.uiFont, collectForm(hwnd));
+            st->qualityControlPanel = create_quality_control_settings_panel(hwnd, st->ctx.uiFont, st->app.db);
 
             auto& app = st->app;
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_SERVER), app.db.server.c_str());
@@ -1100,6 +1100,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm->idFrom == IDC_SETTINGS_TABS && nm->code == TCN_SELCHANGE) {
                 st->currentTab = TabCtrl_GetCurSel(st->tabs);
+                if (st->qualityControlPanel) {
+                    update_quality_control_settings_panel_db(st->qualityControlPanel, collectForm(hwnd));
+                }
                 layoutSettingsWindow(hwnd);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;

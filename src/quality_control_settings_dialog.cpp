@@ -2,9 +2,9 @@
 
 #ifdef _WIN32
 
+#include "machine_picker_popup.h"
 #include "quality_control_store.h"
 #include "resource.h"
-#include "search_controller.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
@@ -53,10 +53,6 @@ enum ControlId {
     IDC_FORM_HINT = 6923,
 };
 
-constexpr int PICKER_ROOM = 6951;
-constexpr int PICKER_MACHINE = 6952;
-constexpr const wchar_t* PICKER_CLASS = L"QualityControlMachinePicker";
-
 struct State {
     HFONT font = nullptr;
     HFONT titleFont = nullptr;
@@ -97,15 +93,6 @@ struct State {
     HWND targetSd = nullptr;
     std::vector<qc::Config> rows;
     int currentId = 0;
-};
-
-struct PickerState {
-    State* ownerState = nullptr;
-    HWND owner = nullptr;
-    HWND roomCombo = nullptr;
-    HWND machineList = nullptr;
-    std::vector<search::RoomOption> rooms;
-    std::vector<search::MachineOption> machines;
 };
 
 HFONT createDerivedFont(HFONT base, int pointDelta, LONG weight) {
@@ -203,171 +190,22 @@ void populateList(State* st) {
     }
 }
 
-std::string selectedPickerRoomCode(PickerState* ps) {
-    if (!ps || !ps->roomCombo) return "";
-    const int index = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCURSEL, 0, 0));
-    if (index < 0 || index >= static_cast<int>(ps->rooms.size())) return "";
-    return ps->rooms[static_cast<size_t>(index)].room_code;
-}
-
-void populatePickerMachines(PickerState* ps) {
-    if (!ps || !ps->machineList) return;
-    ListView_DeleteAllItems(ps->machineList);
-    const std::string current = ps->ownerState ? search::trim(textUtf8(ps->ownerState->machCode)) : "";
-    int selected = -1;
-    for (int i = 0; i < static_cast<int>(ps->machines.size()); ++i) {
-        const auto& machine = ps->machines[static_cast<size_t>(i)];
-        const auto code = search::utf8_to_wide(machine.mach_code);
-        LVITEMW item{};
-        item.mask = LVIF_TEXT;
-        item.iItem = i;
-        item.pszText = const_cast<wchar_t*>(code.c_str());
-        ListView_InsertItem(ps->machineList, &item);
-        setCell(ps->machineList, i, 1, machine.mach_name);
-        setCell(ps->machineList, i, 2, machine.group_code);
-        setCell(ps->machineList, i, 3, machine.group_name);
-        setCell(ps->machineList, i, 4, machine.sample_name);
-        if (!current.empty() && machine.mach_code == current) selected = i;
-    }
-    if (selected < 0 && !ps->machines.empty()) selected = 0;
-    if (selected >= 0) {
-        ListView_SetItemState(ps->machineList, selected, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    }
-}
-
-void reloadPickerMachines(PickerState* ps) {
-    if (!ps || !ps->ownerState) return;
-    ps->machines.clear();
-    std::string error;
-    if (!search::load_report_machine_picker_machine_options(ps->ownerState->dbSettings, selectedPickerRoomCode(ps),
-                                                            ps->machines, error)) {
-        MessageBoxW(ps->owner, search::utf8_to_wide(error).c_str(), L"选择检验仪器", MB_ICONERROR);
-    }
-    populatePickerMachines(ps);
-}
-
-void reloadPickerRooms(PickerState* ps) {
-    if (!ps || !ps->ownerState || !ps->roomCombo) return;
-    SendMessageW(ps->roomCombo, CB_RESETCONTENT, 0, 0);
-    ps->rooms.clear();
-    std::string error;
-    if (!search::load_report_machine_picker_room_options(ps->ownerState->dbSettings, ps->rooms, error)) {
-        MessageBoxW(ps->owner, search::utf8_to_wide(error).c_str(), L"选择检验仪器", MB_ICONERROR);
-    }
-    const std::string currentRoom = search::trim(textUtf8(ps->ownerState->roomCode));
-    int selected = -1;
-    for (int i = 0; i < static_cast<int>(ps->rooms.size()); ++i) {
-        const auto& room = ps->rooms[static_cast<size_t>(i)];
-        const auto text = search::utf8_to_wide(room.room_name.empty() ? room.room_code : room.room_name);
-        SendMessageW(ps->roomCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
-        if (!currentRoom.empty() && room.room_code == currentRoom) selected = i;
-    }
-    if (selected < 0 && !ps->rooms.empty()) selected = 0;
-    if (selected >= 0) SendMessageW(ps->roomCombo, CB_SETCURSEL, selected, 0);
-    reloadPickerMachines(ps);
-}
-
-void acceptPicker(HWND hwnd, PickerState* ps) {
-    if (!ps || !ps->ownerState || !ps->machineList) return;
-    const int index = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
-    if (index < 0 || index >= static_cast<int>(ps->machines.size())) return;
-    const auto& machine = ps->machines[static_cast<size_t>(index)];
-    setText(ps->ownerState->roomCode, selectedPickerRoomCode(ps));
-    setText(ps->ownerState->machCode, machine.mach_code);
-    setText(ps->ownerState->machName, machine.mach_name);
-    DestroyWindow(hwnd);
-}
-
-LRESULT CALLBACK pickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* ps = reinterpret_cast<PickerState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-        case WM_CREATE: {
-            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-            ps = reinterpret_cast<PickerState*>(cs->lpCreateParams);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ps));
-            ps->roomCombo = search::create_combo(hwnd, PICKER_ROOM, 0, 0, 10, 180, false);
-            ps->machineList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                              WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                                              0, 0, 0, 0, hwnd, win32_control_id(PICKER_MACHINE),
-                                              GetModuleHandleW(nullptr), nullptr);
-            ListView_SetExtendedListViewStyle(ps->machineList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-            addColumn(ps->machineList, 0, L"仪器", 90);
-            addColumn(ps->machineList, 1, L"仪器名称", 160);
-            addColumn(ps->machineList, 2, L"项目代码", 80);
-            addColumn(ps->machineList, 3, L"项目名称", 150);
-            addColumn(ps->machineList, 4, L"样本", 90);
-            if (ps->ownerState && ps->ownerState->font) {
-                SendMessageW(ps->roomCombo, WM_SETFONT, reinterpret_cast<WPARAM>(ps->ownerState->font), TRUE);
-                SendMessageW(ps->machineList, WM_SETFONT, reinterpret_cast<WPARAM>(ps->ownerState->font), TRUE);
-            }
-            reloadPickerRooms(ps);
-            return 0;
-        }
-        case WM_SIZE:
-            if (ps && ps->roomCombo && ps->machineList) {
-                RECT rc{};
-                GetClientRect(hwnd, &rc);
-                const int pad = 10;
-                MoveWindow(ps->roomCombo, pad, pad, std::max(120, static_cast<int>(rc.right - pad * 2)), 26, TRUE);
-                MoveWindow(ps->machineList, pad, pad + 34, std::max(120, static_cast<int>(rc.right - pad * 2)),
-                           std::max(80, static_cast<int>(rc.bottom - pad * 2 - 34)), TRUE);
-            }
-            return 0;
-        case WM_COMMAND:
-            if (LOWORD(wp) == PICKER_ROOM && HIWORD(wp) == CBN_SELCHANGE) {
-                reloadPickerMachines(ps);
-                return 0;
-            }
-            break;
-        case WM_NOTIFY: {
-            auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (nm->idFrom == PICKER_MACHINE && nm->code == NM_DBLCLK) {
-                acceptPicker(hwnd, ps);
-                return 0;
-            }
-            if (nm->idFrom == PICKER_MACHINE && nm->code == LVN_KEYDOWN) {
-                auto* key = reinterpret_cast<NMLVKEYDOWN*>(lp);
-                if (key->wVKey == VK_RETURN) {
-                    acceptPicker(hwnd, ps);
-                    return 0;
-                }
-            }
-            break;
-        }
-        case WM_KEYDOWN:
-            if (wp == VK_ESCAPE) {
-                DestroyWindow(hwnd);
-                return 0;
-            }
-            break;
-        case WM_DESTROY:
-            delete ps;
-            return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
 void showMachinePicker(HWND owner, State* st) {
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.lpfnWndProc = pickerProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpszClassName = PICKER_CLASS;
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        RegisterClassExW(&wc);
-        registered = true;
-    }
-    auto* ps = new PickerState;
-    ps->ownerState = st;
-    ps->owner = owner;
-    HWND popup = CreateWindowExW(WS_EX_TOOLWINDOW, PICKER_CLASS, L"选择检验仪器",
-                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                 CW_USEDEFAULT, CW_USEDEFAULT, 720, 420,
-                                 owner, nullptr, GetModuleHandleW(nullptr), ps);
-    if (!popup) delete ps;
+    if (!st) return;
+    search::MachinePickerPopupOptions options;
+    options.owner = owner;
+    options.anchor = st->pickMachine;
+    options.font = st->font;
+    options.db_settings = st->dbSettings;
+    options.current_room_code = search::trim(textUtf8(st->roomCode));
+    options.current_mach_code = search::trim(textUtf8(st->machCode));
+    options.include_all_rooms = true;
+    options.on_accept = [st](const search::MachineOption& machine) {
+        setText(st->roomCode, machine.room_code);
+        setText(st->machCode, machine.mach_code);
+        setText(st->machName, machine.mach_name);
+    };
+    search::show_machine_picker_popup(options);
 }
 
 void clearForm(State* st) {
@@ -547,7 +385,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->title = text(hwnd, IDC_TITLE, L"质控品设置");
             st->subtitle = text(hwnd, IDC_SUBTITLE, L"维护仪器固定质控样本号、质控水平、项目靶值和 SD。");
             st->listTitle = text(hwnd, IDC_LIST_TITLE, L"质控配置");
-            st->listHint = text(hwnd, IDC_LIST_HINT, L"左侧显示本地 SQLite 中已维护的质控规则。");
+            st->listHint = text(hwnd, IDC_LIST_HINT, L"左侧显示本机已维护的质控规则。");
             st->formTitle = text(hwnd, IDC_FORM_TITLE, L"配置明细");
             st->formHint = text(hwnd, IDC_FORM_HINT, L"可手工录入，也可从 LIS 检验仪器列表选择。");
             st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",

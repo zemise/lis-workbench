@@ -30,13 +30,11 @@ struct Result {
     std::string mach_code;
     std::string mach_name;
     std::string sample_no;
-    std::string barcode_no;
+    std::string tester_name;
     std::string report_date;
     std::string inspect_date;
     std::string report_time;
     std::string effective_time;
-    std::string chk_flag;
-    std::string conf;
     std::string item_code;
     std::string item_name;
     std::string result_text;
@@ -48,22 +46,13 @@ struct Result {
     std::string level;
     std::string target_mean;
     std::string target_sd;
-    std::string imported_at;
-    std::string updated_at;
-};
-
-struct ImportLog {
-    int id = 0;
-    std::string started_at;
-    std::string finished_at;
-    std::string start_date;
-    std::string end_date;
-    std::string mach_code;
-    int imported_count = 0;
-    int updated_count = 0;
-    int skipped_count = 0;
-    std::string status;
-    std::string error;
+    double qc_mean = 0.0;
+    double qc_sd = 0.0;
+    double qc_z = 0.0;
+    bool has_qc_stats = false;
+    bool has_qc_z = false;
+    std::string qc_status;
+    std::string qc_rules;
 };
 
 struct Query {
@@ -72,7 +61,6 @@ struct Query {
     std::string mach_code;
     std::string item_code;
     std::string level;
-    bool only_abnormal = false;
 };
 
 std::wstring default_db_path();
@@ -81,10 +69,6 @@ bool ensure_store(std::string& error);
 bool load_configs(std::vector<Config>& rows, std::string& error);
 bool save_config(Config& row, std::string& error);
 bool delete_config(int id, std::string& error);
-bool query_results(const Query& query, std::vector<Result>& rows, std::string& error);
-bool upsert_result(Result& row, bool& inserted, std::string& error);
-bool insert_import_log(const ImportLog& log, std::string& error);
-bool latest_import_log(ImportLog& log, bool& found, std::string& error);
 
 }  // namespace qc
 

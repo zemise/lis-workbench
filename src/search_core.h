@@ -125,6 +125,7 @@ struct QualityControlLisRow {
     std::string mach_name;
     std::string sample_no;
     std::string barcode_no;
+    std::string tester_name;
     std::string report_date;
     std::string inspect_date;
     std::string report_time;

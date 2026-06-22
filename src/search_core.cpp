@@ -1317,6 +1317,7 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(CAST(r.MACH_CODE AS varchar(20)),'')),"
         << " isnull(r.OPER_NO,''),"
         << " isnull(r.TXM_NO,''),"
+        << " isnull(RTRIM(emp_oper.NAME),''),"
         << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
         << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
         << " isnull(CONVERT(varchar(19),r.REP_TIME,120),''),"
@@ -1332,6 +1333,7 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
         << " LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON e.ITEM_CODE=i.ITEM_CODE AND isnull(i.DELETE_BIT,0)=0"
         << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND isnull(mach.DELETE_BIT,0)=0"
+        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper WITH (NOLOCK) ON emp_oper.EMPLOYEE_ID=r.OPER_CODE"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND r.MACH_CODE='" << sql_escape(trim(query.mach_code)) << "'"
         << " AND r.OPER_NO='" << sql_escape(trim(query.sample_no)) << "'";
@@ -1361,17 +1363,18 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         row.mach_name = fetch_column(stmt, 5);
         row.sample_no = fetch_column(stmt, 6);
         row.barcode_no = fetch_column(stmt, 7);
-        row.report_date = fetch_column(stmt, 8);
-        row.inspect_date = fetch_column(stmt, 9);
-        row.report_time = fetch_column(stmt, 10);
-        row.effective_time = fetch_column(stmt, 11);
-        row.chk_flag = fetch_column(stmt, 12);
-        row.conf = fetch_column(stmt, 13);
-        row.item_code = fetch_column(stmt, 14);
-        row.item_name = fetch_column(stmt, 15);
-        row.result = fetch_column(stmt, 16);
-        row.unit = fetch_column(stmt, 17);
-        row.normal = fetch_column(stmt, 18);
+        row.tester_name = fetch_column(stmt, 8);
+        row.report_date = fetch_column(stmt, 9);
+        row.inspect_date = fetch_column(stmt, 10);
+        row.report_time = fetch_column(stmt, 11);
+        row.effective_time = fetch_column(stmt, 12);
+        row.chk_flag = fetch_column(stmt, 13);
+        row.conf = fetch_column(stmt, 14);
+        row.item_code = fetch_column(stmt, 15);
+        row.item_name = fetch_column(stmt, 16);
+        row.result = fetch_column(stmt, 17);
+        row.unit = fetch_column(stmt, 18);
+        row.normal = fetch_column(stmt, 19);
         rows.push_back(row);
     }
 
