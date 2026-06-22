@@ -101,11 +101,13 @@ struct State {
     HWND chartButton = nullptr;
     HWND exportButton = nullptr;
     HWND groups = nullptr;
+    HWND summary = nullptr;
     HWND cards = nullptr;
     HWND details = nullptr;
     HWND status = nullptr;
     HBRUSH bgBrush = nullptr;
     bool busy = false;
+    bool suppressSelectionNotify = false;
     std::string selectedMachineCode;
     std::vector<qc::Result> rows;
     std::vector<GroupRow> groupsRows;
@@ -306,6 +308,14 @@ std::string groupStatusText(const GroupRow& group) {
     if (group.warning_count > 0) return "警告";
     if (group.evaluated_count <= 0) return "未判定";
     return "在控";
+}
+
+std::string groupTitleText(const GroupRow& group) {
+    std::string title = group.qc_name.empty() ? group.item_name : group.qc_name;
+    if (title.empty()) title = group.item_code;
+    if (!group.level.empty()) title += " / " + group.level;
+    if (!group.sample_no.empty()) title += " / 样本号 " + group.sample_no;
+    return title;
 }
 
 std::string joinRules(const std::vector<std::string>& rules) {
@@ -900,6 +910,41 @@ void populateGroups(State* st) {
     }
 }
 
+void updateSummary(State* st) {
+    if (!st || !st->summary) return;
+    int outOfControlGroups = 0;
+    int warningGroups = 0;
+    int inControlGroups = 0;
+    int undecidedGroups = 0;
+    int pointCount = 0;
+    int outOfControlPoints = 0;
+    int warningPoints = 0;
+    for (const auto& group : st->groupsRows) {
+        pointCount += group.count;
+        outOfControlPoints += group.out_of_control_count;
+        warningPoints += group.warning_count;
+        const std::string status = groupStatusText(group);
+        if (status == "失控") {
+            ++outOfControlGroups;
+        } else if (status == "警告") {
+            ++warningGroups;
+        } else if (status == "在控") {
+            ++inControlGroups;
+        } else {
+            ++undecidedGroups;
+        }
+    }
+    const std::wstring text = L"今日质控概览    分组 " + std::to_wstring(st->groupsRows.size()) +
+                              L"    失控 " + std::to_wstring(outOfControlGroups) +
+                              L"    警告 " + std::to_wstring(warningGroups) +
+                              L"    在控 " + std::to_wstring(inControlGroups) +
+                              L"    未判定 " + std::to_wstring(undecidedGroups) +
+                              L"    明细 " + std::to_wstring(pointCount) +
+                              L"    失控点 " + std::to_wstring(outOfControlPoints) +
+                              L"    警告点 " + std::to_wstring(warningPoints);
+    SetWindowTextW(st->summary, text.c_str());
+}
+
 bool rowInSelectedGroup(const State* st, const qc::Result& row) {
     if (!st || st->selectedGroup < 0 || st->selectedGroup >= static_cast<int>(st->groupsRows.size())) return true;
     const auto& group = st->groupsRows[static_cast<size_t>(st->selectedGroup)];
@@ -913,17 +958,16 @@ void populateCards(State* st) {
         LVITEMW item{};
         item.mask = LVIF_TEXT;
         item.iItem = out;
-        const std::string title = group.qc_name.empty() ? group.item_name : group.qc_name;
-        const auto titleW = search::utf8_to_wide(title);
+        const auto titleW = search::utf8_to_wide(groupTitleText(group));
         item.pszText = const_cast<wchar_t*>(titleW.c_str());
         ListView_InsertItem(st->cards, &item);
-        setCell(st->cards, out, 1, group.mach_name.empty() ? group.mach_code : group.mach_name);
-        setCell(st->cards, out, 2, group.sample_no);
-        setCell(st->cards, out, 3, group.item_name);
-        setCell(st->cards, out, 4, group.level);
-        setCell(st->cards, out, 5, group.latest_result);
-        setCell(st->cards, out, 6, group.latest_time);
-        setCell(st->cards, out, 7, groupStatusText(group));
+        setCell(st->cards, out, 1, groupStatusText(group));
+        setCell(st->cards, out, 2, group.latest_result);
+        setCell(st->cards, out, 3, group.latest_time);
+        setCell(st->cards, out, 4, std::to_string(group.count));
+        setCell(st->cards, out, 5, std::to_string(group.out_of_control_count) + " / " + std::to_string(group.warning_count));
+        setCell(st->cards, out, 6, group.mach_name.empty() ? group.mach_code : group.mach_name);
+        setCell(st->cards, out, 7, "双击");
         ++out;
     }
 }
@@ -971,6 +1015,7 @@ void refreshVisibleResults(State* st) {
     buildGroups(st);
     if (st->selectedGroup >= static_cast<int>(st->groupsRows.size())) st->selectedGroup = -1;
     populateGroups(st);
+    updateSummary(st);
     populateCards(st);
     populateDetails(st);
     updateExportButton(st);
@@ -991,6 +1036,24 @@ const GroupRow* selectedOrFirstGroup(State* st) {
         return &st->groupsRows[static_cast<size_t>(st->selectedGroup)];
     }
     return &st->groupsRows.front();
+}
+
+void selectGroup(State* st, int index) {
+    if (!st || index < 0 || index >= static_cast<int>(st->groupsRows.size())) return;
+    st->selectedGroup = index;
+    st->suppressSelectionNotify = true;
+    if (st->groups) {
+        ListView_SetItemState(st->groups, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->groups, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->groups, index, FALSE);
+    }
+    if (st->cards) {
+        ListView_SetItemState(st->cards, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_SetItemState(st->cards, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->cards, index, FALSE);
+    }
+    st->suppressSelectionNotify = false;
+    populateDetails(st);
 }
 
 bool rowInGroup(const GroupRow& group, const qc::Result& row) {
@@ -1227,6 +1290,7 @@ void resizeLayout(HWND hwnd, State* st) {
     const int pad = S(hwnd, 10);
     const int statusH = S(hwnd, 24);
     const int topH = S(hwnd, 74);
+    const int summaryH = S(hwnd, 28);
     const int bottomH = std::max(S(hwnd, 190), static_cast<int>((rc.bottom - rc.top) / 3));
     const int leftW = std::max(S(hwnd, 260), static_cast<int>((rc.right - rc.left) / 4));
     int x = pad;
@@ -1247,8 +1311,10 @@ void resizeLayout(HWND hwnd, State* st) {
     MoveWindow(st->chartButton, x + S(hwnd, 665), pad + S(hwnd, 32), S(hwnd, 76), S(hwnd, 28), TRUE);
     MoveWindow(st->exportButton, x + S(hwnd, 750), pad + S(hwnd, 32), S(hwnd, 96), S(hwnd, 28), TRUE);
     MoveWindow(st->groups, pad, pad + topH, leftW, rc.bottom - pad * 3 - topH - bottomH - statusH, TRUE);
-    MoveWindow(st->cards, pad * 2 + leftW, pad + topH,
-               rc.right - leftW - pad * 3, rc.bottom - pad * 3 - topH - bottomH - statusH, TRUE);
+    MoveWindow(st->summary, pad * 2 + leftW, pad + topH,
+               rc.right - leftW - pad * 3, summaryH, TRUE);
+    MoveWindow(st->cards, pad * 2 + leftW, pad + topH + summaryH + S(hwnd, 6),
+               rc.right - leftW - pad * 3, rc.bottom - pad * 3 - topH - bottomH - statusH - summaryH - S(hwnd, 6), TRUE);
     MoveWindow(st->details, pad, rc.bottom - bottomH - statusH - pad,
                rc.right - pad * 2, bottomH, TRUE);
     MoveWindow(st->status, pad, rc.bottom - statusH, rc.right - pad * 2, statusH, TRUE);
@@ -1472,6 +1538,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->groups = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                          WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                          0, 0, 0, 0, hwnd, win32_control_id(IDC_GROUPS), GetModuleHandleW(nullptr), nullptr);
+            st->summary = CreateWindowExW(0, L"STATIC", L"今日质控概览", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                                          0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
             st->cards = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
                                         0, 0, 0, 0, hwnd, win32_control_id(IDC_CARDS), GetModuleHandleW(nullptr), nullptr);
@@ -1483,8 +1551,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupList(st->groups, {{L"项目", 150}, {L"水平", 70}, {L"样本号", 80}, {L"点数", 60},
                                    {L"均值", 70}, {L"SD", 70}, {L"CV%", 70}, {L"基准", 60},
                                    {L"状态", 70}, {L"失控", 56}, {L"警告", 56}, {L"最近时间", 140}});
-            setupList(st->cards, {{L"质控名称", 150}, {L"仪器", 160}, {L"样本号", 80}, {L"项目", 180},
-                                  {L"水平", 60}, {L"最近结果", 100}, {L"最近时间", 140}, {L"状态", 80}});
+            setupList(st->cards, {{L"质控项目", 260}, {L"状态", 80}, {L"最近结果", 110}, {L"最近时间", 140},
+                                  {L"点数", 60}, {L"失控/警告", 90}, {L"仪器", 150}, {L"L-J图", 70}});
             setupList(st->details, {{L"时间", 140}, {L"样本号", 90}, {L"报告号", 90}, {L"仪器", 160},
                                     {L"检验者", 90}, {L"项目", 180}, {L"水平", 60}, {L"结果", 90},
                                     {L"单位", 70}, {L"状态", 70}, {L"规则", 90}, {L"Z值", 70},
@@ -1532,19 +1600,33 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (st && nm->idFrom == IDC_GROUPS && nm->code == LVN_ITEMCHANGED) {
+            if (st && nm->idFrom == IDC_GROUPS && nm->code == LVN_ITEMCHANGED && !st->suppressSelectionNotify) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED)) {
-                    st->selectedGroup = lv->iItem;
-                    populateDetails(st);
+                    selectGroup(st, lv->iItem);
                 }
                 return 0;
             }
             if (st && nm->idFrom == IDC_GROUPS && nm->code == NM_DBLCLK) {
                 auto* item = reinterpret_cast<NMITEMACTIVATE*>(lp);
-                if (item->iItem >= 0) st->selectedGroup = item->iItem;
-                populateDetails(st);
+                selectGroup(st, item->iItem);
                 openLeveyJenningsChart(hwnd, st);
+                return 0;
+            }
+            if (st && nm->idFrom == IDC_CARDS && nm->code == LVN_ITEMCHANGED && !st->suppressSelectionNotify) {
+                auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
+                if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED) &&
+                    lv->iItem >= 0 && lv->iItem < static_cast<int>(st->groupsRows.size())) {
+                    selectGroup(st, lv->iItem);
+                }
+                return 0;
+            }
+            if (st && nm->idFrom == IDC_CARDS && nm->code == NM_DBLCLK) {
+                auto* item = reinterpret_cast<NMITEMACTIVATE*>(lp);
+                if (item->iItem >= 0 && item->iItem < static_cast<int>(st->groupsRows.size())) {
+                    selectGroup(st, item->iItem);
+                    openLeveyJenningsChart(hwnd, st);
+                }
                 return 0;
             }
             if (st && nm->idFrom == IDC_DETAILS && nm->code == NM_DBLCLK) {
