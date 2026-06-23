@@ -64,6 +64,8 @@ constexpr UINT WM_LIS_SUMMARY_DONE = WM_APP + 64;
 constexpr UINT_PTR SEARCH_EDIT_SUBCLASS = 6201;
 constexpr int DEFAULT_DATE_RANGE_DAYS = 7;
 constexpr int DEFAULT_LIS_DAYS = 14;
+constexpr int MIN_LIS_DAYS = 7;
+constexpr int MAX_LIS_DAYS = 365;
 
 constexpr int IDC_LIS_DAYS = 6301;
 constexpr int IDC_LIS_QUERY = 6302;
@@ -180,15 +182,18 @@ struct LisState {
     HWND patientAge = nullptr;
     HWND patientSex = nullptr;
     HWND days = nullptr;
-    HWND daysSpin = nullptr;
     HWND queryButton = nullptr;
     HWND queryNameButton = nullptr;
     HWND labelPatientNo = nullptr;
     HWND labelPatientName = nullptr;
     HWND labelPatientAge = nullptr;
     HWND labelPatientSex = nullptr;
+    HWND labelPatientSection = nullptr;
+    HWND labelSummarySection = nullptr;
     HWND labelDays = nullptr;
     HWND labelDaysHint = nullptr;
+    HWND labelDaysMin = nullptr;
+    HWND labelDaysMax = nullptr;
     HWND labelReports = nullptr;
     HWND labelResults = nullptr;
     HWND identityHint = nullptr;
@@ -390,8 +395,8 @@ void applyLisSummaryFonts(HWND hwnd, LisState* st) {
         DeleteObject(st->summaryBoldFont);
         st->summaryBoldFont = nullptr;
     }
-    st->summaryFont = createScaledFont(st->ctx.uiFont, 1.2, FW_NORMAL);
-    st->summaryBoldFont = createScaledFont(st->ctx.uiFont, 1.2, FW_BOLD);
+    st->summaryFont = createScaledFont(st->ctx.uiFont, 1.0, FW_NORMAL);
+    st->summaryBoldFont = createScaledFont(st->ctx.uiFont, 1.0, FW_BOLD);
     layoutLisWindow(hwnd, st);
     InvalidateRect(hwnd, &st->summaryRect, TRUE);
 }
@@ -1204,14 +1209,13 @@ struct LisSummaryParts {
 std::wstring lisBloodValueText(const search::LisSummary& summary) {
     const std::string abo = search::trim(summary.abo);
     const std::string rhd = search::trim(summary.rhd);
+    std::wstring text = L"血型：";
     if (abo.empty() && rhd.empty()) {
-        return L"未查询到血型";
+        return text + L"无";
     }
 
-    std::wstring text;
     if (!abo.empty()) {
         text += search::utf8_to_wide(abo);
-        if (!rhd.empty()) text += search::utf8_to_wide(rhd);
     }
     if (!rhd.empty()) {
         if (!abo.empty()) text += L"，";
@@ -1223,18 +1227,18 @@ std::wstring lisBloodValueText(const search::LisSummary& summary) {
 
 std::wstring lisCbcValueText(const search::LisSummary& summary) {
     if (search::trim(summary.hgb).empty() && search::trim(summary.plt).empty()) {
-        return L"未查询到血常规";
+        return L"血常规：无";
     }
 
     std::wstring text = L"Hb：";
     if (search::trim(summary.hgb).empty()) {
-        text += L"未查询到";
+        text += L"无";
     } else {
         text += search::utf8_to_wide(search::trim(summary.hgb));
     }
     text += L"，PLT：";
     if (search::trim(summary.plt).empty()) {
-        text += L"未查询到";
+        text += L"无";
     } else {
         text += search::utf8_to_wide(search::trim(summary.plt));
     }
@@ -1245,7 +1249,7 @@ std::wstring lisSummaryValueText(const wchar_t* label, const std::string& value)
     std::wstring text = label ? label : L"";
     const std::string trimmed = search::trim(value);
     if (trimmed.empty()) {
-        text += L"未查询到";
+        text += L"无";
     } else {
         text += search::utf8_to_wide(trimmed);
     }
@@ -1323,17 +1327,80 @@ void drawTextSingleLine(HDC hdc, HFONT font, const std::wstring& text, RECT rc) 
     if (old) SelectObject(hdc, old);
 }
 
+void drawTextRunClipped(HDC hdc, HFONT font, const std::wstring& text, RECT rc, int& x, COLORREF color) {
+    if (!hdc || text.empty() || x >= rc.right || rc.bottom <= rc.top) return;
+    HFONT oldFont = font ? static_cast<HFONT>(SelectObject(hdc, font)) : nullptr;
+    const COLORREF oldColor = SetTextColor(hdc, color);
+    TEXTMETRICW tm{};
+    GetTextMetricsW(hdc, &tm);
+    const int textH = static_cast<int>(tm.tmHeight);
+    const int rcH = static_cast<int>(rc.bottom - rc.top);
+    const int y = static_cast<int>(rc.top) + (std::max)(0, (rcH - textH) / 2);
+    RECT clip{x, rc.top, rc.right, rc.bottom};
+    ExtTextOutW(hdc, x, y, ETO_CLIPPED, &clip, text.c_str(), static_cast<UINT>(text.size()), nullptr);
+    SIZE size{};
+    GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &size);
+    x += size.cx;
+    SetTextColor(hdc, oldColor);
+    if (oldFont) SelectObject(hdc, oldFont);
+}
+
+void drawValueWithAlert(HDC hdc, const LisState* st, const std::wstring& value,
+                        RECT rc, size_t alertPos, size_t alertLen) {
+    if (!hdc || !st || value.empty() || rc.right <= rc.left) return;
+    if (alertPos == std::wstring::npos || alertLen == 0 || alertPos >= value.size()) {
+        SetTextColor(hdc, COLOR_BLACK);
+        drawTextSingleLine(hdc, st->summaryBoldFont, value, rc);
+        return;
+    }
+
+    const size_t safeAlertLen = (std::min)(alertLen, value.size() - alertPos);
+    int x = rc.left;
+    drawTextRunClipped(hdc, st->summaryBoldFont, value.substr(0, alertPos), rc, x, COLOR_BLACK);
+    drawTextRunClipped(hdc, st->summaryBoldFont, value.substr(alertPos, safeAlertLen), rc, x, COLOR_EMERGENCY);
+    drawTextRunClipped(hdc, st->summaryBoldFont, value.substr(alertPos + safeAlertLen), rc, x, COLOR_BLACK);
+}
+
+std::wstring slashDateForSummary(const std::wstring& date) {
+    if (date.size() < 10 || date[4] != L'-' || date[7] != L'-') return date;
+    const std::wstring year = date.substr(0, 4);
+    std::wstring month = date.substr(5, 2);
+    std::wstring day = date.substr(8, 2);
+    if (month.size() == 2 && month[0] == L'0') month.erase(month.begin());
+    if (day.size() == 2 && day[0] == L'0') day.erase(day.begin());
+    return year + L"/" + month + L"/" + day;
+}
+
+enum class LisSummaryAlert {
+    None,
+    RhDNegative,
+    Positive
+};
+
 void drawLisSummaryLine(HDC hdc, const LisState* st, const std::wstring& date,
-                        const std::wstring& value, RECT rc) {
+                        const std::wstring& value, RECT rc, LisSummaryAlert alert) {
     if (!hdc || !st) return;
-    const int dateW = textPixelWidth(hdc, st->summaryFont, date);
+    const std::wstring displayDate = slashDateForSummary(date);
+    const int dateW = (std::max)(textPixelWidth(hdc, st->summaryFont, L"0000/00/00  "),
+                                 textPixelWidth(hdc, st->summaryFont, displayDate));
     RECT dateRc = rc;
     dateRc.right = (std::min)(rc.right, rc.left + dateW);
-    drawTextSingleLine(hdc, st->summaryFont, date, dateRc);
+    const COLORREF oldText = SetTextColor(hdc, RGB(0x68, 0x75, 0x80));
+    drawTextSingleLine(hdc, st->summaryFont, displayDate, dateRc);
 
     RECT valueRc = rc;
     valueRc.left = dateRc.right;
-    drawTextSingleLine(hdc, st->summaryBoldFont, value, valueRc);
+    size_t alertPos = std::wstring::npos;
+    size_t alertLen = 0;
+    if (alert == LisSummaryAlert::RhDNegative) {
+        alertPos = value.find(L"RhD阴性");
+        alertLen = std::wstring(L"RhD阴性").size();
+    } else if (alert == LisSummaryAlert::Positive) {
+        alertPos = value.find(L"阳性");
+        alertLen = std::wstring(L"阳性").size();
+    }
+    drawValueWithAlert(hdc, st, value, valueRc, alertPos, alertLen);
+    SetTextColor(hdc, oldText);
 }
 
 void drawLisSummary(HWND hwnd, const LisState* st, HDC hdc) {
@@ -1343,25 +1410,20 @@ void drawLisSummary(HWND hwnd, const LisState* st, HDC hdc) {
     const float s = search::dpi_scale_factor(hwnd);
     auto S = [s](int v) { return static_cast<int>(v * s); };
     const int lineH = S(24);
-    RECT bloodRc = st->summaryRect;
-    bloodRc.top += S(2);
-    bloodRc.bottom = bloodRc.top + lineH;
-    RECT cbcRc = st->summaryRect;
-    cbcRc.top += S(28);
-    cbcRc.bottom = cbcRc.top + lineH;
-    RECT irregularRc = st->summaryRect;
-    irregularRc.top += S(54);
-    irregularRc.bottom = irregularRc.top + lineH;
-    RECT directAntiglobulinRc = st->summaryRect;
-    directAntiglobulinRc.top += S(80);
-    directAntiglobulinRc.bottom = directAntiglobulinRc.top + lineH;
+    const int topY = st->summaryRect.top + S(1);
+    const int rowGap = S(4);
+
+    RECT bloodRc{st->summaryRect.left, topY, st->summaryRect.right, topY + lineH};
+    RECT cbcRc{st->summaryRect.left, bloodRc.bottom + rowGap, st->summaryRect.right, bloodRc.bottom + rowGap + lineH};
+    RECT irregularRc{st->summaryRect.left, cbcRc.bottom + rowGap, st->summaryRect.right, cbcRc.bottom + rowGap + lineH};
+    RECT directAntiglobulinRc{st->summaryRect.left, irregularRc.bottom + rowGap, st->summaryRect.right, irregularRc.bottom + rowGap + lineH};
 
     const int oldBk = SetBkMode(hdc, TRANSPARENT);
     const COLORREF oldText = SetTextColor(hdc, COLOR_BLACK);
-    drawLisSummaryLine(hdc, st, st->summaryBloodDate, st->summaryBloodValue, bloodRc);
-    drawLisSummaryLine(hdc, st, st->summaryCbcDate, st->summaryCbcValue, cbcRc);
-    drawLisSummaryLine(hdc, st, st->summaryIrregularDate, st->summaryIrregularValue, irregularRc);
-    drawLisSummaryLine(hdc, st, st->summaryDirectAntiglobulinDate, st->summaryDirectAntiglobulinValue, directAntiglobulinRc);
+    drawLisSummaryLine(hdc, st, st->summaryBloodDate, st->summaryBloodValue, bloodRc, LisSummaryAlert::RhDNegative);
+    drawLisSummaryLine(hdc, st, st->summaryCbcDate, st->summaryCbcValue, cbcRc, LisSummaryAlert::None);
+    drawLisSummaryLine(hdc, st, st->summaryIrregularDate, st->summaryIrregularValue, irregularRc, LisSummaryAlert::Positive);
+    drawLisSummaryLine(hdc, st, st->summaryDirectAntiglobulinDate, st->summaryDirectAntiglobulinValue, directAntiglobulinRc, LisSummaryAlert::Positive);
     SetTextColor(hdc, oldText);
     SetBkMode(hdc, oldBk);
 }
@@ -1371,11 +1433,14 @@ std::string lisConnectionString(LisState* st) {
 }
 
 int lisDaysValue(LisState* st) {
-    BOOL ok = FALSE;
-    int days = GetDlgItemInt(GetParent(st->days), IDC_LIS_DAYS, &ok, FALSE);
-    if (!ok || days < 1) return DEFAULT_LIS_DAYS;
-    if (days > 3650) return 3650;
-    return days;
+    if (!st || !st->days) return DEFAULT_LIS_DAYS;
+    const int days = static_cast<int>(SendMessageW(st->days, TBM_GETPOS, 0, 0));
+    return (std::min)(MAX_LIS_DAYS, (std::max)(MIN_LIS_DAYS, days));
+}
+
+void updateLisDaysHint(LisState* st) {
+    if (!st || !st->labelDaysHint) return;
+    SetWindowTextW(st->labelDaysHint, (std::to_wstring(lisDaysValue(st)) + L" 天").c_str());
 }
 
 void queryLisResults(LisState* st, int reportIndex) {
@@ -1580,13 +1645,13 @@ void finishLisSummary(HWND hwnd, LisState* st, std::unique_ptr<LisSummaryResult>
     if (result->ok) {
         setLisSummaryText(st, lisSummaryParts(result->summary));
     } else {
-        st->summaryBloodValue = L"血型鉴定摘要查询失败";
+        st->summaryBloodValue = L"血型：失败";
         st->summaryBloodDate.clear();
-        st->summaryCbcValue = L"血红蛋白、血小板摘要查询失败";
+        st->summaryCbcValue = L"血常规：失败";
         st->summaryCbcDate.clear();
-        st->summaryIrregularValue = L"不规则摘要查询失败";
+        st->summaryIrregularValue = L"不规则：失败";
         st->summaryIrregularDate.clear();
-        st->summaryDirectAntiglobulinValue = L"直抗摘要查询失败";
+        st->summaryDirectAntiglobulinValue = L"直抗：失败";
         st->summaryDirectAntiglobulinDate.clear();
         invalidateLisSummary(hwnd, st);
     }
@@ -1615,38 +1680,86 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     const float s = search::dpi_scale_factor(hwnd);
     auto S = [s](int v) { return static_cast<int>(v * s); };
 
-    MoveWindow(st->labelPatientNo, S(32), S(24), S(86), S(24), TRUE);
-    MoveWindow(st->patientNo, S(124), S(20), S(190), S(28), TRUE);
-    MoveWindow(st->labelPatientName, S(352), S(24), S(58), S(24), TRUE);
-    MoveWindow(st->patientName, S(416), S(20), S(190), S(28), TRUE);
-    MoveWindow(st->labelPatientAge, S(630), S(24), S(58), S(24), TRUE);
-    MoveWindow(st->patientAge, S(694), S(20), S(110), S(28), TRUE);
-    MoveWindow(st->labelPatientSex, S(830), S(24), S(58), S(24), TRUE);
-    MoveWindow(st->patientSex, S(894), S(20), S(100), S(28), TRUE);
+    const int margin = S(14);
+    const int gap = S(10);
+    const int sidebarW = S(360);
+    const int sidebarX = margin;
+    const int sidebarRight = (std::min)(w - margin, sidebarX + sidebarW);
+    const int labelW = S(68);
+    const int editH = S(28);
+    InvalidateRect(hwnd, nullptr, TRUE);
 
-    MoveWindow(st->labelDays, S(32), S(68), S(86), S(24), TRUE);
-    MoveWindow(st->days, S(124), S(64), S(74), S(28), TRUE);
-    MoveWindow(st->daysSpin, S(198), S(64), S(20), S(28), TRUE);
-    MoveWindow(st->labelDaysHint, S(230), S(68), S(140), S(24), TRUE);
-    MoveWindow(st->queryButton, S(390), S(60), S(128), S(36), TRUE);
-    MoveWindow(st->queryNameButton, S(530), S(60), S(128), S(36), TRUE);
-    const int summaryX = S(676);
-    st->summaryRect = RECT{summaryX, S(48), (std::max)(summaryX, w - S(24)), S(158)};
+    const int sidePad = S(10);
+    const int contentX = sidebarX + sidePad;
+    const int contentRight = sidebarRight - sidePad;
+    const int contentW = (std::max)(S(260), contentRight - contentX);
+    int sideY = margin + S(2);
+    const int fieldX = contentX + labelW + S(8);
+    const int fieldW = (std::max)(S(120), contentRight - fieldX);
+    auto moveSectionTitle = [&](HWND label) {
+        MoveWindow(label, contentX, sideY, contentW, S(24), TRUE);
+        sideY += S(26);
+    };
+    auto moveSidebarField = [&](HWND label, HWND field, int fieldHeight = 28) {
+        MoveWindow(label, contentX, sideY + S(4), labelW, S(24), TRUE);
+        MoveWindow(field, fieldX, sideY, fieldW, S(fieldHeight), TRUE);
+        sideY += S(fieldHeight + 6);
+    };
+    moveSectionTitle(st->labelPatientSection);
+    moveSidebarField(st->labelPatientNo, st->patientNo);
+    moveSidebarField(st->labelPatientName, st->patientName);
+    moveSidebarField(st->labelPatientAge, st->patientAge);
+    moveSidebarField(st->labelPatientSex, st->patientSex);
+
+    sideY += S(8);
+    MoveWindow(st->labelSummarySection, contentX, sideY, S(90), S(24), TRUE);
+    ShowWindow(st->identityHint, SW_SHOW);
+    MoveWindow(st->identityHint, contentX + S(96), sideY + S(1), contentW - S(96), S(24), TRUE);
+    sideY += S(26);
+    st->summaryRect = RECT{
+        contentX,
+        sideY,
+        contentRight,
+        sideY + S(110)
+    };
     InvalidateRect(hwnd, &st->summaryRect, TRUE);
+    sideY = st->summaryRect.bottom + S(16);
 
-    const int top = S(206);
-    const int gap = S(8);
-    const int leftW = (std::max)(S(420), w * 48 / 100);
-    const int rightX = leftW + gap;
+    ShowWindow(st->labelDays, SW_SHOW);
+    MoveWindow(st->labelDays, contentX, sideY, S(120), S(24), TRUE);
+    MoveWindow(st->labelDaysHint, contentX + S(120), sideY, contentW - S(120), S(24), TRUE);
+    sideY += S(26);
+
+    const int rangeLabelW = S(28);
+    const int sliderX = contentX + rangeLabelW + S(6);
+    const int sliderW = (std::max)(S(140), contentW - rangeLabelW * 2 - S(12));
+    MoveWindow(st->labelDaysMin, contentX, sideY + S(5), rangeLabelW, S(22), TRUE);
+    MoveWindow(st->days, sliderX, sideY, sliderW, S(32), TRUE);
+    MoveWindow(st->labelDaysMax, contentRight - rangeLabelW, sideY + S(5), rangeLabelW, S(22), TRUE);
+    sideY += S(46);
+
+    const int buttonW = contentW;
+    const int buttonH = S(34);
+    MoveWindow(st->queryButton, contentX, sideY, buttonW, buttonH, TRUE);
+    sideY += S(38);
+    MoveWindow(st->queryNameButton, contentX, sideY, buttonW, buttonH, TRUE);
+    sideY += S(42);
+
+    const int labelTop = margin;
+    const int top = labelTop + S(24);
+    const int listsX = sidebarRight + gap;
+    const int listsRight = w - margin;
+    const int listsW = (std::max)(S(760), listsRight - listsX);
+    const int leftW = (std::max)(S(360), listsW * 38 / 100);
+    const int rightX = listsX + leftW + gap;
     const int listH = (std::max)(S(260), h - top - S(30));
-    const int reportW = leftW - S(8);
-    const int resultW = (std::max)(S(420), w - rightX - S(4));
-    MoveWindow(st->labelReports, S(6), S(182), S(150), S(24), TRUE);
-    MoveWindow(st->labelResults, rightX, S(182), S(150), S(24), TRUE);
-    MoveWindow(st->reports, S(4), top, reportW, listH, TRUE);
+    const int reportW = leftW;
+    const int resultW = (std::max)(S(420), listsRight - rightX);
+    MoveWindow(st->labelReports, listsX, labelTop, S(150), S(24), TRUE);
+    MoveWindow(st->labelResults, rightX, labelTop, S(150), S(24), TRUE);
+    MoveWindow(st->reports, listsX, top, reportW, listH, TRUE);
     MoveWindow(st->results, rightX, top, resultW, listH, TRUE);
     MoveWindow(st->status, S(8), h - S(24), w - S(16), S(22), TRUE);
-    MoveWindow(st->identityHint, summaryX, S(158), (std::max)(S(260), w - summaryX - S(24)), S(24), TRUE);
 
     const int reportFixedW = S(54 + 100 + 150 + 105 + 56 + 70 + 70);
     ListView_SetColumnWidth(st->reports, LisReportSampleNo, S(54));
@@ -1677,11 +1790,15 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             st->bgBrush = CreateSolidBrush(COLOR_PAGE_BG);
             st->labelPatientNo = createStatic(hwnd, L"病人号：", SS_RIGHT, 0, 0, 0, 0);
-            st->labelPatientName = createStatic(hwnd, L"姓名：", SS_RIGHT, 0, 0, 0, 0);
-            st->labelPatientAge = createStatic(hwnd, L"年龄：", SS_RIGHT, 0, 0, 0, 0);
-            st->labelPatientSex = createStatic(hwnd, L"性别：", SS_RIGHT, 0, 0, 0, 0);
-            st->labelDays = createStatic(hwnd, L"时间范围", SS_RIGHT, 0, 0, 0, 0);
-            st->labelDaysHint = createStatic(hwnd, L"几天之内结果", SS_LEFT, 0, 0, 0, 0);
+            st->labelPatientName = createStatic(hwnd, L"姓　名：", SS_RIGHT, 0, 0, 0, 0);
+            st->labelPatientAge = createStatic(hwnd, L"年　龄：", SS_RIGHT, 0, 0, 0, 0);
+            st->labelPatientSex = createStatic(hwnd, L"性　别：", SS_RIGHT, 0, 0, 0, 0);
+            st->labelPatientSection = createStatic(hwnd, L"患者信息", SS_LEFT, 0, 0, 0, 0);
+            st->labelSummarySection = createStatic(hwnd, L"摘要信息", SS_LEFT, 0, 0, 0, 0);
+            st->labelDays = createStatic(hwnd, L"查询范围", SS_LEFT, 0, 0, 0, 0);
+            st->labelDaysHint = createStatic(hwnd, L"14 天", SS_RIGHT, 0, 0, 0, 0);
+            st->labelDaysMin = createStatic(hwnd, L"7", SS_LEFT, 0, 0, 0, 0);
+            st->labelDaysMax = createStatic(hwnd, L"365", SS_RIGHT, 0, 0, 0, 0);
             st->labelReports = createStatic(hwnd, L"组合项目", SS_LEFT, 0, 0, 0, 0);
             st->labelResults = createStatic(hwnd, L"详情信息", SS_LEFT, 0, 0, 0, 0);
             st->identityHint = createStatic(hwnd, L"已按病人号精确匹配", SS_LEFT, 0, 0, 0, 0);
@@ -1690,13 +1807,14 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->patientName = createValue(hwnd, L"", 0, 0, 0, 0);
             st->patientAge = createValue(hwnd, L"", 0, 0, 0, 0);
             st->patientSex = createValue(hwnd, L"", 0, 0, 0, 0);
-            st->days = search::create_edit(hwnd, IDC_LIS_DAYS, 0, 0, 0, 0);
-            SetWindowTextW(st->days, L"14");
-            st->daysSpin = CreateWindowExW(0, UPDOWN_CLASSW, L"", WS_CHILD | WS_VISIBLE | UDS_SETBUDDYINT | UDS_ARROWKEYS,
-                                           0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-            SendMessageW(st->daysSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->days), 0);
-            SendMessageW(st->daysSpin, UDM_SETRANGE32, 1, 3650);
-            SendMessageW(st->daysSpin, UDM_SETPOS32, 0, DEFAULT_LIS_DAYS);
+            st->days = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
+                                       0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_DAYS),
+                                       GetModuleHandleW(nullptr), nullptr);
+            SendMessageW(st->days, TBM_SETRANGE, TRUE, MAKELPARAM(MIN_LIS_DAYS, MAX_LIS_DAYS));
+            SendMessageW(st->days, TBM_SETPAGESIZE, 0, 7);
+            SendMessageW(st->days, TBM_SETLINESIZE, 0, 1);
+            SendMessageW(st->days, TBM_SETPOS, TRUE, DEFAULT_LIS_DAYS);
             st->queryButton = CreateWindowExW(0, L"BUTTON", L"按病人号查询", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                               0, 0, 0, 0, hwnd, win32_control_id(IDC_LIS_QUERY), GetModuleHandleW(nullptr), nullptr);
             st->queryNameButton = CreateWindowExW(0, L"BUTTON", L"按名字查询", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -1768,6 +1886,12 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
+        case WM_HSCROLL:
+            if (st && reinterpret_cast<HWND>(lp) == st->days) {
+                updateLisDaysHint(st);
+                return 0;
+            }
+            break;
         case WM_COMMAND:
             if (st && LOWORD(wp) == IDC_LIS_QUERY) {
                 runLisQuery(st);
@@ -1868,6 +1992,10 @@ LRESULT CALLBACK lisWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetBkColor(hdc, COLOR_PAGE_BG);
             if (child && child == st->identityHint) {
                 SetTextColor(hdc, st->identityHintColor);
+            } else if (child && (child == st->labelDaysHint || child == st->labelDaysMin || child == st->labelDaysMax)) {
+                SetTextColor(hdc, RGB(0x68, 0x75, 0x80));
+            } else if (child && (child == st->labelPatientSection || child == st->labelSummarySection)) {
+                SetTextColor(hdc, RGB(0x16, 0x2B, 0x3A));
             } else {
                 SetTextColor(hdc, child && !IsWindowEnabled(child) ? GetSysColor(COLOR_GRAYTEXT) : COLOR_BLACK);
             }
