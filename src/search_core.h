@@ -26,6 +26,8 @@ struct QueryFilters {
     std::string lis_rhd_codes;
     std::string lis_hgb_codes;
     std::string lis_plt_codes;
+    std::string lis_irregular_antibody_codes;
+    std::string lis_direct_antiglobulin_codes;
     std::string lis_blood_type_machines;
     std::string lis_cbc_machines;
     std::string lis_blood_exclude_machines;
@@ -166,6 +168,10 @@ struct LisSummary {
     std::string hgb;
     std::string plt;
     std::string cbc_date;
+    std::string irregular_antibody;
+    std::string irregular_antibody_date;
+    std::string direct_antiglobulin;
+    std::string direct_antiglobulin_date;
 };
 
 struct BloodRequestRow {

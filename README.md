@@ -85,7 +85,7 @@
   - 导出默认文件名为 `病人姓名-病人号-查询日期.csv`，病人姓名或病人号为空时自动跳过对应部分。
 - 数据库设置页面，支持服务器、初始数据库、用户名、密码配置。
 - 设置页面采用原生 Win32 分组卡片布局，支持字号配置；字号选择限制为 `9 / 11 / 12 / 13` 四档，保存后持久化到 `ClientConfig.ini`，并立即应用到菜单栏及子菜单、主界面、输血模块和 LIS 检验信息弹窗；底部状态栏保持系统默认字体。
-- 系统设置支持配置 LIS 摘要项目代码和输血摘要仪器过滤，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`；`血型仪器`、`血常规仪器` 使用 `ROOM:MACH1,MACH2;ROOM:MACH` 成对格式，默认分别为 `11:11101;64:626` 和 `1:1002,1011,1012;61:613,615`，清空则不限制仪器；`输血排除仪器` 保存为 `BloodLisExcludeMachines`，支持 `ROOM:;ROOM:MACH1,MACH2`，默认 `3:;71:;8:8004`，清空则不排除。
+- 系统设置支持配置 LIS 摘要项目代码和输血摘要仪器过滤，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码`、`不规则代码`、`直抗代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`，默认不规则抗体筛查代码为 `11106;91966`，直接抗人球蛋白试验代码为 `11105;91965`；`血型仪器`、`血常规仪器` 使用 `ROOM:MACH1,MACH2;ROOM:MACH` 成对格式，默认分别为 `11:11101;64:626` 和 `1:1002,1011,1012;61:613,615`，清空则不限制仪器；`输血排除仪器` 保存为 `BloodLisExcludeMachines`，支持 `ROOM:;ROOM:MACH1,MACH2`，默认 `3:;71:;8:8004`，清空则不排除。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器复用常规报告仪器弹窗的数据范围，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下的启用仪器，并展示主项目代码、项目名称和样本，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
 - 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
@@ -143,7 +143,7 @@
   - 下方列表按 `ApplyForm_Statue` 着色，并显示申请 ABO/RHD、申请成分、病人号、申请单号、审核人、审核时间等字段。
   - 交叉配血记录表为 `LS_XK_BloodCrossMatch`，可通过 `ApplyFormNO` 关联输血申请；已确认 `Patient_NO` 为病人号、`Patient_NOType` 为患者类型、`Patient_Name` 为病人姓名、`VerifyState` 为配血审核状态、`Match_Date` 为配血时间。
   - `输血历史` tab 放在首位并默认展示，会按当前选中申请的 `Patient_NO` 读取 `LS_XK_BloodCrossMatch`，通过 `BloodInID` 联查 `LS_XK_BloodOutInfo / LS_XK_BloodInfo` 及血型、Rh、成分、来源字典表，只读展示出库时间、出库人、血袋编号、产品码、血型、RH(D)、血液成分、血量、单位、配血方法、主侧/次侧结果、配血时间、配血者和血袋来源；出库时间和配血时间由 C++ 端格式化为 `yyyy/M/d H:mm`。
-  - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果；已确认输血申请 `Patient_NO` 与 `LS_AS_REPORT.REG_NO` 同口径，按病人号查询时报告列表和摘要均直接过滤 `LS_AS_REPORT.REG_NO`；按名字查询时会先用当前病人号获取 `LS_AS_REPORT.PAT_PHONE`，取到电话后追加姓名+电话约束以减少重名误匹配，并在检验摘要区下方显示身份匹配可信度提示；摘要区根据可配置项目代码显示最近一次血型鉴定、血红蛋白和血小板摘要。
+  - `查询检验结果` 窗口可按当前病人号或姓名查询 LIS 结果；已确认输血申请 `Patient_NO` 与 `LS_AS_REPORT.REG_NO` 同口径，按病人号查询时报告列表和摘要均直接过滤 `LS_AS_REPORT.REG_NO`；按名字查询时会先用当前病人号获取 `LS_AS_REPORT.PAT_PHONE`，取到电话后追加姓名+电话约束以减少重名误匹配，并在检验摘要区下方显示身份匹配可信度提示；摘要区根据可配置项目代码显示最近一次血型鉴定、血红蛋白/血小板、不规则抗体筛查和直接抗人球蛋白试验摘要，新项目显示为“不规则”和“直抗”两行。
   - `查询检验结果` 窗口右侧报告列表的 `样本号` 与检验结果查询页一致，来自 `LS_AS_REPORT.OPER_NO`，并展示 `LS_AS_REPORT.ROOM_CODE / MACH_CODE` 便于配置排除规则；查询完成状态栏会显示命中系统设置中 `血型仪器`、`血常规仪器` 的报告数量。
   - `查询检验结果` 窗口的报告列表使用专用轻量 SQL，仅读取弹窗展示和选择所需字段，并按 `BloodLisExcludeMachines` 下推排除不想展示的科室/仪器；组合项目列表和摘要信息分别走独立后台查询，组合项目列表不等待摘要查询完成。
 - GitHub Actions 会在 `windows-2022` runner 上使用 VS2022 和 LabelPrint `v1.2.9` Win7 兼容 release 包生成 `LISWorkbench-Setup-<version>-win7-win11.exe` 安装包。该包按 Windows 7 兼容目标构建，目标覆盖 Windows 7 到 Windows 11；实际运行验证仍需在对应系统或虚拟机中完成。

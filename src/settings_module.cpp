@@ -51,6 +51,8 @@ constexpr int IDC_SET_UPDATE_FOLDER = 5126;
 constexpr int IDC_SET_UPDATE_AUTO_CHECK = 5128;
 constexpr int IDC_SET_UPDATE_MANIFEST_LABEL = 5129;
 constexpr int IDC_SET_UPDATE_FOLDER_LABEL = 5130;
+constexpr int IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES = 5131;
+constexpr int IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES = 5132;
 constexpr int IDC_LABEL_SERVER = 5201;
 constexpr int IDC_LABEL_INITIAL_DATABASE = 5202;
 constexpr int IDC_LABEL_USER = 5203;
@@ -88,6 +90,8 @@ constexpr int IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES = 5234;
 constexpr int IDC_TEXT_SECTION_QUALITY_CONTROL = 5235;
 constexpr int IDC_TEXT_QUALITY_CONTROL_HINT = 5236;
 constexpr int IDC_SETTINGS_TABS = 5237;
+constexpr int IDC_LABEL_LIS_DIRECT_ANTIGLOBULIN_CODES = 5238;
+constexpr int IDC_LABEL_LIS_IRREGULAR_ANTIBODY_CODES = 5239;
 
 constexpr const wchar_t* WND_CLASS  = L"SettingsModuleChild";
 constexpr const wchar_t* PICKER_CLASS = L"SettingsMachinePicker";
@@ -285,7 +289,9 @@ void updateSettingsPageVisibility(HWND hwnd, SettingsState* st) {
 
     const int lisIds[] = {IDC_TEXT_SECTION_LIS, IDC_TEXT_LIS_HINT, IDC_LABEL_LIS_ABO_CODES, IDC_SET_LIS_ABO_CODES,
                           IDC_LABEL_LIS_RHD_CODES, IDC_SET_LIS_RHD_CODES, IDC_LABEL_LIS_HGB_CODES, IDC_SET_LIS_HGB_CODES,
-                          IDC_LABEL_LIS_PLT_CODES, IDC_SET_LIS_PLT_CODES, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES,
+                          IDC_LABEL_LIS_PLT_CODES, IDC_SET_LIS_PLT_CODES, IDC_LABEL_LIS_IRREGULAR_ANTIBODY_CODES,
+                          IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES, IDC_LABEL_LIS_DIRECT_ANTIGLOBULIN_CODES,
+                          IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES,
                           IDC_SET_LIS_BLOOD_TYPE_MACHINES, IDC_LABEL_LIS_CBC_MACHINES, IDC_SET_LIS_CBC_MACHINES,
                           IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES};
     for (int id : lisIds) showChild(hwnd, id, lis);
@@ -370,9 +376,11 @@ void layoutSettingsWindow(HWND hwnd) {
     placeRow(l.lis, 1, IDC_LABEL_LIS_RHD_CODES, IDC_SET_LIS_RHD_CODES);
     placeRow(l.lis, 2, IDC_LABEL_LIS_HGB_CODES, IDC_SET_LIS_HGB_CODES);
     placeRow(l.lis, 3, IDC_LABEL_LIS_PLT_CODES, IDC_SET_LIS_PLT_CODES);
-    placeRow(l.lis, 4, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES, IDC_SET_LIS_BLOOD_TYPE_MACHINES);
-    placeRow(l.lis, 5, IDC_LABEL_LIS_CBC_MACHINES, IDC_SET_LIS_CBC_MACHINES);
-    placeRow(l.lis, 6, IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES);
+    placeRow(l.lis, 4, IDC_LABEL_LIS_IRREGULAR_ANTIBODY_CODES, IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES);
+    placeRow(l.lis, 5, IDC_LABEL_LIS_DIRECT_ANTIGLOBULIN_CODES, IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES);
+    placeRow(l.lis, 6, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES, IDC_SET_LIS_BLOOD_TYPE_MACHINES);
+    placeRow(l.lis, 7, IDC_LABEL_LIS_CBC_MACHINES, IDC_SET_LIS_CBC_MACHINES);
+    placeRow(l.lis, 8, IDC_LABEL_LIS_BLOOD_EXCLUDE_MACHINES, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES);
 
     placeSection(IDC_TEXT_SECTION_REPORT, IDC_TEXT_REPORT_HINT, l.report);
     moveChild(hwnd, IDC_TEXT_REPORT_PRINTER,
@@ -946,6 +954,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             search::create_edit(hwnd, IDC_SET_LIS_HGB_CODES, 0, 0, S(10), S(24));
             createSettingLabel(hwnd, IDC_LABEL_LIS_PLT_CODES, L"PLT 代码");
             search::create_edit(hwnd, IDC_SET_LIS_PLT_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_IRREGULAR_ANTIBODY_CODES, L"不规则代码");
+            search::create_edit(hwnd, IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES, 0, 0, S(10), S(24));
+            createSettingLabel(hwnd, IDC_LABEL_LIS_DIRECT_ANTIGLOBULIN_CODES, L"直抗代码");
+            search::create_edit(hwnd, IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES, 0, 0, S(10), S(24));
             createSettingLabel(hwnd, IDC_LABEL_LIS_BLOOD_TYPE_MACHINES, L"血型仪器");
             search::create_edit(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES, 0, 0, S(10), S(24));
             createSettingLabel(hwnd, IDC_LABEL_LIS_CBC_MACHINES, L"血常规仪器");
@@ -995,6 +1007,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_RHD_CODES), app.lis.rhd_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_HGB_CODES), app.lis.hgb_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_PLT_CODES), app.lis.plt_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES), app.lis.irregular_antibody_codes.c_str());
+            SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES), app.lis.direct_antiglobulin_codes.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES), app.lis.blood_type_machines.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_CBC_MACHINES), app.lis.cbc_machines.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES), app.lis.blood_lis_exclude_machines.c_str());
@@ -1154,6 +1168,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->app.lis.rhd_codes = readEdit(hwnd, IDC_SET_LIS_RHD_CODES);
                 st->app.lis.hgb_codes = readEdit(hwnd, IDC_SET_LIS_HGB_CODES);
                 st->app.lis.plt_codes = readEdit(hwnd, IDC_SET_LIS_PLT_CODES);
+                st->app.lis.irregular_antibody_codes = readEdit(hwnd, IDC_SET_LIS_IRREGULAR_ANTIBODY_CODES);
+                st->app.lis.direct_antiglobulin_codes = readEdit(hwnd, IDC_SET_LIS_DIRECT_ANTIGLOBULIN_CODES);
                 st->app.lis.blood_type_machines = readEdit(hwnd, IDC_SET_LIS_BLOOD_TYPE_MACHINES);
                 st->app.lis.cbc_machines = readEdit(hwnd, IDC_SET_LIS_CBC_MACHINES);
                 st->app.lis.blood_lis_exclude_machines = readEdit(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES);

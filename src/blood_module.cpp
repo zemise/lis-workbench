@@ -204,6 +204,10 @@ struct LisState {
     std::wstring summaryBloodDate;
     std::wstring summaryCbcValue;
     std::wstring summaryCbcDate;
+    std::wstring summaryIrregularValue;
+    std::wstring summaryIrregularDate;
+    std::wstring summaryDirectAntiglobulinValue;
+    std::wstring summaryDirectAntiglobulinDate;
     std::string patient_no;
     std::string patient_name;
     std::string patient_age;
@@ -221,6 +225,8 @@ struct LisState {
     std::string lis_rhd_codes;
     std::string lis_hgb_codes;
     std::string lis_plt_codes;
+    std::string lis_irregular_antibody_codes;
+    std::string lis_direct_antiglobulin_codes;
     std::string lis_blood_type_machines;
     std::string lis_cbc_machines;
     std::string lis_blood_exclude_machines;
@@ -1189,6 +1195,10 @@ struct LisSummaryParts {
     std::wstring bloodDate;
     std::wstring cbcValue;
     std::wstring cbcDate;
+    std::wstring irregularValue;
+    std::wstring irregularDate;
+    std::wstring directAntiglobulinValue;
+    std::wstring directAntiglobulinDate;
 };
 
 std::wstring lisBloodValueText(const search::LisSummary& summary) {
@@ -1231,6 +1241,17 @@ std::wstring lisCbcValueText(const search::LisSummary& summary) {
     return text;
 }
 
+std::wstring lisSummaryValueText(const wchar_t* label, const std::string& value) {
+    std::wstring text = label ? label : L"";
+    const std::string trimmed = search::trim(value);
+    if (trimmed.empty()) {
+        text += L"未查询到";
+    } else {
+        text += search::utf8_to_wide(trimmed);
+    }
+    return text;
+}
+
 LisSummaryParts lisSummaryParts(const search::LisSummary& summary) {
     LisSummaryParts parts;
     parts.bloodValue = lisBloodValueText(summary);
@@ -1240,6 +1261,14 @@ LisSummaryParts lisSummaryParts(const search::LisSummary& summary) {
     parts.cbcValue = lisCbcValueText(summary);
     if (!search::trim(summary.cbc_date).empty()) {
         parts.cbcDate = search::utf8_to_wide(summary.cbc_date) + L"  ";
+    }
+    parts.irregularValue = lisSummaryValueText(L"不规则：", summary.irregular_antibody);
+    if (!search::trim(summary.irregular_antibody_date).empty()) {
+        parts.irregularDate = search::utf8_to_wide(summary.irregular_antibody_date) + L"  ";
+    }
+    parts.directAntiglobulinValue = lisSummaryValueText(L"直抗：", summary.direct_antiglobulin);
+    if (!search::trim(summary.direct_antiglobulin_date).empty()) {
+        parts.directAntiglobulinDate = search::utf8_to_wide(summary.direct_antiglobulin_date) + L"  ";
     }
     return parts;
 }
@@ -1257,6 +1286,10 @@ void setLisSummaryText(LisState* st, const LisSummaryParts& parts) {
     st->summaryBloodDate = parts.bloodDate;
     st->summaryCbcValue = parts.cbcValue;
     st->summaryCbcDate = parts.cbcDate;
+    st->summaryIrregularValue = parts.irregularValue;
+    st->summaryIrregularDate = parts.irregularDate;
+    st->summaryDirectAntiglobulinValue = parts.directAntiglobulinValue;
+    st->summaryDirectAntiglobulinDate = parts.directAntiglobulinDate;
     invalidateLisSummary(lisParentWindow(st), st);
 }
 
@@ -1266,6 +1299,10 @@ void setLisSummaryLoading(LisState* st) {
     st->summaryBloodDate.clear();
     st->summaryCbcValue.clear();
     st->summaryCbcDate.clear();
+    st->summaryIrregularValue.clear();
+    st->summaryIrregularDate.clear();
+    st->summaryDirectAntiglobulinValue.clear();
+    st->summaryDirectAntiglobulinDate.clear();
     invalidateLisSummary(lisParentWindow(st), st);
 }
 
@@ -1312,11 +1349,19 @@ void drawLisSummary(HWND hwnd, const LisState* st, HDC hdc) {
     RECT cbcRc = st->summaryRect;
     cbcRc.top += S(28);
     cbcRc.bottom = cbcRc.top + lineH;
+    RECT irregularRc = st->summaryRect;
+    irregularRc.top += S(54);
+    irregularRc.bottom = irregularRc.top + lineH;
+    RECT directAntiglobulinRc = st->summaryRect;
+    directAntiglobulinRc.top += S(80);
+    directAntiglobulinRc.bottom = directAntiglobulinRc.top + lineH;
 
     const int oldBk = SetBkMode(hdc, TRANSPARENT);
     const COLORREF oldText = SetTextColor(hdc, COLOR_BLACK);
     drawLisSummaryLine(hdc, st, st->summaryBloodDate, st->summaryBloodValue, bloodRc);
     drawLisSummaryLine(hdc, st, st->summaryCbcDate, st->summaryCbcValue, cbcRc);
+    drawLisSummaryLine(hdc, st, st->summaryIrregularDate, st->summaryIrregularValue, irregularRc);
+    drawLisSummaryLine(hdc, st, st->summaryDirectAntiglobulinDate, st->summaryDirectAntiglobulinValue, directAntiglobulinRc);
     SetTextColor(hdc, oldText);
     SetBkMode(hdc, oldBk);
 }
@@ -1429,6 +1474,8 @@ void runLisQuery(LisState* st, bool byName = false) {
     filters.lis_rhd_codes = st->lis_rhd_codes;
     filters.lis_hgb_codes = st->lis_hgb_codes;
     filters.lis_plt_codes = st->lis_plt_codes;
+    filters.lis_irregular_antibody_codes = st->lis_irregular_antibody_codes;
+    filters.lis_direct_antiglobulin_codes = st->lis_direct_antiglobulin_codes;
     filters.lis_blood_type_machines = st->lis_blood_type_machines;
     filters.lis_cbc_machines = st->lis_cbc_machines;
     filters.lis_blood_exclude_machines = st->lis_blood_exclude_machines;
@@ -1537,6 +1584,10 @@ void finishLisSummary(HWND hwnd, LisState* st, std::unique_ptr<LisSummaryResult>
         st->summaryBloodDate.clear();
         st->summaryCbcValue = L"血红蛋白、血小板摘要查询失败";
         st->summaryCbcDate.clear();
+        st->summaryIrregularValue = L"不规则摘要查询失败";
+        st->summaryIrregularDate.clear();
+        st->summaryDirectAntiglobulinValue = L"直抗摘要查询失败";
+        st->summaryDirectAntiglobulinDate.clear();
         invalidateLisSummary(hwnd, st);
     }
 }
@@ -1580,22 +1631,22 @@ void layoutLisWindow(HWND hwnd, LisState* st) {
     MoveWindow(st->queryButton, S(390), S(60), S(128), S(36), TRUE);
     MoveWindow(st->queryNameButton, S(530), S(60), S(128), S(36), TRUE);
     const int summaryX = S(676);
-    st->summaryRect = RECT{summaryX, S(48), (std::max)(summaryX, w - S(24)), S(108)};
+    st->summaryRect = RECT{summaryX, S(48), (std::max)(summaryX, w - S(24)), S(158)};
     InvalidateRect(hwnd, &st->summaryRect, TRUE);
 
-    const int top = S(132);
+    const int top = S(206);
     const int gap = S(8);
     const int leftW = (std::max)(S(420), w * 48 / 100);
     const int rightX = leftW + gap;
     const int listH = (std::max)(S(260), h - top - S(30));
     const int reportW = leftW - S(8);
     const int resultW = (std::max)(S(420), w - rightX - S(4));
-    MoveWindow(st->labelReports, S(6), S(108), S(150), S(24), TRUE);
-    MoveWindow(st->labelResults, rightX, S(108), S(150), S(24), TRUE);
+    MoveWindow(st->labelReports, S(6), S(182), S(150), S(24), TRUE);
+    MoveWindow(st->labelResults, rightX, S(182), S(150), S(24), TRUE);
     MoveWindow(st->reports, S(4), top, reportW, listH, TRUE);
     MoveWindow(st->results, rightX, top, resultW, listH, TRUE);
     MoveWindow(st->status, S(8), h - S(24), w - S(16), S(22), TRUE);
-    MoveWindow(st->identityHint, summaryX, S(104), (std::max)(S(260), w - summaryX - S(24)), S(24), TRUE);
+    MoveWindow(st->identityHint, summaryX, S(158), (std::max)(S(260), w - summaryX - S(24)), S(24), TRUE);
 
     const int reportFixedW = S(54 + 100 + 150 + 105 + 56 + 70 + 70);
     ListView_SetColumnWidth(st->reports, LisReportSampleNo, S(54));
@@ -1869,6 +1920,8 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
         st->lis_rhd_codes = search::wide_to_utf8(appSettings.lis.rhd_codes);
         st->lis_hgb_codes = search::wide_to_utf8(appSettings.lis.hgb_codes);
         st->lis_plt_codes = search::wide_to_utf8(appSettings.lis.plt_codes);
+        st->lis_irregular_antibody_codes = search::wide_to_utf8(appSettings.lis.irregular_antibody_codes);
+        st->lis_direct_antiglobulin_codes = search::wide_to_utf8(appSettings.lis.direct_antiglobulin_codes);
         st->lis_blood_type_machines = search::wide_to_utf8(appSettings.lis.blood_type_machines);
         st->lis_cbc_machines = search::wide_to_utf8(appSettings.lis.cbc_machines);
         st->lis_blood_exclude_machines = search::wide_to_utf8(appSettings.lis.blood_lis_exclude_machines);
@@ -1876,7 +1929,7 @@ void showLisWindow(HWND owner, const ModuleContext& ctx, const search::BloodRequ
         st->lis_cbc_machine_pairs = parseRoomMachinePairs(st->lis_cbc_machines);
     }
 
-    const RECT popupRect = centeredPopupRect(ownerRoot, 2240, 1440, 1100, 720);
+    const RECT popupRect = centeredPopupRect(ownerRoot, 2240, 1580, 1100, 790);
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, LIS_WND_CLASS, L"LIS检验信息",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,

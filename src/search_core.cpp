@@ -1548,16 +1548,19 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
     const std::string rhd_codes = sql_item_code_list(filters.lis_rhd_codes, "91964;11103");
     const std::string hgb_codes = sql_item_code_list(filters.lis_hgb_codes, "91672;90891;1013;92563;90943;89786");
     const std::string plt_codes = sql_item_code_list(filters.lis_plt_codes, "91678;90897;1019;92569;90949");
+    const std::string irregular_antibody_codes = sql_item_code_list(filters.lis_irregular_antibody_codes, "11106;91966");
+    const std::string direct_antiglobulin_codes = sql_item_code_list(filters.lis_direct_antiglobulin_codes, "11105;91965");
     const std::string blood_codes = abo_codes + "," + rhd_codes;
     const std::string cbc_codes = hgb_codes + "," + plt_codes;
     const std::string blood_machine_filter = sql_room_machine_filter(filters.lis_blood_type_machines, "r");
     const std::string cbc_machine_filter = sql_room_machine_filter(filters.lis_cbc_machines, "r");
 
-    // Single round-trip via OUTER APPLY: blood and CBC are independent subqueries
-    // from the same base tables, executed together to avoid two network round-trips.
+    // Single round-trip via OUTER APPLY: each summary branch is independent but
+    // shares the same patient/date filters to avoid repeated network round-trips.
     std::ostringstream sql;
     sql
-        << "SELECT b.abo,b.rhd,b.blood_type_date,c.hgb,c.plt,c.cbc_date"
+        << "SELECT b.abo,b.rhd,b.blood_type_date,c.hgb,c.plt,c.cbc_date,"
+        << "ia.irregular_antibody,ia.irregular_antibody_date,d.direct_antiglobulin,d.direct_antiglobulin_date"
         << " FROM (VALUES(1)) AS _(d)"
         << " OUTER APPLY ("
         << "SELECT TOP 1"
@@ -1596,9 +1599,35 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
         << " AND MAX(CASE WHEN e.ITEM_CODE IN (" << plt_codes << ")"
         << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL THEN 1 ELSE 0 END)=1"
         << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC"
-        << ") c";
+        << ") c"
+        << " OUTER APPLY ("
+        << "SELECT TOP 1"
+        << " isnull(nullif(LTRIM(RTRIM(e.RESULT)),''),'') AS irregular_antibody,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS irregular_antibody_date"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL"
+        << " AND e.ITEM_CODE IN (" << irregular_antibody_codes << ")";
+    add_lis_patient_filters(sql, filters, "r");
+    sql
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC,e.ID DESC"
+        << ") ia"
+        << " OUTER APPLY ("
+        << "SELECT TOP 1"
+        << " isnull(nullif(LTRIM(RTRIM(e.RESULT)),''),'') AS direct_antiglobulin,"
+        << " isnull(CONVERT(varchar(10),r.CHK_DATE,120),'') AS direct_antiglobulin_date"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND nullif(LTRIM(RTRIM(e.RESULT)),'') IS NOT NULL"
+        << " AND e.ITEM_CODE IN (" << direct_antiglobulin_codes << ")";
+    add_lis_patient_filters(sql, filters, "r");
+    sql
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC,e.ID DESC"
+        << ") d";
 
-    std::vector<std::string> cols(6);
+    std::vector<std::string> cols(10);
     if (!exec_one(sql, cols)) {
         return false;
     }
@@ -1608,6 +1637,10 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
     summary.hgb = cols[3];
     summary.plt = cols[4];
     summary.cbc_date = cols[5];
+    summary.irregular_antibody = cols[6];
+    summary.irregular_antibody_date = cols[7];
+    summary.direct_antiglobulin = cols[8];
+    summary.direct_antiglobulin_date = cols[9];
 
     error.clear();
     return true;
