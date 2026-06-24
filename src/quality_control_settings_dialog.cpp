@@ -117,6 +117,8 @@ struct State {
     int currentLotId = 0;
 };
 
+void loadForm(State* st, int index);
+
 HFONT createDerivedFont(HFONT base, int pointDelta, LONG weight) {
     LOGFONTW lf{};
     if (!base || GetObjectW(base, sizeof(lf), &lf) != sizeof(lf)) {
@@ -266,6 +268,7 @@ void populateList(State* st) {
         setCell(st->list, i, 3, row.qc_name);
         setCell(st->list, i, 4, row.level);
         setCell(st->list, i, 5, row.item_code);
+        setCell(st->list, i, 6, row.item_name);
         std::vector<qc::Lot> lots;
         std::string lotError;
         if (qc::load_lots_for_config(row.id, lots, lotError) && !lots.empty()) {
@@ -273,11 +276,46 @@ void populateList(State* st) {
                 return lot.enabled && search::trim(lot.valid_to).empty();
             });
             const qc::Lot& lot = found == lots.end() ? lots.front() : *found;
-            setCell(st->list, i, 6, lot.lot_no);
-            setCell(st->list, i, 7, lot.valid_from);
-            setCell(st->list, i, 8, lot.valid_to.empty() ? "当前" : lot.valid_to);
+            setCell(st->list, i, 7, lot.lot_no);
+            setCell(st->list, i, 8, lot.valid_from);
+            setCell(st->list, i, 9, lot.valid_to.empty() ? "当前" : lot.valid_to);
         }
     }
+}
+
+void selectListRow(State* st, int index) {
+    if (!st || !st->list || index < 0 || index >= static_cast<int>(st->rows.size())) return;
+    ListView_SetItemState(st->list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(st->list, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(st->list, index, FALSE);
+    loadForm(st, index);
+}
+
+int findRowIndex(const State* st, const qc::Config& row) {
+    if (!st) return -1;
+    const std::string mach = search::trim(row.mach_code);
+    const std::string sample = search::trim(row.sample_no);
+    const std::string item = search::trim(row.item_code);
+    const std::string level = search::trim(row.level);
+    for (int i = 0; i < static_cast<int>(st->rows.size()); ++i) {
+        const auto& current = st->rows[static_cast<size_t>(i)];
+        if (row.id > 0 && current.id == row.id) return i;
+        if (search::trim(current.mach_code) == mach &&
+            search::trim(current.sample_no) == sample &&
+            search::trim(current.item_code) == item &&
+            search::trim(current.level) == level) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int findRowIndexById(const State* st, int id) {
+    if (!st || id <= 0) return -1;
+    for (int i = 0; i < static_cast<int>(st->rows.size()); ++i) {
+        if (st->rows[static_cast<size_t>(i)].id == id) return i;
+    }
+    return -1;
 }
 
 void clearLotForm(State* st) {
@@ -287,6 +325,8 @@ void clearLotForm(State* st) {
     SetWindowTextW(st->lotNo, L"");
     setDate(st->validFrom, "", true);
     setDate(st->validTo, "", true);
+    SetWindowTextW(st->targetMean, L"");
+    SetWindowTextW(st->targetSd, L"");
     SetWindowTextW(st->lotNote, L"");
 }
 
@@ -340,12 +380,26 @@ void loadLatestLot(State* st) {
     if (found == st->lots.end()) found = st->lots.begin();
     st->currentLotId = found->id;
     setText(st->lotNo, found->lot_no);
-    setText(st->targetMean, found->target_mean);
-    setText(st->targetSd, found->target_sd);
     setDate(st->validFrom, found->valid_from, true);
     setDate(st->validTo, found->valid_to, true);
     setText(st->lotNote, found->note);
     if (dateText(st->readDate).empty()) setDate(st->readDate, found->valid_from.empty() ? todayDate() : found->valid_from, false);
+}
+
+void loadCurrentLotTarget(State* st) {
+    if (!st || st->currentLotId <= 0 || st->currentId <= 0) return;
+    std::vector<qc::LotItemTarget> targets;
+    std::string error;
+    if (!qc::load_lot_item_targets(st->currentLotId, targets, error)) {
+        MessageBoxW(st->list, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+        return;
+    }
+    auto found = std::find_if(targets.begin(), targets.end(), [st](const qc::LotItemTarget& target) {
+        return target.sample_item_id == st->currentId;
+    });
+    if (found == targets.end()) return;
+    setText(st->targetMean, found->target_mean);
+    setText(st->targetSd, found->target_sd);
 }
 
 void loadForm(State* st, int index) {
@@ -361,9 +415,13 @@ void loadForm(State* st, int index) {
     setText(st->level, row.level);
     setText(st->itemCode, row.item_code);
     setText(st->itemName, row.item_name);
-    setText(st->targetMean, row.target_mean);
-    setText(st->targetSd, row.target_sd);
     loadLatestLot(st);
+    if (!row.target_mean.empty() || !row.target_sd.empty()) {
+        setText(st->targetMean, row.target_mean);
+        setText(st->targetSd, row.target_sd);
+    } else {
+        loadCurrentLotTarget(st);
+    }
 }
 
 bool collectForm(State* st, qc::Config& row) {
@@ -396,10 +454,11 @@ bool collectLotForm(State* st, int configId, qc::Lot& row, bool& hasLot) {
     row.valid_from = dateText(st->validFrom);
     row.valid_to = dateText(st->validTo);
     row.note = search::trim(textUtf8(st->lotNote));
-    hasLot = !row.lot_no.empty() || !row.valid_from.empty() || !row.valid_to.empty();
+    const bool hasTarget = !row.target_mean.empty() || !row.target_sd.empty();
+    hasLot = !row.lot_no.empty() || !row.valid_from.empty() || !row.valid_to.empty() || hasTarget;
     if (!hasLot) return true;
     if (row.lot_no.empty() || row.valid_from.empty()) {
-        MessageBoxW(st->list, L"维护批号时，批号和开始日期不能为空。", L"质控品设置", MB_ICONWARNING);
+        MessageBoxW(st->list, L"维护批号或靶值时，质控批号和开始日期不能为空。", L"质控品设置", MB_ICONWARNING);
         return false;
     }
     auto found = std::find_if(st->lots.begin(), st->lots.end(), [st](const qc::Lot& lot) {
@@ -418,11 +477,35 @@ bool collectSampleConfigForm(State* st, qc::SampleConfig& row) {
     row.mach_code = search::trim(textUtf8(st->machCode));
     row.mach_name = search::trim(textUtf8(st->machName));
     row.sample_no = search::trim(textUtf8(st->sampleNo));
-    row.qc_name = search::trim(textUtf8(st->qcName));
-    row.level = search::trim(textUtf8(st->level));
     if (row.mach_code.empty() || row.sample_no.empty()) {
         MessageBoxW(st->list, L"仪器代码和样本号不能为空。", L"质控品设置", MB_ICONWARNING);
         return false;
+    }
+    return true;
+}
+
+bool collectReadItemsBatchLot(State* st, qc::Lot& row, bool& hasLot) {
+    row.id = st->currentLotId;
+    row.enabled = true;
+    row.lot_no = search::trim(textUtf8(st->lotNo));
+    row.target_mean = search::trim(textUtf8(st->targetMean));
+    row.target_sd = search::trim(textUtf8(st->targetSd));
+    row.valid_from = dateText(st->validFrom);
+    row.valid_to = dateText(st->validTo);
+    row.note = search::trim(textUtf8(st->lotNote));
+    const bool hasTarget = !row.target_mean.empty() || !row.target_sd.empty();
+    hasLot = !row.lot_no.empty() || !row.valid_from.empty() || !row.valid_to.empty() || !row.note.empty() || hasTarget;
+    if (!hasLot) return true;
+    if (row.lot_no.empty() || row.valid_from.empty()) {
+        MessageBoxW(st->list, L"批量写入批号、靶值或备注时，质控批号和开始日期不能为空。", L"质控品设置", MB_ICONWARNING);
+        return false;
+    }
+    auto found = std::find_if(st->lots.begin(), st->lots.end(), [st](const qc::Lot& lot) {
+        return lot.id == st->currentLotId;
+    });
+    if (found != st->lots.end() &&
+        (search::trim(found->lot_no) != row.lot_no || search::trim(found->valid_from) != row.valid_from)) {
+        row.id = 0;
     }
     return true;
 }
@@ -431,6 +514,11 @@ void readItemsFromLis(HWND hwnd, State* st) {
     if (!st) return;
     qc::SampleConfig sample;
     if (!collectSampleConfigForm(st, sample)) return;
+    const std::string batchQcName = search::trim(textUtf8(st->qcName));
+    const std::string batchLevel = search::trim(textUtf8(st->level));
+    qc::Lot batchLot;
+    bool hasBatchLot = false;
+    if (!collectReadItemsBatchLot(st, batchLot, hasBatchLot)) return;
     const std::string date = dateText(st->readDate);
     if (date.empty()) {
         MessageBoxW(hwnd, L"读取日期不能为空。", L"质控品设置", MB_ICONWARNING);
@@ -463,10 +551,21 @@ void readItemsFromLis(HWND hwnd, State* st) {
         row.item_name = item.item_name;
         row.item_eng = item.item_eng;
         row.unit = item.unit;
+        row.qc_name = batchQcName;
+        row.level = batchLevel;
         row.sort_order = order++;
         if (!qc::save_sample_item(row, error)) {
             MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
             return;
+        }
+        if (hasBatchLot) {
+            qc::Lot itemLot = batchLot;
+            itemLot.config_id = row.id;
+            itemLot.sample_config_id = 0;
+            if (!qc::save_lot(itemLot, error)) {
+                MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"质控品设置", MB_ICONERROR);
+                return;
+            }
         }
         if (!filledFirstItem) {
             setText(st->itemCode, row.item_code);
@@ -479,9 +578,7 @@ void readItemsFromLis(HWND hwnd, State* st) {
     if (!st->rows.empty()) {
         for (int i = 0; i < static_cast<int>(st->rows.size()); ++i) {
             if (st->rows[static_cast<size_t>(i)].sample_config_id == sample.id) {
-                ListView_SetItemState(st->list, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(st->list, i, FALSE);
-                loadForm(st, i);
+                selectListRow(st, i);
                 break;
             }
         }
@@ -553,9 +650,17 @@ void layout(HWND hwnd, State* st) {
         placeEmbedded(embeddedLeftX, 4, st->sampleNoLabel, st->sampleNo);
         placeEmbedded(embeddedLeftX, 5, st->qcNameLabel, st->qcName);
         placeEmbedded(embeddedLeftX, 6, st->levelLabel, st->level);
-        placeEmbedded(embeddedLeftX, 7, st->readDateLabel, st->readDate);
-        MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS), embeddedLeftX + embeddedLabelW + S(10),
-                   innerPad + 8 * embeddedRowH - S(1), S(98), embeddedEditH + S(2), TRUE);
+        {
+            const int y = innerPad + 7 * embeddedRowH;
+            const int buttonW = S(88);
+            const int buttonGap = S(8);
+            const int dateW = std::max(S(110), embeddedEditW - buttonW - buttonGap);
+            MoveWindow(st->readDateLabel, embeddedLeftX, y, embeddedLabelW, embeddedEditH, TRUE);
+            MoveWindow(st->readDate, embeddedLeftX + embeddedLabelW + S(10), y, dateW, embeddedEditH, TRUE);
+            MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS),
+                       embeddedLeftX + embeddedLabelW + S(10) + dateW + buttonGap,
+                       y - S(1), buttonW, embeddedEditH + S(2), TRUE);
+        }
         placeEmbedded(embeddedRightX, 0, st->itemCodeLabel, st->itemCode);
         placeEmbedded(embeddedRightX, 1, st->itemNameLabel, st->itemName);
         placeEmbedded(embeddedRightX, 2, st->lotNoLabel, st->lotNo);
@@ -605,9 +710,17 @@ void layout(HWND hwnd, State* st) {
     place(formLeftX, 4, st->sampleNoLabel, st->sampleNo);
     place(formLeftX, 5, st->qcNameLabel, st->qcName);
     place(formLeftX, 6, st->levelLabel, st->level);
-    place(formLeftX, 7, st->readDateLabel, st->readDate);
-    MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS), formLeftX + labelW + S(10),
-               formCard.top + S(74) + 8 * rowH - S(1), S(98), editH + S(2), TRUE);
+    {
+        const int y = formCard.top + S(74) + 7 * rowH;
+        const int buttonW = S(88);
+        const int buttonGap = S(8);
+        const int dateW = std::max(S(110), formEditW - buttonW - buttonGap);
+        MoveWindow(st->readDateLabel, formLeftX, y, labelW, editH, TRUE);
+        MoveWindow(st->readDate, formLeftX + labelW + S(10), y, dateW, editH, TRUE);
+        MoveWindow(GetDlgItem(hwnd, IDC_READ_ITEMS),
+                   formLeftX + labelW + S(10) + dateW + buttonGap,
+                   y - S(1), buttonW, editH + S(2), TRUE);
+    }
     place(formRightX, 0, st->itemCodeLabel, st->itemCode);
     place(formRightX, 1, st->itemNameLabel, st->itemName);
     place(formRightX, 2, st->lotNoLabel, st->lotNo);
@@ -643,7 +756,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->formTitle = text(hwnd, IDC_FORM_TITLE, L"配置明细");
             st->formHint = text(hwnd, IDC_FORM_HINT, L"可手工录入，也可从 LIS 检验仪器列表选择。");
             st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                       WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+                                       WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                        0, 0, 0, 0, hwnd, win32_control_id(IDC_LIST), GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(st->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             addColumn(st->list, 0, L"启用", 54);
@@ -651,10 +764,11 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             addColumn(st->list, 2, L"样本号", 90);
             addColumn(st->list, 3, L"质控名称", 140);
             addColumn(st->list, 4, L"水平", 70);
-            addColumn(st->list, 5, L"项目", 90);
-            addColumn(st->list, 6, L"批号", 100);
-            addColumn(st->list, 7, L"开始", 90);
-            addColumn(st->list, 8, L"结束", 90);
+            addColumn(st->list, 5, L"项目代码", 90);
+            addColumn(st->list, 6, L"项目名称", 150);
+            addColumn(st->list, 7, L"批号", 100);
+            addColumn(st->list, 8, L"开始", 90);
+            addColumn(st->list, 9, L"结束", 90);
             st->enabled = CreateWindowExW(0, L"BUTTON", L"启用", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                                           0, 0, 0, 0, hwnd, win32_control_id(IDC_ENABLED), GetModuleHandleW(nullptr), nullptr);
             SendMessageW(st->enabled, BM_SETCHECK, BST_CHECKED, 0);
@@ -772,6 +886,30 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
+            if (st && nm->idFrom == IDC_LIST && nm->code == NM_CUSTOMDRAW) {
+                auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (ListView_GetItemState(st->list, row, LVIS_SELECTED) & LVIS_SELECTED) {
+                        cd->nmcd.uItemState &= ~CDIS_SELECTED;
+                        cd->clrText = GetSysColor(COLOR_HIGHLIGHTTEXT);
+                        cd->clrTextBk = GetSysColor(COLOR_HIGHLIGHT);
+                        return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT;
+                    }
+                    return CDRF_DODEFAULT;
+                }
+                if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    if (ListView_GetItemState(st->list, row, LVIS_SELECTED) & LVIS_SELECTED) {
+                        cd->nmcd.uItemState &= ~CDIS_SELECTED;
+                        cd->clrText = GetSysColor(COLOR_HIGHLIGHTTEXT);
+                        cd->clrTextBk = GetSysColor(COLOR_HIGHLIGHT);
+                        return CDRF_NEWFONT;
+                    }
+                    return CDRF_DODEFAULT;
+                }
+            }
             if (st && nm->idFrom == IDC_LIST && nm->code == LVN_ITEMCHANGED) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED)) {
@@ -801,6 +939,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == IDC_SAVE) {
                 qc::Config row;
                 if (!collectForm(st, row)) return 0;
+                const int originalId = row.id;
                 qc::Lot lot;
                 bool hasLot = false;
                 if (!collectLotForm(st, row.id, lot, hasLot)) return 0;
@@ -815,7 +954,13 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 populateList(st);
-                clearForm(st);
+                int savedIndex = findRowIndexById(st, row.id > 0 ? row.id : originalId);
+                if (savedIndex < 0) savedIndex = findRowIndex(st, row);
+                if (savedIndex >= 0) {
+                    selectListRow(st, savedIndex);
+                } else {
+                    clearForm(st);
+                }
                 return 0;
             }
             if (LOWORD(wp) == IDC_DELETE) {

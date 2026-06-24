@@ -36,6 +36,7 @@ namespace {
 constexpr const wchar_t* WND_CLASS = L"QualityControlModuleChild";
 constexpr const wchar_t* CHART_WND_CLASS = L"QualityControlChartWindow";
 constexpr const wchar_t* CARD_WND_CLASS = L"QualityControlCardPane";
+constexpr const wchar_t* IMPORT_WND_CLASS = L"QualityControlImportDialog";
 constexpr const wchar_t* WINDOW_TITLE = L"质控分析";
 constexpr const wchar_t* PROP_STATE = L"QualityControlSt";
 constexpr const wchar_t* PROP_CHART = L"QualityControlChartData";
@@ -59,6 +60,11 @@ enum ControlId {
     IDC_STATUS_FILTER = 6815,
     IDC_SIDE_LIST = 6816,
     IDC_SIDE_DETAILS = 6817,
+    IDC_IMPORT_QC = 6818,
+    IDC_IMPORT_START_DATE = 6821,
+    IDC_IMPORT_END_DATE = 6822,
+    IDC_IMPORT_OK = 6823,
+    IDC_IMPORT_CANCEL = 6824,
 };
 
 struct GroupRow {
@@ -74,11 +80,14 @@ struct GroupRow {
     int count = 0;
     std::string latest_time;
     std::string latest_result;
+    std::string lot_no;
     int numeric_count = 0;
     double sum = 0.0;
     double sum_square = 0.0;
     double qc_mean = 0.0;
     double qc_sd = 0.0;
+    bool has_configured_mean = false;
+    bool has_configured_sd = false;
     bool has_configured_stats = false;
     int evaluated_count = 0;
     int in_control_count = 0;
@@ -107,6 +116,10 @@ struct CardRow {
     std::string latest_time;
     std::string latest_result;
     std::string tester_name;
+    std::string lot_no;
+    double target_mean = 0.0;
+    bool has_target_mean = false;
+    bool target_uses_mean = false;
     int count = 0;
     int warning_count = 0;
     int out_of_control_count = 0;
@@ -131,6 +144,7 @@ struct State {
     HWND statusFilterLabel = nullptr;
     HWND statusFilter = nullptr;
     HWND queryButton = nullptr;
+    HWND refreshButton = nullptr;
     HWND chartButton = nullptr;
     HWND exportButton = nullptr;
     HWND groups = nullptr;
@@ -162,6 +176,21 @@ struct QueryDone {
     std::vector<qc::Result> rows;
     int config_count = 0;
     int elapsed_ms = 0;
+    bool from_cache = false;
+    bool imported = false;
+    std::string cached_at;
+    std::string import_start_date;
+    std::string import_end_date;
+};
+
+struct ImportDialogState {
+    HWND startDate = nullptr;
+    HWND endDate = nullptr;
+    HFONT font = nullptr;
+    bool done = false;
+    bool accepted = false;
+    std::string start;
+    std::string end;
 };
 
 struct ChartWindowData {
@@ -237,6 +266,8 @@ int comboSelection(HWND hwnd) {
     return static_cast<int>(SendMessageW(hwnd, CB_GETCURSEL, 0, 0));
 }
 
+qc::Query buildQuery(State* st);
+
 void setTodayRange(State* st) {
     SYSTEMTIME end{};
     GetLocalTime(&end);
@@ -252,6 +283,152 @@ void setTodayRange(State* st) {
     FileTimeToSystemTime(&ft, &start);
     DateTime_SetSystemtime(st->startDate, GDT_VALID, &start);
     DateTime_SetSystemtime(st->endDate, GDT_VALID, &end);
+}
+
+LRESULT CALLBACK importDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* st = reinterpret_cast<ImportDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            st = reinterpret_cast<ImportDialogState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+            st->startDate = datePicker(hwnd, IDC_IMPORT_START_DATE);
+            st->endDate = datePicker(hwnd, IDC_IMPORT_END_DATE);
+            HWND startLabel = label(hwnd, L"开始日期");
+            HWND endLabel = label(hwnd, L"结束日期");
+            HWND ok = button(hwnd, IDC_IMPORT_OK, L"导入");
+            HWND cancel = button(hwnd, IDC_IMPORT_CANCEL, L"取消");
+            const int pad = S(hwnd, 18);
+            const int labelW = S(hwnd, 74);
+            const int rowH = S(hwnd, 26);
+            const int gap = S(hwnd, 10);
+            const int inputX = pad + labelW + S(hwnd, 12);
+            const int inputW = S(hwnd, 166);
+            const int firstY = S(hwnd, 22);
+            const int secondY = firstY + rowH + gap;
+            MoveWindow(startLabel, pad, firstY, labelW, rowH, TRUE);
+            MoveWindow(st->startDate, inputX, firstY, inputW, rowH, TRUE);
+            MoveWindow(endLabel, pad, secondY, labelW, rowH, TRUE);
+            MoveWindow(st->endDate, inputX, secondY, inputW, rowH, TRUE);
+            const int buttonW = S(hwnd, 78);
+            const int buttonH = S(hwnd, 30);
+            const int buttonGap = S(hwnd, 10);
+            const int buttonY = secondY + rowH + S(hwnd, 18);
+            const int cancelX = inputX + inputW - buttonW;
+            const int okX = cancelX - buttonGap - buttonW;
+            MoveWindow(ok, okX, buttonY, buttonW, buttonH, TRUE);
+            MoveWindow(cancel, cancelX, buttonY, buttonW, buttonH, TRUE);
+            SYSTEMTIME today{};
+            GetLocalTime(&today);
+            DateTime_SetSystemtime(st->startDate, GDT_VALID, &today);
+            DateTime_SetSystemtime(st->endDate, GDT_VALID, &today);
+            if (st->font) {
+                EnumChildWindows(hwnd, [](HWND child, LPARAM font) -> BOOL {
+                    SendMessageW(child, WM_SETFONT, font, TRUE);
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(st->font));
+            }
+            return 0;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wp) == IDC_IMPORT_OK) {
+                st->start = dateText(st->startDate);
+                st->end = dateText(st->endDate);
+                if (st->start.empty() || st->end.empty() || st->end < st->start) {
+                    MessageBoxW(hwnd, L"请选择有效的导入日期范围。", WINDOW_TITLE, MB_ICONWARNING);
+                    return 0;
+                }
+                st->accepted = true;
+                st->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_IMPORT_CANCEL) {
+                st->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            if (st) st->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ensureImportDialogClass() {
+    static bool registered = false;
+    if (registered) return;
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = importDialogProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = IMPORT_WND_CLASS;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    RegisterClassW(&wc);
+    registered = true;
+}
+
+RECT importDialogRect(HWND owner, HWND anchor, int w, int h) {
+    RECT anchorRc{};
+    if (!anchor || !GetWindowRect(anchor, &anchorRc)) {
+        GetWindowRect(owner, &anchorRc);
+    }
+    RECT work{};
+    HMONITOR monitor = MonitorFromRect(&anchorRc, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        work = mi.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    }
+    const int margin = S(owner, 8);
+    int x = anchorRc.right - w;
+    int y = anchorRc.bottom + margin;
+    if (y + h > work.bottom - margin) {
+        y = anchorRc.top - h - margin;
+    }
+    const int minX = static_cast<int>(work.left) + margin;
+    const int maxX = static_cast<int>(work.right) - margin - w;
+    const int minY = static_cast<int>(work.top) + margin;
+    const int maxY = static_cast<int>(work.bottom) - margin - h;
+    x = std::max(minX, std::min(x, maxX));
+    y = std::max(minY, std::min(y, maxY));
+    return RECT{x, y, x + w, y + h};
+}
+
+bool showImportRangeDialog(HWND owner, State* moduleState, qc::Query& query) {
+    ensureImportDialogClass();
+    ImportDialogState dialog{};
+    dialog.font = moduleState ? moduleState->ctx.uiFont : nullptr;
+    const int w = S(owner, 310);
+    const int h = S(owner, 192);
+    const RECT rc = importDialogRect(owner, moduleState ? moduleState->refreshButton : nullptr, w, h);
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, IMPORT_WND_CLASS, L"导入质控",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                               rc.left, rc.top, w, h, owner, nullptr, GetModuleHandleW(nullptr), &dialog);
+    if (!dlg) return false;
+    EnableWindow(owner, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    UpdateWindow(dlg);
+    MSG msg{};
+    while (!dialog.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetActiveWindow(owner);
+    if (!dialog.accepted) return false;
+    query = buildQuery(moduleState);
+    query.start_date = dialog.start;
+    query.end_date = dialog.end;
+    query.level.clear();
+    query.item_code.clear();
+    return true;
 }
 
 void setStatus(State* st, const std::wstring& text) {
@@ -394,6 +571,12 @@ std::string cardStatusText(const CardRow& card) {
     return "在控";
 }
 
+std::string cardTargetText(const CardRow& card) {
+    if (card.has_target_mean) return formatNumber(card.target_mean);
+    if (card.target_uses_mean) return "均值 " + formatNumber(card.target_mean);
+    return "均值";
+}
+
 std::string cardTitleText(const CardRow& card) {
     return itemTitleText(card.item_eng, card.item_name, card.item_code);
 }
@@ -417,8 +600,13 @@ bool rowInSelectedQcDate(State* st, const qc::Result& row) {
     if (date.empty()) return true;
     return datePartEquals(row.effective_time, date) ||
            datePartEquals(row.inspect_date, date) ||
-           datePartEquals(row.report_date, date) ||
-           datePartEquals(row.report_time, date);
+           datePartEquals(row.report_date, date);
+}
+
+std::string pointDisplayTime(const qc::Result& row) {
+    const std::string reportTime = search::trim(row.report_time);
+    if (!reportTime.empty()) return reportTime;
+    return row.effective_time;
 }
 
 std::string levelStatusText(const CardLevelStatus& level) {
@@ -474,20 +662,29 @@ bool configuredQcStats(const qc::Result& row, double& mean, double& sd) {
     return parseNumber(row.target_mean, mean) && parseNumber(row.target_sd, sd) && sd > 0.0;
 }
 
+bool configuredTargetMean(const qc::Result& row, double& mean) {
+    return parseNumber(row.target_mean, mean);
+}
+
+bool configuredTargetSd(const qc::Result& row, double& sd) {
+    return parseNumber(row.target_sd, sd) && sd > 0.0;
+}
+
 double groupQcMean(const GroupRow& group) {
-    return group.has_configured_stats ? group.qc_mean : groupMean(group);
+    return group.has_configured_mean ? group.qc_mean : groupMean(group);
 }
 
 double groupQcSd(const GroupRow& group) {
-    return group.has_configured_stats ? group.qc_sd : groupSd(group);
+    return group.has_configured_sd ? group.qc_sd : groupSd(group);
 }
 
 bool groupHasQcStats(const GroupRow& group) {
+    if (group.has_configured_mean && groupQcSd(group) > 0.0) return true;
     return group.has_configured_stats || (group.numeric_count > 1 && groupSd(group) > 0.0);
 }
 
 std::string groupStatsSourceText(const GroupRow& group) {
-    if (group.has_configured_stats) return "靶值";
+    if (group.has_configured_mean) return "靶值";
     if (groupHasQcStats(group)) return "本期";
     return "";
 }
@@ -514,8 +711,9 @@ void evaluateWestgardRules(State* st) {
         if (!configuredQcStats(row, mean, sd)) {
             const auto found = groupsByKey.find(rowGroupKey(row));
             if (found == groupsByKey.end()) continue;
-            mean = groupMean(*found->second);
-            sd = groupSd(*found->second);
+            if (!groupHasQcStats(*found->second)) continue;
+            mean = groupQcMean(*found->second);
+            sd = groupQcSd(*found->second);
         }
         if (sd <= 0.0) continue;
 
@@ -548,7 +746,9 @@ void evaluateWestgardRules(State* st) {
         std::sort(indexes.begin(), indexes.end(), [st](size_t lhs, size_t rhs) {
             const auto& a = st->rows[lhs];
             const auto& b = st->rows[rhs];
-            if (a.effective_time != b.effective_time) return a.effective_time < b.effective_time;
+            const std::string aTime = pointDisplayTime(a);
+            const std::string bTime = pointDisplayTime(b);
+            if (aTime != bTime) return aTime < bTime;
             if (a.source_rep_no != b.source_rep_no) return a.source_rep_no < b.source_rep_no;
             return a.source_entry_key < b.source_entry_key;
         });
@@ -672,6 +872,7 @@ const qc::ChartPoint* findChartPoint(const ChartWindowData* data, int index, con
 
 void populateChartList(ChartWindowData* data) {
     if (!data || !data->list) return;
+    SendMessageW(data->list, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(data->list);
     int row = 0;
     for (const auto& series : data->series) {
@@ -693,6 +894,8 @@ void populateChartList(ChartWindowData* data) {
             ++row;
         }
     }
+    SendMessageW(data->list, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(data->list, nullptr, TRUE);
 }
 
 int hitChartPoint(const ChartWindowData* data, int x, int y) {
@@ -967,8 +1170,9 @@ void buildGroups(State* st, bool applyStatusFilter = true) {
         }
         auto& group = st->groupsRows[found->second];
         ++group.count;
-        if (row.effective_time >= group.latest_time) {
-            group.latest_time = row.effective_time;
+        const std::string displayTime = pointDisplayTime(row);
+        if (displayTime >= group.latest_time) {
+            group.latest_time = displayTime;
             group.latest_result = row.result_text;
         }
         if (row.has_numeric_value) {
@@ -977,11 +1181,19 @@ void buildGroups(State* st, bool applyStatusFilter = true) {
             group.sum_square += row.result_value * row.result_value;
         }
         double configuredMean = 0.0;
-        double configuredSd = 0.0;
-        if (!group.has_configured_stats && configuredQcStats(row, configuredMean, configuredSd)) {
+        if (!group.has_configured_mean && configuredTargetMean(row, configuredMean)) {
             group.qc_mean = configuredMean;
+            group.has_configured_mean = true;
+            group.has_configured_stats = group.has_configured_mean && group.has_configured_sd;
+        }
+        double configuredSd = 0.0;
+        if (!group.has_configured_sd && configuredTargetSd(row, configuredSd)) {
             group.qc_sd = configuredSd;
-            group.has_configured_stats = true;
+            group.has_configured_sd = true;
+            group.has_configured_stats = group.has_configured_mean && group.has_configured_sd;
+        }
+        if (search::trim(group.lot_no).empty() && !search::trim(row.lot_no).empty()) {
+            group.lot_no = row.lot_no;
         }
         if (!row.qc_status.empty()) {
             ++group.evaluated_count;
@@ -1050,8 +1262,9 @@ void buildCards(State* st) {
         } else if (row.qc_status == "warning") {
             ++card.warning_count;
         }
-        if (row.effective_time >= card.latest_time) {
-            card.latest_time = row.effective_time;
+        const std::string displayTime = pointDisplayTime(row);
+        if (displayTime >= card.latest_time) {
+            card.latest_time = displayTime;
             card.latest_result = row.result_text;
             card.tester_name = row.tester_name;
         }
@@ -1081,6 +1294,14 @@ void buildCards(State* st) {
         for (auto& level : card.levels) {
             level.status = levelStatusText(level);
         }
+        if (card.representative_group >= 0 &&
+            card.representative_group < static_cast<int>(st->groupsRows.size())) {
+            const auto& group = st->groupsRows[static_cast<size_t>(card.representative_group)];
+            card.lot_no = group.lot_no;
+            card.target_mean = groupQcMean(group);
+            card.has_target_mean = group.has_configured_mean;
+            card.target_uses_mean = !group.has_configured_mean && groupHasQcStats(group);
+        }
         std::sort(card.levels.begin(), card.levels.end(), [](const CardLevelStatus& a, const CardLevelStatus& b) {
             const int ar = levelSortRank(a.level);
             const int br = levelSortRank(b.level);
@@ -1092,6 +1313,7 @@ void buildCards(State* st) {
 }
 
 void populateGroups(State* st) {
+    SendMessageW(st->groups, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->groups);
     for (int i = 0; i < static_cast<int>(st->groupsRows.size()); ++i) {
         const auto& row = st->groupsRows[static_cast<size_t>(i)];
@@ -1115,6 +1337,8 @@ void populateGroups(State* st) {
         setCell(st->groups, i, 10, row.warning_count > 0 ? std::to_string(row.warning_count) : "");
         setCell(st->groups, i, 11, row.latest_time);
     }
+    SendMessageW(st->groups, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(st->groups, nullptr, TRUE);
 }
 
 void updateSummary(State* st) {
@@ -1296,11 +1520,15 @@ void drawQualityCard(HDC dc, HWND hwnd, State* st, int index, RECT rc) {
     drawCardText(dc, title, titleText, DT_LEFT | DT_TOP | DT_END_ELLIPSIS | DT_WORDBREAK, headerTextColor);
 
     const COLORREF bodyText = RGB(42, 52, 60);
-    const std::string latest = card.latest_result.empty() ? "-" : card.latest_result;
-    RECT result{inner.left + pad, inner.top + S(hwnd, 50), inner.right - S(hwnd, 76), inner.top + S(hwnd, 72)};
-    drawCardText(dc, result, L"今日结果: " + search::utf8_to_wide(latest), DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+    RECT lot{inner.left + pad, inner.top + S(hwnd, 50), inner.right - S(hwnd, 76), inner.top + S(hwnd, 72)};
+    drawCardText(dc, lot, L"批号: " + search::utf8_to_wide(card.lot_no),
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
 
-    RECT tester{inner.left + pad, inner.top + S(hwnd, 74), inner.right - S(hwnd, 76), inner.top + S(hwnd, 96)};
+    RECT result{inner.left + pad, inner.top + S(hwnd, 74), inner.right - S(hwnd, 76), inner.top + S(hwnd, 96)};
+    drawCardText(dc, result, L"靶值: " + search::utf8_to_wide(cardTargetText(card)),
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
+
+    RECT tester{inner.left + pad, inner.top + S(hwnd, 98), inner.right - S(hwnd, 76), inner.top + S(hwnd, 120)};
     drawCardText(dc, tester, L"操作人: " + search::utf8_to_wide(card.tester_name.empty() ? "-" : card.tester_name),
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, bodyText);
 
@@ -1359,6 +1587,7 @@ void populateCards(State* st) {
 }
 
 void populateDetails(State* st) {
+    SendMessageW(st->details, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->details);
     int out = 0;
     for (const auto& row : st->rows) {
@@ -1367,7 +1596,7 @@ void populateDetails(State* st) {
         LVITEMW item{};
         item.mask = LVIF_TEXT;
         item.iItem = out;
-        const auto timeW = search::utf8_to_wide(row.effective_time);
+        const auto timeW = search::utf8_to_wide(pointDisplayTime(row));
         item.pszText = const_cast<wchar_t*>(timeW.c_str());
         ListView_InsertItem(st->details, &item);
         setCell(st->details, out, 1, row.sample_no);
@@ -1382,14 +1611,17 @@ void populateDetails(State* st) {
         setCell(st->details, out, 10, qcStatusText(row.qc_status));
         setCell(st->details, out, 11, row.qc_rules);
         setCell(st->details, out, 12, row.has_qc_z ? formatNumber(row.qc_z) : "");
-        setCell(st->details, out, 13, "LIS");
+        setCell(st->details, out, 13, row.data_source.empty() ? "LIS导入" : row.data_source);
         ++out;
     }
+    SendMessageW(st->details, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(st->details, nullptr, TRUE);
 }
 
 void updateSidePanel(State* st) {
     if (!st) return;
     if (st->sideList) {
+        SendMessageW(st->sideList, WM_SETREDRAW, FALSE, 0);
         ListView_DeleteAllItems(st->sideList);
         for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
             const auto& card = st->cardsRows[static_cast<size_t>(i)];
@@ -1401,6 +1633,8 @@ void updateSidePanel(State* st) {
             ListView_InsertItem(st->sideList, &item);
             setCell(st->sideList, i, 1, cardStatusText(card));
         }
+        SendMessageW(st->sideList, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(st->sideList, nullptr, TRUE);
         if (st->selectedCard >= 0 && st->selectedCard < static_cast<int>(st->cardsRows.size())) {
             st->suppressSelectionNotify = true;
             ListView_SetItemState(st->sideList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1543,11 +1777,16 @@ qc::ChartSeries buildChartSeries(State* st, const GroupRow& group, size_t& point
     series.sd = groupQcSd(group);
     series.has_mean = groupHasQcStats(group);
     series.has_sd = groupHasQcStats(group) && series.sd > 0.0;
+    const std::string source = groupStatsSourceText(group);
+    if (!source.empty() && series.has_mean) {
+        series.subtitle += " / 基准 " + source + " " + formatNumber(series.mean);
+        if (series.has_sd) series.subtitle += " / SD " + formatNumber(series.sd);
+    }
     for (const auto& row : st->rows) {
         if (!rowVisibleByStatus(st, row)) continue;
         if (!rowInGroup(group, row)) continue;
         qc::ChartPoint point;
-        point.time = row.effective_time;
+        point.time = pointDisplayTime(row);
         point.sample_no = row.sample_no;
         point.rep_no = row.source_rep_no;
         point.item_name = row.item_name;
@@ -1731,7 +1970,7 @@ LRESULT CALLBACK cardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (st && st->ctx.uiFont) oldFont = SelectObject(memDc, st->ctx.uiFont);
             if (st && st->cardsRows.empty()) {
                 RECT empty{client.left, client.top, client.right, client.bottom};
-                drawCardText(memDc, empty, L"暂无质控概览。请选择仪器并点击“查询/刷新 LIS”。",
+                drawCardText(memDc, empty, L"暂无质控概览。请选择仪器并点击“查询”或“导入质控”。",
                              DT_CENTER | DT_VCENTER | DT_SINGLELINE, RGB(90, 100, 112));
             } else if (st) {
                 for (int i = 0; i < static_cast<int>(st->cardsRows.size()); ++i) {
@@ -1862,7 +2101,7 @@ void exportVisibleDetailsCsv(HWND hwnd, State* st) {
     csv << "\xEF\xBB\xBF";
     csv << "时间,样本号,报告号,仪器,检验者,项目,水平,批号,结果,单位,状态,规则,Z值,来源\n";
     for (const auto* row : rows) {
-        csv << csvEscape(row->effective_time) << ','
+        csv << csvEscape(pointDisplayTime(*row)) << ','
             << csvEscape(row->sample_no) << ','
             << csvEscape(row->source_rep_no) << ','
             << csvEscape(row->mach_name.empty() ? row->mach_code : row->mach_name) << ','
@@ -1875,7 +2114,7 @@ void exportVisibleDetailsCsv(HWND hwnd, State* st) {
             << csvEscape(qcStatusText(row->qc_status)) << ','
             << csvEscape(row->qc_rules) << ','
             << csvEscape(row->has_qc_z ? formatNumber(row->qc_z) : "") << ','
-            << "LIS\n";
+            << csvEscape(row->data_source.empty() ? "LIS导入" : row->data_source) << '\n';
     }
     const std::string text = csv.str();
     fwrite(text.data(), 1, text.size(), file);
@@ -1917,7 +2156,10 @@ void resizeLayout(HWND hwnd, State* st) {
     MoveWindow(st->statusFilterLabel, sideX + S(hwnd, 132), sy, S(hwnd, 38), S(hwnd, 24), TRUE);
     MoveWindow(st->statusFilter, sideX + S(hwnd, 174), sy, sideInnerW - S(hwnd, 174), S(hwnd, 180), TRUE);
     sy += S(hwnd, 34);
-    MoveWindow(st->queryButton, sideX, sy - S(hwnd, 2), sideInnerW, S(hwnd, 30), TRUE);
+    const int queryW = (sideInnerW - S(hwnd, 8)) / 2;
+    MoveWindow(st->queryButton, sideX, sy - S(hwnd, 2), queryW, S(hwnd, 30), TRUE);
+    MoveWindow(st->refreshButton, sideX + queryW + S(hwnd, 8), sy - S(hwnd, 2),
+               sideInnerW - queryW - S(hwnd, 8), S(hwnd, 30), TRUE);
     ShowWindow(st->chartButton, SW_HIDE);
     ShowWindow(st->exportButton, SW_HIDE);
     ShowWindow(st->groups, SW_HIDE);
@@ -1960,6 +2202,18 @@ bool configMatchesItem(const qc::Config& cfg, const search::QualityControlLisRow
 
 bool rowMatchesQuery(const qc::Query& request, const qc::Config& cfg, const search::QualityControlLisRow& item) {
     if (!configMatchesItem(cfg, item)) return false;
+    const std::string requestedItem = search::trim(request.item_code);
+    if (!requestedItem.empty() && requestedItem != search::trim(item.item_code)) return false;
+    return true;
+}
+
+bool configMatchesCachedItem(const qc::Config& cfg, const qc::Result& item) {
+    const std::string configured = search::trim(cfg.item_code);
+    return configured.empty() || configured == search::trim(item.item_code);
+}
+
+bool rowMatchesCachedQuery(const qc::Query& request, const qc::Config& cfg, const qc::Result& item) {
+    if (!configMatchesCachedItem(cfg, item)) return false;
     const std::string requestedItem = search::trim(request.item_code);
     if (!requestedItem.empty() && requestedItem != search::trim(item.item_code)) return false;
     return true;
@@ -2009,10 +2263,98 @@ qc::Result toResult(const search::QualityControlLisRow& item, const qc::Config& 
     return row;
 }
 
-bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vector<qc::Result>& rows,
-                  int& configCount, std::string& error) {
+qc::Result toRawCachedResult(const search::QualityControlLisRow& item) {
+    qc::Result row;
+    row.source_rep_no = item.rep_no;
+    row.source_entry_key = item.entry_id;
+    row.room_code = item.room_code;
+    row.mach_code = item.mach_code;
+    row.mach_name = item.mach_name;
+    row.sample_no = item.sample_no;
+    row.tester_name = item.tester_name;
+    row.report_date = item.report_date;
+    row.inspect_date = item.inspect_date;
+    row.report_time = item.report_time;
+    row.effective_time = item.effective_time;
+    row.item_code = item.item_code;
+    row.item_name = item.item_name;
+    row.item_eng = item.item_eng;
+    row.result_text = item.result;
+    row.has_numeric_value = parseNumber(item.result, row.result_value);
+    row.unit = item.unit;
+    row.normal = item.normal;
+    row.data_source = "LIS导入";
+    return row;
+}
+
+qc::Result applyConfigToCachedResult(const qc::Result& item, const qc::Config& cfg, const std::string& source) {
+    qc::Result row = item;
+    row.mach_name = item.mach_name.empty() ? cfg.mach_name : item.mach_name;
+    row.item_name = item.item_name.empty() ? cfg.item_name : item.item_name;
+    row.qc_name = cfg.qc_name;
+    row.level = cfg.level;
+    row.lot_no = cfg.lot_no;
+    row.lot_valid_from = cfg.lot_valid_from;
+    row.lot_valid_to = cfg.lot_valid_to;
+    row.target_mean = cfg.target_mean;
+    row.target_sd = cfg.target_sd;
+    row.qc_mean = 0.0;
+    row.qc_sd = 0.0;
+    row.qc_z = 0.0;
+    row.has_qc_stats = false;
+    row.has_qc_z = false;
+    row.qc_status.clear();
+    row.qc_rules.clear();
+    row.data_source = source;
+    return row;
+}
+
+void sortResults(std::vector<qc::Result>& rows) {
+    std::sort(rows.begin(), rows.end(), [](const qc::Result& a, const qc::Result& b) {
+        if (a.mach_code != b.mach_code) return a.mach_code < b.mach_code;
+        if (a.item_code != b.item_code) return a.item_code < b.item_code;
+        if (a.level != b.level) return a.level < b.level;
+        const std::string aTime = pointDisplayTime(a);
+        const std::string bTime = pointDisplayTime(b);
+        if (aTime != bTime) return aTime < bTime;
+        return a.source_rep_no < b.source_rep_no;
+    });
+}
+
+void buildRowsFromCachedMirror(const qc::Query& request,
+                               const std::vector<qc::Config>& active,
+                               const std::vector<qc::Result>& cachedRows,
+                               std::vector<qc::Result>& rows,
+                               const std::string& source) {
+    rows.clear();
+    std::map<std::string, std::vector<qc::Config>> configsByMachineSample;
+    for (const auto& cfg : active) {
+        configsByMachineSample[search::trim(cfg.mach_code) + "\x1f" + search::trim(cfg.sample_no)].push_back(cfg);
+    }
+    std::set<std::string> emittedKeys;
+    for (const auto& item : cachedRows) {
+        const std::string key = search::trim(item.mach_code) + "\x1f" + search::trim(item.sample_no);
+        const auto configIt = configsByMachineSample.find(key);
+        if (configIt == configsByMachineSample.end()) continue;
+        for (const auto& itemCfg : configIt->second) {
+            if (!rowMatchesCachedQuery(request, itemCfg, item)) continue;
+            if (!configInEffectiveDate(itemCfg, item.effective_time)) continue;
+            const std::string uniqueKey = search::trim(item.source_rep_no) + "\x1f" + search::trim(item.source_entry_key) +
+                                          "\x1f" + std::to_string(itemCfg.sample_item_id);
+            if (!emittedKeys.insert(uniqueKey).second) break;
+            rows.push_back(applyConfigToCachedResult(item, itemCfg, source));
+            break;
+        }
+    }
+    sortResults(rows);
+}
+
+bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, bool importFromLis, std::vector<qc::Result>& rows,
+                  int& configCount, bool& fromCache, std::string& cachedAt, std::string& error) {
     rows.clear();
     configCount = 0;
+    fromCache = false;
+    cachedAt.clear();
     std::vector<qc::Config> configs;
     if (!qc::load_analysis_configs(configs, error)) return false;
 
@@ -2031,6 +2373,39 @@ bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vecto
     configCount = static_cast<int>(activeItems.size());
     if (active.empty()) return true;
 
+    std::string sampleScope;
+    std::string itemScope;
+    std::vector<std::string> samples;
+    std::vector<std::string> itemsForScope;
+    for (const auto& cfg : active) {
+        samples.push_back(search::trim(cfg.sample_no));
+        itemsForScope.push_back(search::trim(cfg.item_code));
+    }
+    std::sort(samples.begin(), samples.end());
+    samples.erase(std::unique(samples.begin(), samples.end()), samples.end());
+    std::sort(itemsForScope.begin(), itemsForScope.end());
+    itemsForScope.erase(std::unique(itemsForScope.begin(), itemsForScope.end()), itemsForScope.end());
+    auto joinScope = [](const std::vector<std::string>& values) {
+        std::string text;
+        for (const auto& value : values) {
+            if (search::trim(value).empty()) continue;
+            if (!text.empty()) text += ";";
+            text += search::trim(value);
+        }
+        return text;
+    };
+    sampleScope = joinScope(samples);
+    itemScope = joinScope(itemsForScope);
+    if (!importFromLis) {
+        qc::CacheMeta meta;
+        std::vector<qc::Result> cachedRows;
+        if (!qc::load_result_cache(request, cachedRows, meta, error)) return false;
+        buildRowsFromCachedMirror(request, active, cachedRows, rows, "本机缓存");
+        fromCache = true;
+        cachedAt = meta.refreshed_at.empty() ? meta.cached_at : meta.refreshed_at;
+        return true;
+    }
+
     const std::string connection = search::wide_to_utf8(search::build_connection_string_w(ctx.dbSettings));
     if (search::trim(connection).empty()) {
         error = "missing LIS database connection";
@@ -2042,43 +2417,57 @@ bool queryLisRows(const ModuleContext& ctx, const qc::Query& request, std::vecto
         configsByMachineSample[search::trim(cfg.mach_code) + "\x1f" + search::trim(cfg.sample_no)].push_back(cfg);
     }
 
-    std::set<std::string> queriedKeys;
-    std::set<std::string> emittedKeys;
-    for (const auto& cfg : active) {
-        const std::string key = search::trim(cfg.mach_code) + "\x1f" + search::trim(cfg.sample_no);
-        if (!queriedKeys.insert(key).second) continue;
-
-        search::QualityControlLisQuery lisQuery;
-        lisQuery.connection_string = connection;
-        lisQuery.start_date = request.start_date;
-        lisQuery.end_date = request.end_date;
-        lisQuery.mach_code = search::trim(cfg.mach_code);
-        lisQuery.sample_no = search::trim(cfg.sample_no);
-
-        std::vector<search::QualityControlLisRow> items;
-        if (!search::query_quality_control_lis_results(lisQuery, items, error)) return false;
-
-        const auto configIt = configsByMachineSample.find(key);
-        if (configIt == configsByMachineSample.end()) continue;
-            for (const auto& item : items) {
-                for (const auto& itemCfg : configIt->second) {
-                    if (!rowMatchesQuery(request, itemCfg, item)) continue;
-                    if (!configInEffectiveDate(itemCfg, item.effective_time)) continue;
-                    const std::string uniqueKey = search::trim(item.rep_no) + "\x1f" + search::trim(item.entry_id);
-                    if (!emittedKeys.insert(uniqueKey).second) break;
-                    rows.push_back(toResult(item, itemCfg));
-                    break;
-                }
-            }
+    // Collect unique sample numbers for single batch query
+    std::vector<std::string> batchSamples;
+    {
+        std::set<std::string> seen;
+        for (const auto& cfg : active) {
+            const std::string sn = search::trim(cfg.sample_no);
+            if (!sn.empty() && seen.insert(sn).second) batchSamples.push_back(sn);
+        }
     }
 
-    std::sort(rows.begin(), rows.end(), [](const qc::Result& a, const qc::Result& b) {
-        if (a.mach_code != b.mach_code) return a.mach_code < b.mach_code;
-        if (a.item_code != b.item_code) return a.item_code < b.item_code;
-        if (a.level != b.level) return a.level < b.level;
-        if (a.effective_time != b.effective_time) return a.effective_time < b.effective_time;
-        return a.source_rep_no < b.source_rep_no;
-    });
+    search::QualityControlLisQuery lisQuery;
+    lisQuery.connection_string = connection;
+    lisQuery.start_date = request.start_date;
+    lisQuery.end_date = request.end_date;
+    lisQuery.mach_code = search::trim(request.mach_code);
+    lisQuery.sample_nos = batchSamples;
+
+    std::vector<search::QualityControlLisRow> items;
+    if (!search::query_quality_control_lis_results(lisQuery, items, error)) return false;
+
+    std::vector<qc::Result> rawRows;
+    for (const auto& item : items) {
+        rawRows.push_back(toRawCachedResult(item));
+    }
+    std::string cacheError;
+    if (!qc::save_result_cache(request, sampleScope, itemScope, rawRows, cacheError)) {
+        if (!cacheError.empty()) error = cacheError;
+        return false;
+    }
+
+    std::map<std::string, std::vector<qc::Config>> configsForDisplay;
+    for (const auto& cfg : active) {
+        configsForDisplay[search::trim(cfg.mach_code) + "\x1f" + search::trim(cfg.sample_no)].push_back(cfg);
+    }
+    std::set<std::string> emittedKeys;
+    for (const auto& item : rawRows) {
+        const std::string key = search::trim(item.mach_code) + "\x1f" + search::trim(item.sample_no);
+        const auto configIt = configsForDisplay.find(key);
+        if (configIt == configsForDisplay.end()) continue;
+        for (const auto& itemCfg : configIt->second) {
+            if (!rowMatchesCachedQuery(request, itemCfg, item)) continue;
+            if (!configInEffectiveDate(itemCfg, item.effective_time)) continue;
+            const std::string uniqueKey = search::trim(item.source_rep_no) + "\x1f" + search::trim(item.source_entry_key) +
+                                          "\x1f" + std::to_string(itemCfg.sample_item_id);
+            if (!emittedKeys.insert(uniqueKey).second) break;
+            rows.push_back(applyConfigToCachedResult(item, itemCfg, "LIS导入"));
+            break;
+        }
+    }
+
+    sortResults(rows);
     return true;
 }
 
@@ -2095,30 +2484,35 @@ void showMachinePicker(HWND hwnd, State* st) {
         st->selectedMachineCode = machine.mach_code;
         SetWindowTextW(st->machCode, search::utf8_to_wide(machine.mach_name.empty() ? machine.mach_code : machine.mach_name).c_str());
         clearCurrentResults(st);
-        setStatus(st, L"已选择检验仪器，请点击“查询/刷新 LIS”。");
+        setStatus(st, L"已选择检验仪器，请点击“查询”或“导入质控”。");
     };
     search::show_machine_picker_popup(options);
 }
 
-void runLisQuery(HWND hwnd, State* st) {
+void runQualityControlQuery(HWND hwnd, State* st, bool importFromLis, const qc::Query* importQuery = nullptr) {
     if (!st || st->busy) return;
     if (search::trim(st->selectedMachineCode).empty()) {
-        setStatus(st, L"请先选择检验仪器，再点击“查询/刷新 LIS”。");
+        setStatus(st, L"请先选择检验仪器，再查询质控结果。");
         MessageBoxW(hwnd, L"请先选择检验仪器。", WINDOW_TITLE, MB_ICONINFORMATION);
         return;
     }
     st->busy = true;
     EnableWindow(st->queryButton, FALSE);
+    EnableWindow(st->refreshButton, FALSE);
     EnableWindow(st->exportButton, FALSE);
     EnableWindow(st->chartButton, FALSE);
     updateSidePanel(st);
-    setStatus(st, L"正在查询 LIS 质控结果...");
-    const qc::Query query = buildQuery(st);
+    setStatus(st, importFromLis ? L"正在导入质控数据..." : L"正在查询质控结果...");
+    const qc::Query query = importQuery ? *importQuery : buildQuery(st);
     const ModuleContext ctx = st->ctx;
-    std::thread([hwnd, ctx, query]() {
+    std::thread([hwnd, ctx, query, importFromLis]() {
         auto* done = new QueryDone;
         const auto started = std::chrono::steady_clock::now();
-        done->ok = queryLisRows(ctx, query, done->rows, done->config_count, done->error);
+        done->imported = importFromLis;
+        done->import_start_date = query.start_date;
+        done->import_end_date = query.end_date;
+        done->ok = queryLisRows(ctx, query, importFromLis, done->rows, done->config_count,
+                                done->from_cache, done->cached_at, done->error);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - started)
                                  .count();
@@ -2174,7 +2568,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->statusFilterLabel = label(hwnd, L"状态");
             st->statusFilter = combo(hwnd, IDC_STATUS_FILTER);
             setComboItems(st->statusFilter, {L"全部", L"警告+失控", L"仅失控", L"仅警告"});
-            st->queryButton = button(hwnd, IDC_QUERY, L"查询/刷新 LIS");
+            st->queryButton = button(hwnd, IDC_QUERY, L"查询");
+            st->refreshButton = button(hwnd, IDC_IMPORT_QC, L"导入质控");
             st->chartButton = button(hwnd, IDC_LJ_CHART, L"L-J图");
             EnableWindow(st->chartButton, FALSE);
             st->exportButton = button(hwnd, IDC_EXPORT_CSV, L"导出CSV");
@@ -2210,8 +2605,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupList(st->details, {{L"时间", 140}, {L"样本号", 90}, {L"报告号", 90}, {L"仪器", 160},
                                     {L"检验者", 90}, {L"项目", 180}, {L"水平", 60}, {L"批号", 90},
                                     {L"结果", 90}, {L"单位", 70}, {L"状态", 70}, {L"规则", 90},
-                                    {L"Z值", 70}, {L"来源", 70}});
-            setupList(st->sideList, {{L"项目", 205}, {L"状态", 70}});
+                                    {L"Z值", 70}, {L"来源", 96}});
+            setupList(st->sideList, {{L"项目", 480}, {L"状态", 90}});
             setTodayRange(st);
             search::apply_font_to_children(hwnd, st->ctx.uiFont);
             resizeLayout(hwnd, st);
@@ -2220,7 +2615,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (!qc::ensure_store(error)) {
                     setStatus(st, L"本地质控库初始化失败：" + search::utf8_to_wide(error));
                 } else {
-                    setStatus(st, L"请选择检验仪器后点击“查询/刷新 LIS”。");
+                    setStatus(st, L"请选择检验仪器后点击“查询”或“导入质控”。");
                 }
             }
             return 0;
@@ -2230,7 +2625,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_COMMAND:
             if (LOWORD(wp) == IDC_QUERY) {
-                runLisQuery(hwnd, st);
+                runQualityControlQuery(hwnd, st, false);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_IMPORT_QC) {
+                qc::Query importQuery;
+                if (showImportRangeDialog(hwnd, st, importQuery)) {
+                    runQualityControlQuery(hwnd, st, true, &importQuery);
+                }
                 return 0;
             }
             if (LOWORD(wp) == IDC_MACH_PICK) {
@@ -2293,12 +2695,31 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::unique_ptr<QueryDone> done(reinterpret_cast<QueryDone*>(lp));
             st->busy = false;
             EnableWindow(st->queryButton, TRUE);
+            EnableWindow(st->refreshButton, TRUE);
             if (!done->ok) {
                 updateSidePanel(st);
                 updateExportButton(st);
                 updateChartButton(st);
-                setStatus(st, L"查询失败：" + search::utf8_to_wide(done->error));
+                setStatus(st, std::wstring(done->imported ? L"导入失败：" : L"查询失败：") +
+                                  search::utf8_to_wide(done->error));
                 MessageBoxW(hwnd, search::utf8_to_wide(done->error).c_str(), WINDOW_TITLE, MB_ICONERROR);
+                return 0;
+            }
+            if (done->imported && !done->from_cache) {
+                std::wstring status = L"已导入质控（" + search::utf8_to_wide(done->import_start_date) +
+                                      L" 至 " + search::utf8_to_wide(done->import_end_date) + L"）：导入 " +
+                                      std::to_wstring(done->rows.size()) + L" 条；启用配置 " +
+                                      std::to_wstring(done->config_count) + L" 条；耗时 " +
+                                      std::to_wstring(done->elapsed_ms) + L" ms。当前页面日期和卡片结果未改变，点击“查询”可读取本地数据。";
+                if (done->config_count == 0) {
+                    status = L"没有匹配的启用质控配置，请先在系统设置中维护仪器和固定样本号。";
+                } else if (done->rows.empty()) {
+                    status += L"；所选导入范围内没有匹配 LIS 结果。";
+                }
+                setStatus(st, status);
+                updateSidePanel(st);
+                updateExportButton(st);
+                updateChartButton(st);
                 return 0;
             }
             st->rows = std::move(done->rows);
@@ -2315,7 +2736,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (row.qc_status == "warning") ++warningCount;
                 if (row.qc_status == "out_of_control") ++outOfControlCount;
             }
-            std::wstring status = L"LIS 查询完成：返回 " + std::to_wstring(st->rows.size()) +
+            std::wstring sourceText;
+            if (done->from_cache) {
+                sourceText = L"本地查询";
+                if (!done->cached_at.empty()) sourceText += L"（最近导入质控：" + search::utf8_to_wide(done->cached_at) + L"）";
+            } else {
+                sourceText = done->imported ? L"已导入质控" : L"LIS导入";
+                if (done->imported) {
+                    sourceText += L"（" + search::utf8_to_wide(done->import_start_date) +
+                                  L" 至 " + search::utf8_to_wide(done->import_end_date) + L"）";
+                }
+            }
+            std::wstring status = sourceText + L"：返回 " + std::to_wstring(st->rows.size()) +
                                   L" 条；启用配置 " + std::to_wstring(done->config_count) +
                                   L" 条；已判定 " + std::to_wstring(evaluatedCount) +
                                   L" 条；警告 " + std::to_wstring(warningCount) +
@@ -2323,6 +2755,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                   L" 条；耗时 " + std::to_wstring(done->elapsed_ms) + L" ms";
             if (done->config_count == 0) {
                 status = L"没有匹配的启用质控配置，请先在系统设置中维护仪器和固定样本号。";
+            } else if (done->from_cache && st->rows.empty() && done->cached_at.empty()) {
+                status = L"本地查询暂无该范围质控数据，请先点击“导入质控”。";
             } else if (st->rows.empty()) {
                 status += L"；当前日期范围内没有匹配 LIS 结果。";
             }

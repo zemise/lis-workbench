@@ -1298,14 +1298,84 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
     error = "query_quality_control_lis_results is only available on Windows";
     return false;
 #else
-    if (trim(query.mach_code).empty() || trim(query.sample_no).empty()) {
-        error = "missing quality control machine code or sample number";
+    if (trim(query.mach_code).empty()) {
+        error = "missing quality control machine code";
         return false;
+    }
+    if (!query.sample_nos.empty()) {
+        // batch query: all sample numbers share one connection
+    } else if (trim(query.sample_no).empty()) {
+        error = "missing quality control sample number";
+        return false;
+    }
+
+    // Collect unique sample numbers for SQL IN clause
+    std::vector<std::string> all_samples;
+    if (!query.sample_nos.empty()) {
+        all_samples = query.sample_nos;
+    } else {
+        all_samples.push_back(trim(query.sample_no));
     }
 
     DbContext db;
     if (!connect(query.connection_string, db, error, log)) {
         return false;
+    }
+
+    // Preload dictionary lookups to avoid SQL JOINs
+    std::map<std::string, std::string> item_names, item_engs, item_units;
+    std::map<std::string, std::string> mach_names, employee_names;
+    {
+        auto load_map = [&](const std::string& map_sql, std::map<std::string, std::string>& out) {
+            if (log) log("exec sql: " + map_sql + "\n");
+            SQLHSTMT ms = SQL_NULL_HSTMT;
+            if (!exec_query(db.dbc, map_sql, ms, error)) return false;
+            while (SQLFetch(ms) == SQL_SUCCESS) {
+                const std::string k = trim(fetch_column(ms, 1));
+                const std::string v = trim(fetch_column(ms, 2));
+                if (!k.empty() && !v.empty()) out[k] = v;
+            }
+            SQLFreeHandle(SQL_HANDLE_STMT, ms);
+            return true;
+        };
+        if (!load_map(
+                "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),MACH_CODE))),''),"
+                " isnull(LTRIM(RTRIM(MACH_NAME)),'')"
+                " FROM LS_AS_MACHINE WITH (NOLOCK)"
+                " WHERE isnull(DELETE_BIT,0)=0",
+                mach_names) ||
+            !load_map(
+                "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),ITEM_CODE))),''),"
+                " isnull(LTRIM(RTRIM(ITEM_NAME)),'')"
+                " FROM LS_AS_ITEM WITH (NOLOCK)"
+                " WHERE isnull(DELETE_BIT,0)=0",
+                item_names) ||
+            !load_map(
+                "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),ITEM_CODE))),''),"
+                " isnull(LTRIM(RTRIM(ENG_NAME)),'')"
+                " FROM LS_AS_ITEM WITH (NOLOCK)"
+                " WHERE isnull(DELETE_BIT,0)=0",
+                item_engs) ||
+            !load_map(
+                "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),ITEM_CODE))),''),"
+                " isnull(RTRIM(UNIT),'')"
+                " FROM LS_AS_ITEM WITH (NOLOCK)"
+                " WHERE isnull(DELETE_BIT,0)=0",
+                item_units) ||
+            !load_map(
+                "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),EMPLOYEE_ID))),''),"
+                " isnull(LTRIM(RTRIM(NAME)),'')"
+                " FROM JC_EMPLOYEE_PROPERTY WITH (NOLOCK)",
+                employee_names)) {
+            return false;
+        }
+    }
+
+    // Build IN-list for sample numbers
+    std::ostringstream sample_list;
+    for (size_t si = 0; si < all_samples.size(); ++si) {
+        if (si > 0) sample_list << ",";
+        sample_list << "'" << sql_escape(all_samples[si]) << "'";
     }
 
     std::ostringstream sql;
@@ -1314,30 +1384,23 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         << " CAST(r.REP_NO AS varchar(30)),"
         << " isnull(CAST(r.ROOM_CODE AS varchar(20)),''),"
         << " isnull(CAST(r.MACH_CODE AS varchar(20)),''),"
-        << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(CAST(r.MACH_CODE AS varchar(20)),'')),"
         << " isnull(r.OPER_NO,''),"
         << " isnull(r.TXM_NO,''),"
-        << " isnull(RTRIM(emp_oper.NAME),''),"
-        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
+        << " isnull(CAST(r.OPER_CODE AS varchar(20)),''),"
+        << " isnull(CONVERT(varchar(19),r.REP_DATE,120),''),"
         << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
         << " isnull(CONVERT(varchar(19),r.REP_TIME,120),''),"
-        << " isnull(CONVERT(varchar(19),COALESCE(r.REP_TIME,r.CHK_DATE,r.REP_DATE),120),''),"
+        << " isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
         << " isnull(r.CHK_FLAG,''),"
         << " isnull(r.CONF,''),"
         << " isnull(CAST(e.ITEM_CODE AS varchar(20)),''),"
-        << " isnull(i.ITEM_NAME,e.ITEM_NAME),"
-        << " isnull(nullif(RTRIM(i.ENG_NAME),''),isnull(e.ITEM_ENG,'')),"
         << " isnull(e.RESULT,''),"
-        << " isnull(RTRIM(i.UNIT),''),"
         << " isnull(e.NORMAL,'')"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0"
-        << " LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON e.ITEM_CODE=i.ITEM_CODE AND isnull(i.DELETE_BIT,0)=0"
-        << " LEFT JOIN LS_AS_MACHINE mach WITH (NOLOCK) ON r.MACH_CODE=mach.MACH_CODE AND isnull(mach.DELETE_BIT,0)=0"
-        << " LEFT JOIN JC_EMPLOYEE_PROPERTY emp_oper WITH (NOLOCK) ON emp_oper.EMPLOYEE_ID=r.OPER_CODE"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND r.MACH_CODE='" << sql_escape(trim(query.mach_code)) << "'"
-        << " AND r.OPER_NO='" << sql_escape(trim(query.sample_no)) << "'";
+        << " AND r.OPER_NO IN (" << sample_list.str() << ")";
     if (!trim(query.start_date).empty()) {
         sql << " AND r.CHK_DATE >= '" << sql_escape(trim(query.start_date)) << "'";
     }
@@ -1361,22 +1424,34 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
         row.rep_no = fetch_column(stmt, 2);
         row.room_code = fetch_column(stmt, 3);
         row.mach_code = fetch_column(stmt, 4);
-        row.mach_name = fetch_column(stmt, 5);
-        row.sample_no = fetch_column(stmt, 6);
-        row.barcode_no = fetch_column(stmt, 7);
-        row.tester_name = fetch_column(stmt, 8);
-        row.report_date = fetch_column(stmt, 9);
-        row.inspect_date = fetch_column(stmt, 10);
-        row.report_time = fetch_column(stmt, 11);
-        row.effective_time = fetch_column(stmt, 12);
-        row.chk_flag = fetch_column(stmt, 13);
-        row.conf = fetch_column(stmt, 14);
-        row.item_code = fetch_column(stmt, 15);
-        row.item_name = fetch_column(stmt, 16);
-        row.item_eng = fetch_column(stmt, 17);
-        row.result = fetch_column(stmt, 18);
-        row.unit = fetch_column(stmt, 19);
-        row.normal = fetch_column(stmt, 20);
+        row.sample_no = fetch_column(stmt, 5);
+        row.barcode_no = fetch_column(stmt, 6);
+        {
+            const auto eit = employee_names.find(trim(fetch_column(stmt, 7)));
+            row.tester_name = eit != employee_names.end() ? eit->second : "";
+        }
+        row.report_date = fetch_column(stmt, 8);
+        row.inspect_date = fetch_column(stmt, 9);
+        row.report_time = fetch_column(stmt, 10);
+        row.effective_time = fetch_column(stmt, 11);
+        row.chk_flag = fetch_column(stmt, 12);
+        row.conf = fetch_column(stmt, 13);
+        {
+            const std::string ic = trim(fetch_column(stmt, 14));
+            row.item_code = ic;
+            auto nit = item_names.find(ic);
+            row.item_name = nit != item_names.end() ? nit->second : ic;
+            auto eit = item_engs.find(ic);
+            row.item_eng = eit != item_engs.end() ? eit->second : "";
+            auto uit = item_units.find(ic);
+            row.unit = uit != item_units.end() ? uit->second : "";
+        }
+        row.result = fetch_column(stmt, 15);
+        row.normal = fetch_column(stmt, 16);
+        {
+            auto mit = mach_names.find(trim(row.mach_code));
+            row.mach_name = mit != mach_names.end() ? mit->second : row.mach_code;
+        }
         rows.push_back(row);
     }
 

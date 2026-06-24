@@ -115,6 +115,37 @@ std::string now_text() {
     return buffer;
 }
 
+std::string mirror_cache_key(const Query& query) {
+    return "qc-mirror|mach=" + search::trim(query.mach_code) +
+           "|start=" + search::trim(query.start_date) +
+           "|end=" + search::trim(query.end_date);
+}
+
+std::vector<std::string> split_scope(const std::string& scope) {
+    std::vector<std::string> values;
+    std::string current;
+    for (char ch : scope) {
+        if (ch == ';') {
+            current = search::trim(current);
+            if (!current.empty()) values.push_back(current);
+            current.clear();
+        } else {
+            current.push_back(ch);
+        }
+    }
+    current = search::trim(current);
+    if (!current.empty()) values.push_back(current);
+    return values;
+}
+
+bool numeric_text_less(const std::string& lhs, const std::string& rhs) {
+    try {
+        return std::stoll(search::trim(lhs)) < std::stoll(search::trim(rhs));
+    } catch (...) {
+        return search::trim(lhs) < search::trim(rhs);
+    }
+}
+
 std::string previous_date(const std::string& date) {
     int y = 0;
     int m = 0;
@@ -198,6 +229,8 @@ CREATE TABLE IF NOT EXISTS qc_sample_item (
   item_name TEXT,
   item_eng TEXT,
   unit TEXT,
+  qc_name TEXT,
+  level TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -256,6 +289,8 @@ CREATE TABLE IF NOT EXISTS qc_result_cache (
   qc_name TEXT,
   level TEXT,
   lot_no TEXT,
+  lot_valid_from TEXT,
+  lot_valid_to TEXT,
   target_mean REAL,
   target_sd REAL,
   cache_key TEXT,
@@ -289,15 +324,26 @@ CREATE INDEX IF NOT EXISTS idx_qc_result_cache_key ON qc_result_cache(cache_key,
 CREATE INDEX IF NOT EXISTS idx_qc_query_cache_meta_key ON qc_query_cache_meta(cache_key);
 )SQL";
     if (!exec_sql(db, sql, error)) return false;
-
+    if (!table_has_column(db, "qc_result_cache", "lot_valid_from", error)) {
+        if (!exec_sql(db, "ALTER TABLE qc_result_cache ADD COLUMN lot_valid_from TEXT;", error)) return false;
+    }
+    if (!table_has_column(db, "qc_result_cache", "lot_valid_to", error)) {
+        if (!exec_sql(db, "ALTER TABLE qc_result_cache ADD COLUMN lot_valid_to TEXT;", error)) return false;
+    }
+    if (!table_has_column(db, "qc_sample_item", "qc_name", error)) {
+        if (!exec_sql(db, "ALTER TABLE qc_sample_item ADD COLUMN qc_name TEXT;", error)) return false;
+    }
+    if (!table_has_column(db, "qc_sample_item", "level", error)) {
+        if (!exec_sql(db, "ALTER TABLE qc_sample_item ADD COLUMN level TEXT;", error)) return false;
+    }
     constexpr const char* migrate_config = R"SQL(
 INSERT OR IGNORE INTO qc_sample_config(enabled,room_code,mach_code,mach_name,sample_no,qc_name,level,created_at,updated_at)
 SELECT max(enabled),room_code,mach_code,max(mach_name),sample_no,max(qc_name),ifnull(level,''),min(created_at),max(updated_at)
 FROM qc_config
 GROUP BY room_code,mach_code,sample_no,ifnull(level,'');
 
-INSERT OR IGNORE INTO qc_sample_item(sample_config_id,enabled,item_code,item_name,item_eng,unit,sort_order,created_at,updated_at)
-SELECT sc.id,max(c.enabled),ifnull(c.item_code,''),max(c.item_name),'','',0,min(c.created_at),max(c.updated_at)
+INSERT OR IGNORE INTO qc_sample_item(sample_config_id,enabled,item_code,item_name,item_eng,unit,qc_name,level,sort_order,created_at,updated_at)
+SELECT sc.id,max(c.enabled),ifnull(c.item_code,''),max(c.item_name),'','',max(c.qc_name),ifnull(c.level,''),0,min(c.created_at),max(c.updated_at)
 FROM qc_config c
 JOIN qc_sample_config sc
   ON sc.mach_code=c.mach_code
@@ -362,7 +408,8 @@ bool load_configs(std::vector<Config>& rows, std::string& error) {
     Stmt stmt;
     if (!prepare(db.handle,
                  "SELECT si.id,sc.id,ifnull(l.id,0),sc.enabled,sc.room_code,sc.mach_code,sc.mach_name,sc.sample_no,"
-                 "sc.qc_name,sc.level,si.item_code,si.item_name,si.item_eng,si.unit,ifnull(l.lot_no,''),"
+                 "coalesce(nullif(si.qc_name,''),sc.qc_name,''),coalesce(nullif(si.level,''),sc.level,''),"
+                 "si.item_code,si.item_name,si.item_eng,si.unit,ifnull(l.lot_no,''),"
                  "ifnull(l.valid_from,''),ifnull(l.valid_to,''),ifnull(t.target_mean,''),ifnull(t.target_sd,'') "
                  "FROM qc_sample_config sc "
                  "JOIN qc_sample_item si ON si.sample_config_id=sc.id "
@@ -407,7 +454,8 @@ bool load_analysis_configs(std::vector<Config>& rows, std::string& error) {
     Stmt stmt;
     if (!prepare(db.handle,
                  "SELECT si.id,sc.id,ifnull(l.id,0),sc.enabled,sc.room_code,sc.mach_code,sc.mach_name,sc.sample_no,"
-                 "sc.qc_name,sc.level,si.item_code,si.item_name,si.item_eng,si.unit,ifnull(l.lot_no,''),"
+                 "coalesce(nullif(si.qc_name,''),sc.qc_name,''),coalesce(nullif(si.level,''),sc.level,''),"
+                 "si.item_code,si.item_name,si.item_eng,si.unit,ifnull(l.lot_no,''),"
                  "ifnull(l.valid_from,''),ifnull(l.valid_to,''),ifnull(t.target_mean,''),ifnull(t.target_sd,'') "
                  "FROM qc_sample_config sc "
                  "JOIN qc_sample_item si ON si.sample_config_id=sc.id "
@@ -460,17 +508,15 @@ bool save_config(Config& row, std::string& error) {
         Stmt stmt;
         if (!prepare(db.handle,
                      "UPDATE qc_sample_config SET enabled=?,room_code=?,mach_code=?,mach_name=?,sample_no=?,"
-                     "qc_name=?,level=?,updated_at=? WHERE id=?",
+                     "updated_at=? WHERE id=?",
                      stmt, error)) return false;
         sqlite3_bind_int(stmt.handle, 1, row.enabled ? 1 : 0);
         bind_text(stmt.handle, 2, row.room_code);
         bind_text(stmt.handle, 3, row.mach_code);
         bind_text(stmt.handle, 4, row.mach_name);
         bind_text(stmt.handle, 5, row.sample_no);
-        bind_text(stmt.handle, 6, row.qc_name);
-        bind_text(stmt.handle, 7, row.level);
-        bind_text(stmt.handle, 8, now);
-        sqlite3_bind_int(stmt.handle, 9, sampleConfigId);
+        bind_text(stmt.handle, 6, now);
+        sqlite3_bind_int(stmt.handle, 7, sampleConfigId);
         if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
             error = sqlite_error(db.handle);
             return false;
@@ -500,14 +546,17 @@ bool save_config(Config& row, std::string& error) {
     if (row.id > 0) {
         Stmt stmt;
         if (!prepare(db.handle,
-                     "UPDATE qc_sample_item SET enabled=1,item_code=?,item_name=?,item_eng=?,unit=?,updated_at=? WHERE id=?",
+                     "UPDATE qc_sample_item SET enabled=1,item_code=?,item_name=?,item_eng=?,unit=?,"
+                     "qc_name=?,level=?,updated_at=? WHERE id=?",
                      stmt, error)) return false;
         bind_text(stmt.handle, 1, row.item_code);
         bind_text(stmt.handle, 2, row.item_name);
         bind_text(stmt.handle, 3, row.item_eng);
         bind_text(stmt.handle, 4, row.unit);
-        bind_text(stmt.handle, 5, now);
-        sqlite3_bind_int(stmt.handle, 6, row.id);
+        bind_text(stmt.handle, 5, row.qc_name);
+        bind_text(stmt.handle, 6, row.level);
+        bind_text(stmt.handle, 7, now);
+        sqlite3_bind_int(stmt.handle, 8, row.id);
         if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
             error = sqlite_error(db.handle);
             return false;
@@ -516,7 +565,7 @@ bool save_config(Config& row, std::string& error) {
         Stmt stmt;
         if (!prepare(db.handle,
                      "INSERT OR IGNORE INTO qc_sample_item(sample_config_id,enabled,item_code,item_name,item_eng,unit,"
-                     "sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     "qc_name,level,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                      stmt, error)) return false;
         sqlite3_bind_int(stmt.handle, 1, sampleConfigId);
         sqlite3_bind_int(stmt.handle, 2, 1);
@@ -524,9 +573,11 @@ bool save_config(Config& row, std::string& error) {
         bind_text(stmt.handle, 4, row.item_name);
         bind_text(stmt.handle, 5, row.item_eng);
         bind_text(stmt.handle, 6, row.unit);
-        sqlite3_bind_int(stmt.handle, 7, 0);
-        bind_text(stmt.handle, 8, now);
-        bind_text(stmt.handle, 9, now);
+        bind_text(stmt.handle, 7, row.qc_name);
+        bind_text(stmt.handle, 8, row.level);
+        sqlite3_bind_int(stmt.handle, 9, 0);
+        bind_text(stmt.handle, 10, now);
+        bind_text(stmt.handle, 11, now);
         if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
             error = sqlite_error(db.handle);
             return false;
@@ -601,24 +652,35 @@ bool save_sample_config(SampleConfig& row, std::string& error) {
     if (row.id > 0) {
         if (!prepare(db.handle,
                      "UPDATE qc_sample_config SET enabled=?,room_code=?,mach_code=?,mach_name=?,sample_no=?,"
-                     "qc_name=?,level=?,updated_at=? WHERE id=?",
+                     "qc_name=CASE WHEN ?<>'' THEN ? ELSE qc_name END,"
+                     "level=CASE WHEN ?<>'' THEN ? ELSE level END,updated_at=? WHERE id=?",
                      stmt, error)) return false;
-        sqlite3_bind_int(stmt.handle, 9, row.id);
+        sqlite3_bind_int(stmt.handle, 1, row.enabled ? 1 : 0);
+        bind_text(stmt.handle, 2, row.room_code);
+        bind_text(stmt.handle, 3, row.mach_code);
+        bind_text(stmt.handle, 4, row.mach_name);
+        bind_text(stmt.handle, 5, row.sample_no);
+        bind_text(stmt.handle, 6, row.qc_name);
+        bind_text(stmt.handle, 7, row.qc_name);
+        bind_text(stmt.handle, 8, row.level);
+        bind_text(stmt.handle, 9, row.level);
+        bind_text(stmt.handle, 10, now);
+        sqlite3_bind_int(stmt.handle, 11, row.id);
     } else {
         if (!prepare(db.handle,
                      "INSERT INTO qc_sample_config(enabled,room_code,mach_code,mach_name,sample_no,qc_name,level,"
                      "updated_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                      stmt, error)) return false;
+        sqlite3_bind_int(stmt.handle, 1, row.enabled ? 1 : 0);
+        bind_text(stmt.handle, 2, row.room_code);
+        bind_text(stmt.handle, 3, row.mach_code);
+        bind_text(stmt.handle, 4, row.mach_name);
+        bind_text(stmt.handle, 5, row.sample_no);
+        bind_text(stmt.handle, 6, row.qc_name);
+        bind_text(stmt.handle, 7, row.level);
+        bind_text(stmt.handle, 8, now);
         bind_text(stmt.handle, 9, now);
     }
-    sqlite3_bind_int(stmt.handle, 1, row.enabled ? 1 : 0);
-    bind_text(stmt.handle, 2, row.room_code);
-    bind_text(stmt.handle, 3, row.mach_code);
-    bind_text(stmt.handle, 4, row.mach_name);
-    bind_text(stmt.handle, 5, row.sample_no);
-    bind_text(stmt.handle, 6, row.qc_name);
-    bind_text(stmt.handle, 7, row.level);
-    bind_text(stmt.handle, 8, now);
     if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
         error = sqlite_error(db.handle);
         return false;
@@ -646,7 +708,7 @@ bool load_sample_items(int sample_config_id, std::vector<SampleItem>& rows, std:
     if (!open_db(db, error) || !ensure_schema(db.handle, error)) return false;
     Stmt stmt;
     if (!prepare(db.handle,
-                 "SELECT id,sample_config_id,enabled,item_code,item_name,item_eng,unit,sort_order "
+                 "SELECT id,sample_config_id,enabled,item_code,item_name,item_eng,unit,ifnull(qc_name,''),ifnull(level,''),sort_order "
                  "FROM qc_sample_item WHERE sample_config_id=? ORDER BY sort_order,item_code",
                  stmt, error)) return false;
     sqlite3_bind_int(stmt.handle, 1, sample_config_id);
@@ -659,7 +721,9 @@ bool load_sample_items(int sample_config_id, std::vector<SampleItem>& rows, std:
         row.item_name = col_text(stmt.handle, 4);
         row.item_eng = col_text(stmt.handle, 5);
         row.unit = col_text(stmt.handle, 6);
-        row.sort_order = sqlite3_column_int(stmt.handle, 7);
+        row.qc_name = col_text(stmt.handle, 7);
+        row.level = col_text(stmt.handle, 8);
+        row.sort_order = sqlite3_column_int(stmt.handle, 9);
         rows.push_back(std::move(row));
     }
     return true;
@@ -672,17 +736,17 @@ bool save_sample_item(SampleItem& row, std::string& error) {
     Stmt stmt;
     if (row.id > 0) {
         if (!prepare(db.handle,
-                     "UPDATE qc_sample_item SET enabled=?,item_code=?,item_name=?,item_eng=?,unit=?,sort_order=?,"
+                     "UPDATE qc_sample_item SET enabled=?,item_code=?,item_name=?,item_eng=?,unit=?,qc_name=?,level=?,sort_order=?,"
                      "updated_at=? WHERE id=?",
                      stmt, error)) return false;
-        sqlite3_bind_int(stmt.handle, 8, row.id);
+        sqlite3_bind_int(stmt.handle, 10, row.id);
     } else {
         if (!prepare(db.handle,
                      "INSERT OR IGNORE INTO qc_sample_item(sample_config_id,enabled,item_code,item_name,item_eng,unit,"
-                     "sort_order,updated_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     "qc_name,level,sort_order,updated_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                      stmt, error)) return false;
         sqlite3_bind_int(stmt.handle, 1, row.sample_config_id);
-        bind_text(stmt.handle, 9, now);
+        bind_text(stmt.handle, 11, now);
     }
     if (row.id > 0) {
         sqlite3_bind_int(stmt.handle, 1, row.enabled ? 1 : 0);
@@ -690,16 +754,20 @@ bool save_sample_item(SampleItem& row, std::string& error) {
         bind_text(stmt.handle, 3, row.item_name);
         bind_text(stmt.handle, 4, row.item_eng);
         bind_text(stmt.handle, 5, row.unit);
-        sqlite3_bind_int(stmt.handle, 6, row.sort_order);
-        bind_text(stmt.handle, 7, now);
+        bind_text(stmt.handle, 6, row.qc_name);
+        bind_text(stmt.handle, 7, row.level);
+        sqlite3_bind_int(stmt.handle, 8, row.sort_order);
+        bind_text(stmt.handle, 9, now);
     } else {
         sqlite3_bind_int(stmt.handle, 2, row.enabled ? 1 : 0);
         bind_text(stmt.handle, 3, row.item_code);
         bind_text(stmt.handle, 4, row.item_name);
         bind_text(stmt.handle, 5, row.item_eng);
         bind_text(stmt.handle, 6, row.unit);
-        sqlite3_bind_int(stmt.handle, 7, row.sort_order);
-        bind_text(stmt.handle, 8, now);
+        bind_text(stmt.handle, 7, row.qc_name);
+        bind_text(stmt.handle, 8, row.level);
+        sqlite3_bind_int(stmt.handle, 9, row.sort_order);
+        bind_text(stmt.handle, 10, now);
     }
     if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
         error = sqlite_error(db.handle);
@@ -714,6 +782,24 @@ bool save_sample_item(SampleItem& row, std::string& error) {
         sqlite3_bind_int(find.handle, 1, row.sample_config_id);
         bind_text(find.handle, 2, search::trim(row.item_code));
         if (sqlite3_step(find.handle) == SQLITE_ROW) row.id = sqlite3_column_int(find.handle, 0);
+        if (row.id > 0 && (!search::trim(row.qc_name).empty() || !search::trim(row.level).empty())) {
+            Stmt update;
+            if (!prepare(db.handle,
+                         "UPDATE qc_sample_item SET "
+                         "qc_name=CASE WHEN ?<>'' THEN ? ELSE qc_name END,"
+                         "level=CASE WHEN ?<>'' THEN ? ELSE level END,updated_at=? WHERE id=?",
+                         update, error)) return false;
+            bind_text(update.handle, 1, row.qc_name);
+            bind_text(update.handle, 2, row.qc_name);
+            bind_text(update.handle, 3, row.level);
+            bind_text(update.handle, 4, row.level);
+            bind_text(update.handle, 5, now);
+            sqlite3_bind_int(update.handle, 6, row.id);
+            if (sqlite3_step(update.handle) != SQLITE_DONE) {
+                error = sqlite_error(db.handle);
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -959,6 +1045,231 @@ bool save_lot_item_target(LotItemTarget& row, std::string& error) {
         return false;
     }
     if (row.id <= 0) row.id = static_cast<int>(sqlite3_last_insert_rowid(db.handle));
+    return true;
+}
+
+bool load_result_cache(const Query& query, std::vector<Result>& rows, CacheMeta& meta, std::string& error) {
+    rows.clear();
+    meta = CacheMeta{};
+    Db db;
+    if (!open_db(db, error) || !ensure_schema(db.handle, error)) return false;
+    const std::string cache_key = mirror_cache_key(query);
+    Stmt metaStmt;
+    if (!prepare(db.handle,
+                 "SELECT row_count,cached_at,refreshed_at,ifnull(latest_effective_time,''),ifnull(max_entry_id,'') "
+                 "FROM qc_query_cache_meta WHERE cache_key=?",
+                 metaStmt, error)) return false;
+    bind_text(metaStmt.handle, 1, cache_key);
+    if (sqlite3_step(metaStmt.handle) == SQLITE_ROW) {
+        meta.found = true;
+        meta.row_count = sqlite3_column_int(metaStmt.handle, 0);
+        meta.cached_at = col_text(metaStmt.handle, 1);
+        meta.refreshed_at = col_text(metaStmt.handle, 2);
+        meta.latest_effective_time = col_text(metaStmt.handle, 3);
+        meta.max_entry_id = col_text(metaStmt.handle, 4);
+    }
+
+    Stmt stmt;
+    if (!prepare(db.handle,
+                 "SELECT id,source_rep_no,source_entry_key,room_code,mach_code,mach_name,sample_no,tester_name,"
+                 "report_date,inspect_date,report_time,effective_time,item_code,item_name,item_eng,result_text,"
+                 "ifnull(result_value,0),has_numeric_value,unit,normal,qc_name,level,lot_no,"
+                 "ifnull(lot_valid_from,''),ifnull(lot_valid_to,''),ifnull(target_mean,''),ifnull(target_sd,''),cached_at "
+                 "FROM qc_result_cache WHERE deleted_in_lis=0 "
+                 "AND (?='' OR mach_code=?) "
+                 "AND (?='' OR substr(effective_time,1,10)>=?) "
+                 "AND (?='' OR substr(effective_time,1,10)<=?) "
+                 "ORDER BY effective_time,source_rep_no,source_entry_key",
+                 stmt, error)) return false;
+    bind_text(stmt.handle, 1, search::trim(query.mach_code));
+    bind_text(stmt.handle, 2, search::trim(query.mach_code));
+    bind_text(stmt.handle, 3, search::trim(query.start_date));
+    bind_text(stmt.handle, 4, search::trim(query.start_date));
+    bind_text(stmt.handle, 5, search::trim(query.end_date));
+    bind_text(stmt.handle, 6, search::trim(query.end_date));
+    while (sqlite3_step(stmt.handle) == SQLITE_ROW) {
+        Result row;
+        row.id = sqlite3_column_int(stmt.handle, 0);
+        row.source_rep_no = col_text(stmt.handle, 1);
+        row.source_entry_key = col_text(stmt.handle, 2);
+        row.room_code = col_text(stmt.handle, 3);
+        row.mach_code = col_text(stmt.handle, 4);
+        row.mach_name = col_text(stmt.handle, 5);
+        row.sample_no = col_text(stmt.handle, 6);
+        row.tester_name = col_text(stmt.handle, 7);
+        row.report_date = col_text(stmt.handle, 8);
+        row.inspect_date = col_text(stmt.handle, 9);
+        row.report_time = col_text(stmt.handle, 10);
+        row.effective_time = col_text(stmt.handle, 11);
+        row.item_code = col_text(stmt.handle, 12);
+        row.item_name = col_text(stmt.handle, 13);
+        row.item_eng = col_text(stmt.handle, 14);
+        row.result_text = col_text(stmt.handle, 15);
+        row.result_value = sqlite3_column_double(stmt.handle, 16);
+        row.has_numeric_value = sqlite3_column_int(stmt.handle, 17) != 0;
+        row.unit = col_text(stmt.handle, 18);
+        row.normal = col_text(stmt.handle, 19);
+        row.qc_name = col_text(stmt.handle, 20);
+        row.level = col_text(stmt.handle, 21);
+        row.lot_no = col_text(stmt.handle, 22);
+        row.lot_valid_from = col_text(stmt.handle, 23);
+        row.lot_valid_to = col_text(stmt.handle, 24);
+        row.target_mean = col_text(stmt.handle, 25);
+        row.target_sd = col_text(stmt.handle, 26);
+        row.data_source = "本机缓存";
+        row.cached_at = col_text(stmt.handle, 27);
+        if (!row.cached_at.empty() && (meta.refreshed_at.empty() || row.cached_at > meta.refreshed_at)) {
+            meta.refreshed_at = row.cached_at;
+        }
+        rows.push_back(std::move(row));
+    }
+    if (!rows.empty() && !meta.found) {
+        meta.found = true;
+        meta.row_count = static_cast<int>(rows.size());
+    }
+    return true;
+}
+
+bool save_result_cache(const Query& query, const std::string& sample_scope,
+                       const std::string& item_scope, const std::vector<Result>& rows, std::string& error) {
+    Db db;
+    if (!open_db(db, error) || !ensure_schema(db.handle, error)) return false;
+    const std::string cache_key = mirror_cache_key(query);
+    const std::string now = now_text();
+    std::string latest;
+    std::string maxEntry;
+    for (const auto& row : rows) {
+        const std::string reportTime = search::trim(row.report_time);
+        if (!reportTime.empty() && (latest.empty() || reportTime > latest)) latest = reportTime;
+        if (!row.source_entry_key.empty() && (maxEntry.empty() || numeric_text_less(maxEntry, row.source_entry_key))) {
+            maxEntry = row.source_entry_key;
+        }
+    }
+    if (!exec_sql(db.handle, "BEGIN IMMEDIATE;", error)) return false;
+    const auto samples = split_scope(sample_scope);
+    for (const auto& sample : samples) {
+        Stmt mark;
+        if (!prepare(db.handle,
+                     "UPDATE qc_result_cache SET deleted_in_lis=1,updated_at=? "
+                     "WHERE (?='' OR mach_code=?) AND sample_no=? "
+                     "AND (?='' OR substr(effective_time,1,10)>=?) "
+                     "AND (?='' OR substr(effective_time,1,10)<=?)",
+                     mark, error)) {
+            exec_sql(db.handle, "ROLLBACK;", error);
+            return false;
+        }
+        bind_text(mark.handle, 1, now);
+        bind_text(mark.handle, 2, search::trim(query.mach_code));
+        bind_text(mark.handle, 3, search::trim(query.mach_code));
+        bind_text(mark.handle, 4, sample);
+        bind_text(mark.handle, 5, search::trim(query.start_date));
+        bind_text(mark.handle, 6, search::trim(query.start_date));
+        bind_text(mark.handle, 7, search::trim(query.end_date));
+        bind_text(mark.handle, 8, search::trim(query.end_date));
+        if (sqlite3_step(mark.handle) != SQLITE_DONE) {
+            error = sqlite_error(db.handle);
+            exec_sql(db.handle, "ROLLBACK;", error);
+            return false;
+        }
+    }
+    for (const auto& row : rows) {
+        Stmt stmt;
+        if (!prepare(db.handle,
+                     "INSERT INTO qc_result_cache(source_rep_no,source_entry_key,room_code,mach_code,mach_name,sample_no,"
+                     "tester_name,report_date,inspect_date,report_time,effective_time,item_code,item_name,item_eng,result_text,"
+                     "result_value,has_numeric_value,unit,normal,qc_name,level,lot_no,lot_valid_from,lot_valid_to,target_mean,target_sd,"
+                     "cache_key,deleted_in_lis,last_seen_at,cached_at,updated_at) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                     "ON CONFLICT(source_rep_no,source_entry_key) DO UPDATE SET room_code=excluded.room_code,"
+                     "mach_code=excluded.mach_code,mach_name=excluded.mach_name,sample_no=excluded.sample_no,"
+                     "tester_name=excluded.tester_name,report_date=excluded.report_date,inspect_date=excluded.inspect_date,"
+                     "report_time=excluded.report_time,effective_time=excluded.effective_time,item_code=excluded.item_code,"
+                     "item_name=excluded.item_name,item_eng=excluded.item_eng,result_text=excluded.result_text,"
+                     "result_value=excluded.result_value,has_numeric_value=excluded.has_numeric_value,unit=excluded.unit,"
+                     "normal=excluded.normal,qc_name=excluded.qc_name,level=excluded.level,lot_no=excluded.lot_no,"
+                     "lot_valid_from=excluded.lot_valid_from,lot_valid_to=excluded.lot_valid_to,target_mean=excluded.target_mean,"
+                     "target_sd=excluded.target_sd,cache_key=excluded.cache_key,deleted_in_lis=0,last_seen_at=excluded.last_seen_at,"
+                     "cached_at=excluded.cached_at,updated_at=excluded.updated_at",
+                     stmt, error)) {
+            exec_sql(db.handle, "ROLLBACK;", error);
+            return false;
+        }
+        bind_text(stmt.handle, 1, row.source_rep_no);
+        bind_text(stmt.handle, 2, row.source_entry_key);
+        bind_text(stmt.handle, 3, row.room_code);
+        bind_text(stmt.handle, 4, row.mach_code);
+        bind_text(stmt.handle, 5, row.mach_name);
+        bind_text(stmt.handle, 6, row.sample_no);
+        bind_text(stmt.handle, 7, row.tester_name);
+        bind_text(stmt.handle, 8, row.report_date);
+        bind_text(stmt.handle, 9, row.inspect_date);
+        bind_text(stmt.handle, 10, row.report_time);
+        bind_text(stmt.handle, 11, row.effective_time);
+        bind_text(stmt.handle, 12, row.item_code);
+        bind_text(stmt.handle, 13, row.item_name);
+        bind_text(stmt.handle, 14, row.item_eng);
+        bind_text(stmt.handle, 15, row.result_text);
+        if (row.has_numeric_value) {
+            sqlite3_bind_double(stmt.handle, 16, row.result_value);
+        } else {
+            sqlite3_bind_null(stmt.handle, 16);
+        }
+        sqlite3_bind_int(stmt.handle, 17, row.has_numeric_value ? 1 : 0);
+        bind_text(stmt.handle, 18, row.unit);
+        bind_text(stmt.handle, 19, row.normal);
+        bind_text(stmt.handle, 20, row.qc_name);
+        bind_text(stmt.handle, 21, row.level);
+        bind_text(stmt.handle, 22, row.lot_no);
+        bind_text(stmt.handle, 23, row.lot_valid_from);
+        bind_text(stmt.handle, 24, row.lot_valid_to);
+        bind_nullable_double(stmt.handle, 25, row.target_mean);
+        bind_nullable_double(stmt.handle, 26, row.target_sd);
+        bind_text(stmt.handle, 27, cache_key);
+        sqlite3_bind_int(stmt.handle, 28, 0);
+        bind_text(stmt.handle, 29, now);
+        bind_text(stmt.handle, 30, now);
+        bind_text(stmt.handle, 31, now);
+        if (sqlite3_step(stmt.handle) != SQLITE_DONE) {
+            error = sqlite_error(db.handle);
+            exec_sql(db.handle, "ROLLBACK;", error);
+            return false;
+        }
+    }
+    Stmt meta;
+    if (!prepare(db.handle,
+                 "INSERT INTO qc_query_cache_meta(cache_key,mach_code,start_date,end_date,level,item_scope,sample_scope,"
+                 "row_count,latest_effective_time,max_entry_id,cached_at,refreshed_at,source) "
+                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                 "ON CONFLICT(cache_key) DO UPDATE SET mach_code=excluded.mach_code,start_date=excluded.start_date,"
+                 "end_date=excluded.end_date,level=excluded.level,item_scope=excluded.item_scope,sample_scope=excluded.sample_scope,"
+                 "row_count=excluded.row_count,latest_effective_time=excluded.latest_effective_time,max_entry_id=excluded.max_entry_id,"
+                 "cached_at=excluded.cached_at,refreshed_at=excluded.refreshed_at,source=excluded.source",
+                 meta, error)) {
+        exec_sql(db.handle, "ROLLBACK;", error);
+        return false;
+    }
+    bind_text(meta.handle, 1, cache_key);
+    bind_text(meta.handle, 2, query.mach_code);
+    bind_text(meta.handle, 3, query.start_date);
+    bind_text(meta.handle, 4, query.end_date);
+    bind_text(meta.handle, 5, query.level);
+    bind_text(meta.handle, 6, item_scope);
+    bind_text(meta.handle, 7, sample_scope);
+    sqlite3_bind_int(meta.handle, 8, static_cast<int>(rows.size()));
+    bind_text(meta.handle, 9, latest);
+    bind_text(meta.handle, 10, maxEntry);
+    bind_text(meta.handle, 11, now);
+    bind_text(meta.handle, 12, now);
+    bind_text(meta.handle, 13, "LIS");
+    if (sqlite3_step(meta.handle) != SQLITE_DONE) {
+        error = sqlite_error(db.handle);
+        exec_sql(db.handle, "ROLLBACK;", error);
+        return false;
+    }
+    if (!exec_sql(db.handle, "COMMIT;", error)) {
+        exec_sql(db.handle, "ROLLBACK;", error);
+        return false;
+    }
     return true;
 }
 

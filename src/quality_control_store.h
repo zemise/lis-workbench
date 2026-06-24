@@ -49,6 +49,8 @@ struct SampleItem {
     std::string item_name;
     std::string item_eng;
     std::string unit;
+    std::string qc_name;
+    std::string level;
     int sort_order = 0;
 };
 
@@ -108,6 +110,8 @@ struct Result {
     bool has_qc_z = false;
     std::string qc_status;
     std::string qc_rules;
+    std::string data_source;
+    std::string cached_at;
 };
 
 struct Query {
@@ -116,6 +120,15 @@ struct Query {
     std::string mach_code;
     std::string item_code;
     std::string level;
+};
+
+struct CacheMeta {
+    bool found = false;
+    int row_count = 0;
+    std::string cached_at;
+    std::string refreshed_at;
+    std::string latest_effective_time;
+    std::string max_entry_id;
 };
 
 std::wstring default_db_path();
@@ -138,6 +151,9 @@ bool save_lot(Lot& row, std::string& error);
 bool delete_lot(int id, std::string& error);
 bool load_lot_item_targets(int lot_id, std::vector<LotItemTarget>& rows, std::string& error);
 bool save_lot_item_target(LotItemTarget& row, std::string& error);
+bool load_result_cache(const Query& query, std::vector<Result>& rows, CacheMeta& meta, std::string& error);
+bool save_result_cache(const Query& query, const std::string& sample_scope,
+                       const std::string& item_scope, const std::vector<Result>& rows, std::string& error);
 
 }  // namespace qc
 

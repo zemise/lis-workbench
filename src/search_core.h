@@ -117,6 +117,7 @@ struct QualityControlLisQuery {
     std::string end_date;
     std::string mach_code;
     std::string sample_no;
+    std::vector<std::string> sample_nos;  // when non-empty, queries r.OPER_NO IN (...)
 };
 
 struct QualityControlLisRow {
