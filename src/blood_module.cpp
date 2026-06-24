@@ -1571,8 +1571,8 @@ void runLisQuery(LisState* st, bool byName = false) {
         setLisIdentityHint(st, L"已按姓名 + 电话匹配", COLOR_TRUSTED);
         SetWindowTextW(st->status, L"正在按姓名和电话查询检验结果...");
     } else if (byName && !search::trim(st->patient_no).empty()) {
-        setLisIdentityHint(st, L"未获取到电话，仅按姓名查询，可能存在重名", COLOR_WARNING_TEXT);
-        SetWindowTextW(st->status, L"未获取到当前病人电话，正在按名字查询检验结果...");
+        setLisIdentityHint(st, L"仅按姓名查询，请谨慎", COLOR_WARNING_TEXT);
+        SetWindowTextW(st->status, L"仅按姓名查询，正在查询检验结果...");
     } else {
         setLisIdentityHint(st, byName ? L"仅按姓名查询，可能存在重名" : L"已按病人号精确匹配", byName ? COLOR_WARNING_TEXT : COLOR_TRUSTED);
         SetWindowTextW(st->status, byName ? L"正在按名字查询检验结果..." : L"正在查询检验结果...");

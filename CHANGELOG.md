@@ -16,6 +16,8 @@
 - **输血 LIS 检验结果查询性能优化**：`query_lis_summary` 改为单 CTE 预过滤避免 `LS_AS_REPORT + LS_AS_REPENTRY` 重复扫描；`query_results` 性别子查询从逐行 `OUTER APPLY` 改为 `CROSS JOIN` 常量一次性求值，LABMATCH 字典移至 C++ 侧懒加载 `std::map`；`presentLisReports`/`presentLisResults` 添加 `WM_SETREDRAW`；报告列表跳过不需要的 `ORDER_TEXT` 聚合；排序比较函数返回 `const std::string&` 消除每次比较的字符串分配；结果行 `ResultRowTone` 预计算缓存避免 `NM_CUSTOMDRAW` 重绘时重复解析。
 - **常规报告性能优化**：报告列表查询条件跳过 `ORDER_TEXT` 聚合（新增 `QueryFilters::skip_order_text` 开关）按需使用。
 - **输血查询性能优化**：`finishLisQuery` 不再每次 `load_settings` 读磁盘 INI，改为 `LisState` 创建时一次性缓存 LIS 摘要项目代码。
+- **质控分析入口调整**：质控分析从 `统计分析管理` 菜单移至 `检验管理` 菜单（`质控分析(&C)`），并在自定义工具栏"结果查询"右侧增加 `质控分析` 按钮，打开页面对应按钮高亮。
+- **输血 LIS 文案调整**：未获取病人电话时身份提示改为 `仅按姓名查询，请谨慎`，状态栏同步为 `仅按姓名查询，正在查询检验结果...`。
 - 版本号 v2026.06.24。
 
 ## v2026.06.20
