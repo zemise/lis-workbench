@@ -360,13 +360,19 @@ struct HivStatSummary {
     int prenatal_positive_count = 0;
     int other_visit_screening_count = 0;
     int other_visit_positive_count = 0;
+    int chemiluminescence_screening_count = 0;
+    int chemiluminescence_positive_count = 0;
+    int elisa_screening_count = 0;
+    int elisa_positive_count = 0;
 };
 
 struct HivStatDetailRow {
     std::string mach_code;
     std::string machine_name;
+    std::string sample_source;
     std::string methodology;
     std::string lab_department;
+    std::string room_code;
     std::string item_code;
     std::string item_name;
     std::string rep_no;

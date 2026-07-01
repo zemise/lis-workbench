@@ -25,6 +25,7 @@
 #include "barcode_module.h"
 #include "blood_module.h"
 #include "hiv_statistics_module.h"
+#include "mchc_correction_module.h"
 #include "menu_toolbar.h"
 #include "module_registry.h"
 #include "quality_control_module.h"
@@ -264,7 +265,7 @@ const ModuleDef g_modules[] = {
     { L"Barcode",  L"工具",     L"已签收条码查询(&1)...", IDM_TOOL1,   create_barcode_module },
     { L"RegularReport", L"工具", L"常规报告(&2)",       IDM_TOOL2,   create_regular_report_module },
     { L"SpecimenSign", L"工具",  L"标本签收中心(&3)",   IDM_TOOL3,   create_specimen_sign_module },
-    { L"Tool4",    L"工具",     L"工具4(&4)",           IDM_TOOL4,   create_tool4_placeholder },
+    { L"MchcCorrection", L"工具", L"脂血MCHC校正(&4)", IDM_TOOL4, create_mchc_correction_module },
     { L"Tool5",    L"工具",     L"工具5(&5)",           IDM_TOOL5,   create_tool5_placeholder },
     { L"HivStatistics", L"统计分析管理", L"HIV 抗体检测统计(&1)", IDM_STAT1, create_hiv_statistics_module },
     { L"EmergencyStatistics", L"统计分析管理", L"急诊样本统计(&2)", IDM_STAT2, create_emergency_statistics_module },

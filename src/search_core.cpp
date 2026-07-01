@@ -2532,10 +2532,14 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
     };
 
     std::vector<std::string> lab_department_dept_codes;
+    std::vector<std::string> new_lab_department_dept_codes;
     if (lab_department == "新院" || lab_department == "老院") {
         for (const auto& [dept_code, dept_name] : dept_names) {
             if (!std::all_of(dept_code.begin(), dept_code.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
                 continue;
+            }
+            if (lab_department_for_dept(dept_name) == "新院") {
+                new_lab_department_dept_codes.push_back(dept_code);
             }
             if (lab_department_for_dept(dept_name) == lab_department) {
                 lab_department_dept_codes.push_back(dept_code);
@@ -2545,6 +2549,21 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
 
     const auto append_dept_code_filter = [&](std::ostringstream& target) {
         if (lab_department != "新院" && lab_department != "老院") {
+            return;
+        }
+        if (lab_department == "老院") {
+            if (new_lab_department_dept_codes.empty()) {
+                return;
+            }
+            target << " AND (NULLIF(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),'') IS NULL"
+                   << " OR r.DEPT_CODE NOT IN (";
+            for (size_t i = 0; i < new_lab_department_dept_codes.size(); ++i) {
+                if (i > 0) {
+                    target << ",";
+                }
+                target << new_lab_department_dept_codes[i];
+            }
+            target << "))";
             return;
         }
         if (lab_department_dept_codes.empty()) {
@@ -2570,6 +2589,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         std::string name;
         std::string patient_type_code;
         std::string dept_code;
+        std::string room_code;
         std::string report_time;
     };
 
@@ -2587,6 +2607,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
             << " isnull(LTRIM(RTRIM(r.NAME)),'') AS NAME,"
             << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.TYPE))),'') AS PAT_TYPE_CODE,"
             << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.DEPT_CODE))),'') AS DEPT_CODE,"
+            << " isnull(LTRIM(RTRIM(CONVERT(varchar(20),r.ROOM_CODE))),'') AS ROOM_CODE,"
             << " isnull(CONVERT(varchar(19),r.REP_TIME,120),'') AS REP_TIME_TEXT"
             << " FROM LS_AS_REPORT r WITH (NOLOCK)"
             << " WHERE isnull(r.DELETE_BIT,0)=0"
@@ -2623,7 +2644,8 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         report.name = fetch_column(stmt, 6);
         report.patient_type_code = fetch_column(stmt, 7);
         report.dept_code = fetch_column(stmt, 8);
-        report.report_time = fetch_column(stmt, 9);
+        report.room_code = fetch_column(stmt, 9);
+        report.report_time = fetch_column(stmt, 10);
         if (report.rep_no.empty() || reports_by_rep_no.find(report.rep_no) != reports_by_rep_no.end()) {
             continue;
         }
@@ -2719,6 +2741,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
                 row.machine_name = lookup_name(machine_names, report.mach_code, report.mach_code);
                 row.methodology = hiv_methodology(report.mach_code);
                 row.lab_department = lab_department_for_dept(lookup_name(dept_names, report.dept_code, report.dept_code));
+                row.room_code = report.room_code;
                 row.item_code = item_code;
                 row.rep_no = report.rep_no;
                 row.txm_no = report.txm_no;
@@ -2814,11 +2837,41 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         }
     }
 
+    const auto hiv_sample_source = [](const HivStatDetailRow& row) {
+        if (!trim(row.completed_blood_apply_forms).empty()) {
+            return std::string("受血（制品）前检测");
+        }
+        if (is_hiv_sti_clinic_dept(row.dept_name)) {
+            return std::string("性病门诊");
+        }
+        if (is_hiv_other_visit_dept(row.dept_name)) {
+            return std::string("其他就诊检测");
+        }
+        if (is_hiv_prenatal_dept(row.dept_name)) {
+            return std::string("孕产期检查");
+        }
+        return std::string("术前检测");
+    };
+
+    for (auto& row : rows) {
+        row.sample_source = hiv_sample_source(row);
+    }
+
     for (const auto& row : rows) {
+        const bool is_positive = trim(row.positive) == "是";
+        if (row.methodology == "化学发光法") {
+            add_count(summary.chemiluminescence_screening_count,
+                      summary.chemiluminescence_positive_count,
+                      is_positive);
+        } else if (row.methodology == "酶免法") {
+            add_count(summary.elisa_screening_count,
+                      summary.elisa_positive_count,
+                      is_positive);
+        }
         if (!trim(row.completed_blood_apply_forms).empty()) {
             add_count(summary.transfusion_screening_count,
                       summary.transfusion_positive_count,
-                      trim(row.positive) == "是");
+                      is_positive);
         }
     }
 
