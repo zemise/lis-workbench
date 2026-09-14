@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commctrl.h>
@@ -24,10 +25,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iterator>
-#include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -37,7 +38,6 @@ constexpr const wchar_t* WINDOW_TITLE = L"HIV 抗体检测统计";
 constexpr const wchar_t* PROP_STATE = L"HivStatisticsSt";
 constexpr const wchar_t* HIV_TEMPLATE_FILE = L"HIVStatisticsTemplate.docx";
 constexpr int HIV_TEMPLATE_PLACEHOLDER_COUNT = 46;
-constexpr UINT WM_HIV_STATS_LOADED = WM_APP + 0x551;
 const COLORREF COLOR_POSITIVE_ROW = RGB(0xFA, 0xC0, 0xCB);
 const COLORREF COLOR_TOTAL_ROW = RGB(0xE8, 0xF2, 0xFF);
 
@@ -188,6 +188,7 @@ struct HivStatisticsState {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     bool hasLoadedResult = false;
     int detailSortColumn = -1;
@@ -1170,6 +1171,37 @@ void resizeLayout(HWND hwnd, HivStatisticsState* st) {
     search::layout_page_feedback(st->feedback);
 }
 
+void finishQuery(HivStatisticsState* st, HivQueryResult result) {
+    if (!st) return;
+    st->querying = false;
+    EnableWindow(st->query, TRUE);
+    search::hide_page_activity(st->feedback);
+    st->hasLoadedResult = false;
+    updateExportButton(st);
+    if (!result.ok) {
+        search::show_page_alert(st->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+    st->hasLoadedResult = true;
+    st->statSummary = result.summary;
+    st->rows = std::move(result.rows);
+    sortDetailRowsForDisplay(st);
+    populateSummary(st);
+    populateMethodologySummary(st);
+    populateDetails(st);
+    wchar_t status[160]{};
+    swprintf(status, 160, L"查询完成：初筛检测数 %d，初筛阳性数 %d，明细 %d 行。",
+             st->statSummary.screening_count, st->statSummary.positive_count,
+             static_cast<int>(st->rows.size()));
+    updateExportButton(st);
+    std::wstring statusText = status;
+    if (findHivDocxTemplate().empty()) {
+        statusText += L" 未上传匹配模版，统计表导出不可用。";
+    }
+    setStatus(st, statusText);
+}
+
 void runQuery(HWND hwnd, HivStatisticsState* st) {
     if (!st || st->querying) return;
     const int year = intText(st->year, 0);
@@ -1199,13 +1231,36 @@ void runQuery(HWND hwnd, HivStatisticsState* st) {
     query.month = month;
     query.lab_department = search::wide_to_utf8(selectedComboText(st->source));
 
-    std::thread([hwnd, query]() {
-        auto* result = new HivQueryResult();
-        result->ok = search::query_hiv_statistics(query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_HIV_STATS_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = st->queryTask.start<HivQueryResult>(
+        [query] {
+            HivQueryResult result;
+            result.ok = search::query_hiv_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<HivQueryResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<HivStatisticsState*>(GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !result) {
+                state->querying = false;
+                state->hasLoadedResult = false;
+                EnableWindow(state->query, TRUE);
+                search::hide_page_activity(state->feedback);
+                updateExportButton(state);
+                search::show_page_alert(state->feedback,
+                    L"HIV 统计查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*result));
+        });
+    if (!queued) {
+        st->querying = false;
+        st->hasLoadedResult = false;
+        EnableWindow(st->query, TRUE);
+        search::hide_page_activity(st->feedback);
+        updateExportButton(st);
+        search::show_page_alert(st->feedback, L"无法启动 HIV 统计后台查询。");
+    }
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1347,38 +1402,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_HIV_STATS_LOADED: {
-            std::unique_ptr<HivQueryResult> result(reinterpret_cast<HivQueryResult*>(lp));
-            if (!st) return 0;
-            st->querying = false;
-            EnableWindow(st->query, TRUE);
-            search::hide_page_activity(st->feedback);
-            st->hasLoadedResult = false;
-            updateExportButton(st);
-            if (!result->ok) {
-                search::show_page_alert(st->feedback,
-                    L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-            st->hasLoadedResult = true;
-            st->statSummary = result->summary;
-            st->rows = std::move(result->rows);
-            sortDetailRowsForDisplay(st);
-            populateSummary(st);
-            populateMethodologySummary(st);
-            populateDetails(st);
-            wchar_t status[160]{};
-            swprintf(status, 160, L"查询完成：初筛检测数 %d，初筛阳性数 %d，明细 %d 行。",
-                     st->statSummary.screening_count, st->statSummary.positive_count,
-                     static_cast<int>(st->rows.size()));
-            updateExportButton(st);
-            std::wstring statusText = status;
-            if (findHivDocxTemplate().empty()) {
-                statusText += L" 未上传匹配模版，统计表导出不可用。";
-            }
-            setStatus(st, statusText);
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
             if (st) {
                 search::apply_font_to_children(hwnd, st->ctx.uiFont);
@@ -1402,9 +1425,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             if (st) {
+                RemovePropW(hwnd, PROP_STATE);
+                st->queryTask.cancel();
                 search::destroy_page_feedback(st->feedback);
                 if (st->bgBrush) DeleteObject(st->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete st;
             }
             return 0;
