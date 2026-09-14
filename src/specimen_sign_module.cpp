@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 
 #include <commctrl.h>
 #include <windows.h>
@@ -20,9 +21,9 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -36,7 +37,6 @@ constexpr COLORREF COLOR_SCAN = RGB(0xF3, 0xE6, 0xD2);
 constexpr COLORREF COLOR_ALERT = RGB(0xF5, 0x0D, 0x19);
 constexpr UINT_PTR IDT_ROLLOVER_DATES = 6201;
 constexpr UINT WM_SPECIMEN_RUN_QUERY = WM_APP + 0x531;
-constexpr UINT WM_SPECIMEN_QUERY_DONE = WM_APP + 0x532;
 
 enum ControlId {
     IDC_SCAN_INPUT = 6101,
@@ -102,6 +102,7 @@ struct SpecimenSignState {
     HBRUSH scanBrush = nullptr;
     std::vector<search::PatientTypeOption> patientTypes;
     int autoDateStamp = 0;
+    app::WindowTask queryTask;
     bool querying = false;
 };
 
@@ -476,6 +477,24 @@ void presentSignedList(SpecimenSignState* st, const std::vector<search::Specimen
     setGeneralStatus(st, ss.str());
 }
 
+void finishQuery(SpecimenSignState* st, QueryPayload payload) {
+    if (!st) return;
+    st->querying = false;
+    if (!payload.ok) {
+        clearBarcodeResult(st);
+        std::wstring message = payload.listMode ? L"已签收条码查询失败：" : L"条码查询失败：";
+        message += search::utf8_to_wide(payload.error);
+        setBarcodeStatus(st, L"");
+        setGeneralStatus(st, message);
+        return;
+    }
+    if (payload.listMode) {
+        presentSignedList(st, payload.signedRows);
+        return;
+    }
+    presentBarcodeResult(st, payload.result);
+}
+
 search::SpecimenSignedListQuery signedListQueryFromUi(HWND hwnd, SpecimenSignState* st) {
     search::SpecimenSignedListQuery query;
     query.use_sign_time = isChecked(GetDlgItem(hwnd, IDC_SIGN_DATE_ENABLED));
@@ -505,16 +524,31 @@ void startSignedListQuery(HWND hwnd, SpecimenSignState* st) {
     setBarcodeStatus(st, L"");
     setGeneralStatus(st, L"正在按时间段查询已签收条码...");
 
-    auto settings = st->ctx.dbSettings;
-    std::thread([hwnd, settings, query]() {
-        auto payload = std::make_unique<QueryPayload>();
-        payload->listMode = true;
-        payload->ok = search::load_specimen_signed_list(settings, query, payload->signedRows, payload->error);
-        if (!PostMessageW(hwnd, WM_SPECIMEN_QUERY_DONE, 0, reinterpret_cast<LPARAM>(payload.get()))) {
-            return;
-        }
-        payload.release();
-    }).detach();
+    const auto settings = st->ctx.dbSettings;
+    const bool queued = st->queryTask.start<QueryPayload>(
+        [settings, query] {
+            QueryPayload payload;
+            payload.listMode = true;
+            payload.ok = search::load_specimen_signed_list(
+                settings, query, payload.signedRows, payload.error);
+            return payload;
+        },
+        [hwnd](std::optional<QueryPayload> payload, std::exception_ptr error) {
+            auto* state = reinterpret_cast<SpecimenSignState*>(GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !payload) {
+                state->querying = false;
+                clearBarcodeResult(state);
+                setBarcodeStatus(state, L"");
+                setGeneralStatus(state, L"已签收条码查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*payload));
+        });
+    if (!queued) {
+        st->querying = false;
+        setGeneralStatus(st, L"无法启动已签收条码后台查询。");
+    }
 }
 
 void startBarcodeQuery(HWND hwnd, SpecimenSignState* st, const std::string& barcode) {
@@ -533,15 +567,30 @@ void startBarcodeQuery(HWND hwnd, SpecimenSignState* st, const std::string& barc
     setBarcodeStatus(st, L"");
     setGeneralStatus(st, L"正在查询条码...");
 
-    auto settings = st->ctx.dbSettings;
-    std::thread([hwnd, settings, value]() {
-        auto payload = std::make_unique<QueryPayload>();
-        payload->ok = search::load_specimen_barcode(settings, value, payload->result, payload->error);
-        if (!PostMessageW(hwnd, WM_SPECIMEN_QUERY_DONE, 0, reinterpret_cast<LPARAM>(payload.get()))) {
-            return;
-        }
-        payload.release();
-    }).detach();
+    const auto settings = st->ctx.dbSettings;
+    const bool queued = st->queryTask.start<QueryPayload>(
+        [settings, value] {
+            QueryPayload payload;
+            payload.ok = search::load_specimen_barcode(
+                settings, value, payload.result, payload.error);
+            return payload;
+        },
+        [hwnd](std::optional<QueryPayload> payload, std::exception_ptr error) {
+            auto* state = reinterpret_cast<SpecimenSignState*>(GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !payload) {
+                state->querying = false;
+                clearBarcodeResult(state);
+                setBarcodeStatus(state, L"");
+                setGeneralStatus(state, L"条码查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*payload));
+        });
+    if (!queued) {
+        st->querying = false;
+        setGeneralStatus(st, L"无法启动条码后台查询。");
+    }
 }
 
 void runQueryFromInput(HWND hwnd, SpecimenSignState* st, HWND source) {
@@ -878,25 +927,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 runQueryFromInput(hwnd, st, source ? source : st->barcode);
             }
             return 0;
-        case WM_SPECIMEN_QUERY_DONE: {
-            std::unique_ptr<QueryPayload> payload(reinterpret_cast<QueryPayload*>(lp));
-            if (!st || !payload) return 0;
-            st->querying = false;
-            if (!payload->ok) {
-                clearBarcodeResult(st);
-                std::wstring message = payload->listMode ? L"已签收条码查询失败：" : L"条码查询失败：";
-                message += search::utf8_to_wide(payload->error);
-                setBarcodeStatus(st, L"");
-                setGeneralStatus(st, message);
-                return 0;
-            }
-            if (payload->listMode) {
-                presentSignedList(st, payload->signedRows);
-                return 0;
-            }
-            presentBarcodeResult(st, payload->result);
-            return 0;
-        }
         case WM_COMMAND:
             if (LOWORD(wp) == IDC_CLOSE) {
                 SendMessageW(GetParent(hwnd), WM_MDIDESTROY, reinterpret_cast<WPARAM>(hwnd), 0);
@@ -955,6 +985,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd, IDT_ROLLOVER_DATES);
             RemovePropW(hwnd, PROP_STATE);
             if (st) {
+                st->queryTask.cancel();
                 if (st->scanInput) {
                     RemoveWindowSubclass(st->scanInput, barcodeEditProc, 1);
                     RemovePropW(st->scanInput, L"SpecimenScanInput");
