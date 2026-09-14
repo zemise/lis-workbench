@@ -262,6 +262,8 @@ make install      # 完整发布流程 → out/windows/dist/
 
 ## 项目文件
 
+日志默认仅记录查询事件摘要及数字指标，不输出完整 SQL 或原始连接诊断。日志保留默认 14 天、20 MiB，可在 ClientConfig.ini 的 [Logging] 中设置 RetentionDays（1–365）和 MaxMiB（1–1024）。超过容量时删除最早日期的日志，当天日志也可能滚动。程序默认不再自行生成包含进程内存的崩溃转储；历史日志和转储需要管理员另行核对。
+
 - [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
 - [CHANGELOG.md](CHANGELOG.md)
 - [packaging/README_windows_installer.md](packaging/README_windows_installer.md)
