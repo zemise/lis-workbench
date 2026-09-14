@@ -8,6 +8,7 @@
 #include "trend_chart_renderer.h"
 #include "trend_core.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commdlg.h>
@@ -17,10 +18,10 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <memory>
+#include <exception>
+#include <optional>
 #include <set>
 #include <sstream>
-#include <thread>
 #include <vector>
 
 namespace search {
@@ -34,7 +35,6 @@ constexpr int IDC_TREND_EXPORT_IMAGE = 5105;
 constexpr int IDC_TREND_START_DATE = 5106;
 constexpr int IDC_TREND_END_DATE = 5107;
 constexpr int IDC_TREND_REFRESH = 5108;
-constexpr UINT WM_TREND_LOADED = WM_APP + 51;
 
 struct TrendWindowContext {
     DbSettings settings;
@@ -51,6 +51,7 @@ struct TrendWindowContext {
     HWND export_image_button = nullptr;
     HWND chart = nullptr;
     HWND list = nullptr;
+    app::WindowTask load_task;
     std::vector<TrendPoint> points;
     std::vector<TrendItemOption> items;
     std::string selected_item_code;
@@ -63,6 +64,8 @@ struct TrendLoadResult {
     std::vector<TrendPoint> points;
     std::vector<TrendItemOption> items;
 };
+
+void finish_load_trend_data(TrendWindowContext& ctx, TrendLoadResult result);
 
 class ScopedComInit {
 public:
@@ -615,30 +618,54 @@ void begin_load_trend_data(TrendWindowContext& ctx) {
     const HWND hwnd = ctx.hwnd;
     const DbSettings settings = ctx.settings;
     const QueryInput input = ctx.input;
-    std::thread([hwnd, settings, input]() {
-        auto* result = new TrendLoadResult;
-        result->ok = query_trend_points(settings, input, result->points, result->error);
-        if (result->ok) {
-            result->items = trend_item_options(result->points);
-        }
-        if (!PostMessageW(hwnd, WM_TREND_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = ctx.load_task.start<TrendLoadResult>(
+        [settings, input] {
+            TrendLoadResult result;
+            result.ok = query_trend_points(settings, input, result.points, result.error);
+            if (result.ok) {
+                result.items = trend_item_options(result.points);
+            }
+            return result;
+        },
+        [hwnd](std::optional<TrendLoadResult> result, std::exception_ptr error) {
+            auto* current = reinterpret_cast<TrendWindowContext*>(
+                GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            if (!current) return;
+            if (error || !result) {
+                current->loading = false;
+                EnableWindow(current->refresh_button, TRUE);
+                EnableWindow(current->export_button, TRUE);
+                EnableWindow(current->export_image_button, TRUE);
+                MessageBoxW(hwnd, L"趋势查询发生后台任务异常。",
+                            L"趋势查询失败", MB_ICONERROR);
+                InvalidateRect(current->chart, nullptr, TRUE);
+                return;
+            }
+            finish_load_trend_data(*current, std::move(*result));
+        });
+    if (!queued) {
+        ctx.loading = false;
+        EnableWindow(ctx.refresh_button, TRUE);
+        EnableWindow(ctx.export_button, TRUE);
+        EnableWindow(ctx.export_image_button, TRUE);
+        MessageBoxW(hwnd, L"无法启动趋势数据后台查询。",
+                    L"趋势查询失败", MB_ICONERROR);
+        InvalidateRect(ctx.chart, nullptr, TRUE);
+    }
 }
 
-void finish_load_trend_data(TrendWindowContext& ctx, std::unique_ptr<TrendLoadResult> result) {
+void finish_load_trend_data(TrendWindowContext& ctx, TrendLoadResult result) {
     ctx.loading = false;
     EnableWindow(ctx.refresh_button, TRUE);
     EnableWindow(ctx.export_button, TRUE);
     EnableWindow(ctx.export_image_button, TRUE);
-    if (!result->ok) {
-        MessageBoxW(ctx.hwnd, utf8_to_wide(result->error).c_str(), L"趋势查询失败", MB_ICONERROR);
+    if (!result.ok) {
+        MessageBoxW(ctx.hwnd, utf8_to_wide(result.error).c_str(), L"趋势查询失败", MB_ICONERROR);
         InvalidateRect(ctx.chart, nullptr, TRUE);
         return;
     }
-    ctx.points = std::move(result->points);
-    ctx.items = std::move(result->items);
+    ctx.points = std::move(result.points);
+    ctx.items = std::move(result.items);
     fill_item_list(ctx);
     fill_trend_list(ctx);
     InvalidateRect(ctx.chart, nullptr, TRUE);
@@ -756,14 +783,6 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             begin_load_trend_data(*ctx);
             return 0;
         }
-        case WM_TREND_LOADED:
-            if (ctx) {
-                std::unique_ptr<TrendLoadResult> result(reinterpret_cast<TrendLoadResult*>(lparam));
-                finish_load_trend_data(*ctx, std::move(result));
-            } else {
-                delete reinterpret_cast<TrendLoadResult*>(lparam);
-            }
-            return 0;
         case WM_SIZE:
             if (ctx) {
                 layout_trend_window(*ctx);
@@ -796,8 +815,11 @@ LRESULT CALLBACK trend_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             }
             break;
         case WM_DESTROY:
-            delete ctx;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if (ctx) {
+                ctx->load_task.cancel();
+                delete ctx;
+            }
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
