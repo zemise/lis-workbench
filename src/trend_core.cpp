@@ -111,6 +111,7 @@ void add_like(std::ostringstream& sql, const char* col, const std::string& value
 
 #ifdef _WIN32
 constexpr SQLULEN kLoginTimeoutSeconds = 5;
+constexpr SQLULEN kQueryTimeoutSeconds = 120;
 
 std::mutex& preferred_odbc_candidate_mutex() {
     static std::mutex mutex;
@@ -235,6 +236,16 @@ bool exec_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, std::string
     stmt = SQL_NULL_HSTMT;
     if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) {
         error = "SQLAllocHandle STMT failed";
+        return false;
+    }
+    const SQLRETURN timeout_rc = SQLSetStmtAttr(
+        stmt, SQL_ATTR_QUERY_TIMEOUT,
+        reinterpret_cast<SQLPOINTER>(kQueryTimeoutSeconds), 0);
+    if (!(timeout_rc == SQL_SUCCESS || timeout_rc == SQL_SUCCESS_WITH_INFO)) {
+        error = "SQLSetStmtAttr QUERY_TIMEOUT failed: " +
+                collect_diag(SQL_HANDLE_STMT, stmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        stmt = SQL_NULL_HSTMT;
         return false;
     }
     const auto wide = utf8_to_wide(sql);
