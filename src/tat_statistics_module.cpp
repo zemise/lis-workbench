@@ -11,6 +11,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commctrl.h>
@@ -23,8 +24,8 @@
 #include <cstdio>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -35,9 +36,6 @@ constexpr const wchar_t* WINDOW_TITLE = L"检验周转时间统计";
 constexpr const wchar_t* PROP_STATE = L"TatStatisticsState";
 constexpr const wchar_t* PROP_DIALOG_STATE = L"TatThresholdDialogState";
 constexpr const wchar_t* CONFIG_SECTION = L"TatStatistics";
-constexpr UINT WM_TAT_LOADED = WM_APP + 0x579;
-constexpr UINT WM_TAT_ROOMS_LOADED = WM_APP + 0x57A;
-constexpr UINT WM_TAT_EXPORTED = WM_APP + 0x57B;
 constexpr UINT_PTR TIMER_REFRESH = 1;
 
 constexpr COLORREF COLOR_NORMAL = RGB(0xFF, 0xFF, 0xFF);
@@ -133,6 +131,9 @@ struct TatState {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
+    app::WindowTask roomTask;
+    app::WindowTask exportTask;
     bool querying = false;
     bool exporting = false;
     bool hasLoaded = false;
@@ -494,6 +495,55 @@ void setQueryControls(TatState* state, bool enabled) {
     for (HWND control : controls) EnableWindow(control, value);
 }
 
+void finishQuery(TatState* state, QueryResult result) {
+    if (!state) return;
+    state->querying = false;
+    setQueryControls(state, true);
+    search::hide_page_activity(state->feedback);
+    if (!result.ok) {
+        EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
+        search::show_page_alert(state->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+    state->loadedStart = result.start;
+    state->loadedEnd = result.end;
+    state->allRows = std::move(result.rows);
+    state->statSummary = result.summary;
+    state->hasLoaded = true;
+    state->sortColumn = COL_RECEIVE_TIME;
+    state->sortAscending = false;
+    populateSummary(state);
+    applyStatusFilter(state);
+}
+
+void finishRoomLoad(TatState* state, RoomResult result) {
+    if (!state || !result.ok) return;
+    state->rooms = std::move(result.rows);
+    SendMessageW(state->room, CB_RESETCONTENT, 0, 0);
+    addCombo(state->room, L"全部");
+    for (const auto& room : state->rooms) {
+        const std::wstring text = search::utf8_to_wide(
+            room.room_name.empty() ? room.room_code : room.room_name);
+        addCombo(state->room, text.c_str());
+    }
+    SendMessageW(state->room, CB_SETCURSEL, 0, 0);
+}
+
+void finishExport(TatState* state, ExportResult result) {
+    if (!state) return;
+    state->exporting = false;
+    setQueryControls(state, true);
+    search::hide_page_activity(state->feedback);
+    EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
+    if (!result.ok) {
+        search::show_page_alert(state->feedback,
+            L"导出失败：" + search::utf8_to_wide(result.error));
+    } else {
+        search::set_page_status(state->feedback, L"已导出：" + result.path);
+    }
+}
+
 std::string selectedRoomCode(TatState* state) {
     const int index = static_cast<int>(SendMessageW(state->room, CB_GETCURSEL, 0, 0));
     if (index <= 0 || index - 1 >= static_cast<int>(state->rooms.size())) return {};
@@ -527,13 +577,36 @@ void runQuery(HWND hwnd, TatState* state) {
     EnableWindow(state->exportExcel, FALSE);
     search::set_page_status(state->feedback, L"正在查询检验周转时间...");
     search::show_page_activity(state->feedback, L"正在查询检验周转时间，请稍候…");
-    std::thread([hwnd, query]() {
-        auto* result = new QueryResult();
-        result->start = query.start_time;
-        result->end = query.end_time;
-        result->ok = search::query_tat_statistics(query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_TAT_LOADED, 0, reinterpret_cast<LPARAM>(result))) delete result;
-    }).detach();
+    const bool queued = state->queryTask.start<QueryResult>(
+        [query] {
+            QueryResult result;
+            result.start = query.start_time;
+            result.end = query.end_time;
+            result.ok = search::query_tat_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<QueryResult> result, std::exception_ptr error) {
+            auto* current = reinterpret_cast<TatState*>(GetPropW(hwnd, PROP_STATE));
+            if (!current) return;
+            if (error || !result) {
+                current->querying = false;
+                setQueryControls(current, true);
+                search::hide_page_activity(current->feedback);
+                EnableWindow(current->exportExcel,
+                    current->hasLoaded && !current->rows.empty());
+                search::show_page_alert(current->feedback, L"查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(current, std::move(*result));
+        });
+    if (!queued) {
+        state->querying = false;
+        setQueryControls(state, true);
+        search::hide_page_activity(state->feedback);
+        EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
+        search::show_page_alert(state->feedback, L"无法启动 TAT 后台查询。");
+    }
 }
 
 void resetFilters(TatState* state) {
@@ -615,13 +688,39 @@ void exportXlsx(HWND hwnd, TatState* state) {
     EnableWindow(state->exportExcel, FALSE);
     search::show_page_activity(state->feedback, L"正在导出检验周转时间明细，请稍候…");
     search::set_page_status(state->feedback, L"正在导出 Excel...");
-    std::thread([hwnd, outputPath, headers = std::move(headers), rows]() {
-        auto* result = new ExportResult();
-        result->path = outputPath;
-        result->ok = search::write_xlsx_file(outputPath, "检验周转时间统计", headers, rows.size(),
-            [&rows](size_t row, size_t column) { return cellValue(rows[row], static_cast<int>(column)); }, result->error);
-        if (!PostMessageW(hwnd, WM_TAT_EXPORTED, 0, reinterpret_cast<LPARAM>(result))) delete result;
-    }).detach();
+    const bool queued = state->exportTask.start<ExportResult>(
+        [outputPath, headers = std::move(headers), rows] {
+            ExportResult result;
+            result.path = outputPath;
+            result.ok = search::write_xlsx_file(
+                outputPath, "检验周转时间统计", headers, rows.size(),
+                [&rows](size_t row, size_t column) {
+                    return cellValue(rows[row], static_cast<int>(column));
+                },
+                result.error);
+            return result;
+        },
+        [hwnd](std::optional<ExportResult> result, std::exception_ptr error) {
+            auto* current = reinterpret_cast<TatState*>(GetPropW(hwnd, PROP_STATE));
+            if (!current) return;
+            if (error || !result) {
+                current->exporting = false;
+                setQueryControls(current, true);
+                search::hide_page_activity(current->feedback);
+                EnableWindow(current->exportExcel,
+                    current->hasLoaded && !current->rows.empty());
+                search::show_page_alert(current->feedback, L"导出发生后台任务异常。");
+                return;
+            }
+            finishExport(current, std::move(*result));
+        });
+    if (!queued) {
+        state->exporting = false;
+        setQueryControls(state, true);
+        search::hide_page_activity(state->feedback);
+        EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
+        search::show_page_alert(state->feedback, L"无法启动 Excel 后台导出。");
+    }
 }
 
 void resizeLayout(HWND hwnd, TatState* state) {
@@ -762,12 +861,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             const auto connection = search::build_connection_string_w(state->ctx.dbSettings);
             if (!connection.empty()) {
-                std::thread([hwnd, connection]() {
-                    auto* result = new RoomResult();
-                    std::string error;
-                    result->ok = search::query_barcode_rooms(search::wide_to_utf8(connection), result->rows, error);
-                    if (!PostMessageW(hwnd, WM_TAT_ROOMS_LOADED, 0, reinterpret_cast<LPARAM>(result))) delete result;
-                }).detach();
+                state->roomTask.start<RoomResult>(
+                    [connection] {
+                        RoomResult result;
+                        std::string error;
+                        result.ok = search::query_barcode_rooms(
+                            search::wide_to_utf8(connection), result.rows, error);
+                        return result;
+                    },
+                    [hwnd](std::optional<RoomResult> result, std::exception_ptr) {
+                        auto* current = reinterpret_cast<TatState*>(GetPropW(hwnd, PROP_STATE));
+                        if (!current || !result) return;
+                        finishRoomLoad(current, std::move(*result));
+                    });
             }
             return 0;
         }
@@ -830,55 +936,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_TAT_LOADED: {
-            std::unique_ptr<QueryResult> result(reinterpret_cast<QueryResult*>(lp));
-            if (!state) return 0;
-            state->querying = false;
-            setQueryControls(state, true);
-            search::hide_page_activity(state->feedback);
-            if (!result->ok) {
-                EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
-                search::show_page_alert(state->feedback, L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-            state->loadedStart = result->start;
-            state->loadedEnd = result->end;
-            state->allRows = std::move(result->rows);
-            state->statSummary = result->summary;
-            state->hasLoaded = true;
-            state->sortColumn = COL_RECEIVE_TIME;
-            state->sortAscending = false;
-            populateSummary(state);
-            applyStatusFilter(state);
-            return 0;
-        }
-        case WM_TAT_ROOMS_LOADED: {
-            std::unique_ptr<RoomResult> result(reinterpret_cast<RoomResult*>(lp));
-            if (!state || !result->ok) return 0;
-            state->rooms = std::move(result->rows);
-            SendMessageW(state->room, CB_RESETCONTENT, 0, 0);
-            addCombo(state->room, L"全部");
-            for (const auto& room : state->rooms) {
-                const std::wstring text = search::utf8_to_wide(room.room_name.empty() ? room.room_code : room.room_name);
-                addCombo(state->room, text.c_str());
-            }
-            SendMessageW(state->room, CB_SETCURSEL, 0, 0);
-            return 0;
-        }
-        case WM_TAT_EXPORTED: {
-            std::unique_ptr<ExportResult> result(reinterpret_cast<ExportResult*>(lp));
-            if (!state) return 0;
-            state->exporting = false;
-            setQueryControls(state, true);
-            search::hide_page_activity(state->feedback);
-            EnableWindow(state->exportExcel, state->hasLoaded && !state->rows.empty());
-            if (!result->ok) {
-                search::show_page_alert(state->feedback, L"导出失败：" + search::utf8_to_wide(result->error));
-            } else {
-                search::set_page_status(state->feedback, L"已导出：" + result->path);
-            }
-            return 0;
-        }
         case WM_TIMER:
             if (state && wp == TIMER_REFRESH && state->hasLoaded && !state->querying && !state->exporting) {
                 search::refresh_tat_statistics(state->thresholds, currentTimeText(), state->statSummary, state->allRows);
@@ -913,9 +970,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             if (state) {
                 KillTimer(hwnd, TIMER_REFRESH);
+                RemovePropW(hwnd, PROP_STATE);
+                state->queryTask.cancel();
+                state->roomTask.cancel();
+                state->exportTask.cancel();
                 search::destroy_page_feedback(state->feedback);
                 if (state->bgBrush) DeleteObject(state->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete state;
             }
             return 0;
