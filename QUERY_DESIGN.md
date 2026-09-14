@@ -54,7 +54,7 @@ packet size=4096;user id=...;password=...;data source=...;persist security info=
 - `ODBC Driver 17 for SQL Server`
 - `SQL Server`
 
-连接层会在本次运行内缓存相同连接串上一次成功的 driver candidate，后续优先尝试该候选，失败时仍回退到完整候选列表。首次分配 ODBC 环境句柄前启用 Driver Manager 连接池，并使用严格连接匹配；DBC 句柄设置 5 秒登录超时，用于限制不可达服务器、网络阻断或不可用驱动导致的建连等待，不限制 SQL 执行时长。
+连接层会在本次运行内缓存相同连接串上一次成功的 driver candidate，后续优先尝试该候选，失败时仍回退到完整候选列表。首次分配 ODBC 环境句柄前启用 Driver Manager 连接池，并使用严格连接匹配；DBC 句柄设置 5 秒登录超时，用于限制不可达服务器、网络阻断或不可用驱动导致的建连等待。每个 statement 在执行 SQL 前设置 120 秒查询超时，避免数据库异常或慢查询导致后台任务无界占用；后续根据不含患者标识的 P95 耗时数据调整阈值。
 
 ## 报告列表字段
 
