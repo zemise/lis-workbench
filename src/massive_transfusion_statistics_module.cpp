@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commctrl.h>
@@ -23,11 +24,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <initializer_list>
-#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -36,7 +37,6 @@ constexpr const wchar_t* WND_CLASS = L"MassiveTransfusionStatisticsModuleChild";
 constexpr const wchar_t* WINDOW_TITLE = L"大量输血统计";
 constexpr const wchar_t* PROP_STATE = L"MassiveTransfusionStatisticsSt";
 constexpr const char* RULE_VERSION = "v4";
-constexpr UINT WM_QUERY_LOADED = WM_APP + 0x576;
 
 enum ControlId {
     IDC_START_DATE = 7201,
@@ -212,6 +212,7 @@ struct State {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     bool hasResult = false;
     bool changingEventSelection = false;
@@ -247,6 +248,9 @@ struct QueryResult {
     std::vector<EventRow> events;
     std::vector<ComponentRow> auditRows;
 };
+
+void updateExportButtons(State* state);
+void applyQueryResult(State* state, QueryResult& result);
 
 int S(HWND hwnd, int value) {
     return static_cast<int>(value * search::dpi_scale_factor(hwnd));
@@ -1008,27 +1012,45 @@ void runQuery(HWND hwnd, State* state) {
     EnableWindow(state->exportComponents, FALSE);
     setStatus(state, L"正在查询并计算24小时事件...");
     search::show_page_activity(state->feedback, L"正在查询并计算 24 小时事件，请稍候…");
-    std::thread([hwnd, owner = state, query]() {
-        auto result = std::make_unique<QueryResult>();
-        const auto started = std::chrono::steady_clock::now();
-        result->startDate = query.start_date;
-        result->endDate = query.end_date;
-        result->campus = query.campus;
-        result->includePlateletCryo = query.include_platelet_and_cryoprecipitate;
-        result->thresholdMl = query.threshold_ml;
-        result->thresholdInclusive = query.threshold_inclusive;
-        result->statisticBasis = query.statistic_basis;
-        result->eventTimeSource = query.event_time_source;
-        result->ok = search::query_massive_transfusion_statistics(
-            query, result->summary, result->events, result->auditRows, result->error);
-        result->elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        if (GetPropW(hwnd, PROP_STATE) == owner &&
-            PostMessageW(hwnd, WM_QUERY_LOADED, 0,
-                         reinterpret_cast<LPARAM>(result.get()))) {
-            result.release();
-        }
-    }).detach();
+    const bool queued = state->queryTask.start<QueryResult>(
+        [query] {
+            QueryResult result;
+            const auto started = std::chrono::steady_clock::now();
+            result.startDate = query.start_date;
+            result.endDate = query.end_date;
+            result.campus = query.campus;
+            result.includePlateletCryo = query.include_platelet_and_cryoprecipitate;
+            result.thresholdMl = query.threshold_ml;
+            result.thresholdInclusive = query.threshold_inclusive;
+            result.statisticBasis = query.statistic_basis;
+            result.eventTimeSource = query.event_time_source;
+            result.ok = search::query_massive_transfusion_statistics(
+                query, result.summary, result.events, result.auditRows, result.error);
+            result.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            return result;
+        },
+        [hwnd](std::optional<QueryResult> result, std::exception_ptr error) {
+            auto* current = reinterpret_cast<State*>(GetPropW(hwnd, PROP_STATE));
+            if (!current) return;
+            if (error || !result) {
+                current->querying = false;
+                setQueryEnabled(current, true);
+                search::hide_page_activity(current->feedback);
+                updateExportButtons(current);
+                search::show_page_alert(
+                    current->feedback, L"大量输血统计查询发生后台任务异常。");
+                return;
+            }
+            applyQueryResult(current, *result);
+        });
+    if (!queued) {
+        state->querying = false;
+        setQueryEnabled(state, true);
+        search::hide_page_activity(state->feedback);
+        updateExportButtons(state);
+        search::show_page_alert(state->feedback, L"无法启动大量输血统计后台查询。");
+    }
 }
 
 bool chooseXlsxPath(HWND hwnd, const std::wstring& defaultName, std::wstring& path) {
@@ -1419,12 +1441,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_QUERY_LOADED: {
-            std::unique_ptr<QueryResult> result(reinterpret_cast<QueryResult*>(lp));
-            if (!state) return 0;
-            applyQueryResult(state, *result);
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
         case app::WM_APP_FONT_CHANGED:
             if (state) {
@@ -1452,9 +1468,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             if (state) {
+                RemovePropW(hwnd, PROP_STATE);
+                state->queryTask.cancel();
                 search::destroy_page_feedback(state->feedback);
                 if (state->bgBrush) DeleteObject(state->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete state;
             }
             return 0;
