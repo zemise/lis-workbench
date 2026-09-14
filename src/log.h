@@ -6,7 +6,8 @@ namespace applog {
 
 enum class Level { error, warn, info, debug };
 
-void init(const std::wstring& log_dir);
+void init(const std::wstring& log_dir, unsigned retention_days = 14,
+          unsigned long long max_bytes = 20 * 1024 * 1024);
 
 // Thread-safe. Writes timestamped line to the daily log file.
 void write(Level level, const char* file, int line, const std::string& message);

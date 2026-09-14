@@ -694,7 +694,6 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
     std::vector<std::string> failed_attempt_logs;
 
     for (const auto& candidate : candidates) {
-        const auto driver_name = candidate_driver_name(candidate);
         const auto wide = utf8_to_wide(candidate);
         SQLWCHAR out_conn[2048] = {};
         SQLSMALLINT out_len = 0;
@@ -705,16 +704,16 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
             remember_odbc_candidate(connection_string, candidate);
             if (log) {
-                log(std::string("db connect ok driver=") + driver_name +
+                log(std::string("db connect ok driver=") + "configured" +
                     (candidate == cached_candidate ? " cached" : "") + "\n");
             }
             return true;
         }
         if (log) {
             failed_attempt_logs.push_back(
-                "db connect failed driver=" + driver_name +
+                std::string("db connect failed driver=configured") +
                 (candidate == cached_candidate ? " cached" : "") +
-                " diag=" + collect_diag(SQL_HANDLE_DBC, db.dbc) + "\n");
+                " diagnostic=omitted" + "\n");
         }
     }
 
@@ -723,7 +722,7 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         for (const auto& entry : failed_attempt_logs) {
             log(entry);
         }
-        log(error + "\n");
+        log("db connect failed\n");
     }
     disconnect(db);
     return false;
@@ -786,7 +785,7 @@ bool load_barcode_employee_names(SQLHDBC dbc,
     cache_hit = false;
     const std::string sql =
         "SELECT EMPLOYEE_ID,NAME FROM JC_EMPLOYEE_PROPERTY WITH (NOLOCK)";
-    if (log) log("exec employee dictionary sql: " + sql + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(dbc, sql, stmt, error)) return false;
@@ -942,7 +941,7 @@ void fill_if_empty(std::string& target, const std::string& value) {
 
 bool exec_optional_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, LogFn log) {
     std::string ignored_error;
-    if (log) log("exec optional sql: " + sql + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
     return exec_query(dbc, sql, stmt, ignored_error);
 }
 
@@ -1012,7 +1011,7 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
         "SELECT CAST(ROOM_CODE AS varchar(20)), isnull(RTRIM(ROOM_NAME),'')"
         " FROM LS_AS_ROOM WHERE DELETE_BIT=0 ORDER BY ROOM_CODE";
     if (log) {
-        log("exec sql: " + sql + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1054,7 +1053,7 @@ bool query_barcode_rooms(const std::string& connection_string, std::vector<RoomO
         " AND CONVERT(varchar(20),Dept_Code) IN ('102','401')"
         " ORDER BY Dept_Code,ROOM_CODE";
     if (log) {
-        log("exec sql: " + sql + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1094,7 +1093,7 @@ bool query_report_machine_picker_rooms(const std::string& connection_string, std
         " FROM LS_AS_ROOM WHERE DELETE_BIT=0 AND Dept_Code IN (102,401)"
         " ORDER BY ROOM_CODE";
     if (log) {
-        log("exec sql: " + sql + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1132,7 +1131,7 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
         "SELECT isnull(TYPE,''), isnull(RTRIM(TYPE_NAME),'')"
         " FROM LS_AS_PATTYPE WHERE DELETE_BIT=0 ORDER BY TYPE";
     if (log) {
-        log("exec sql: " + sql + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1174,7 +1173,7 @@ bool query_machines(const std::string& connection_string, const std::string& roo
     add_eq(sql, "ROOM_CODE", room_code);
     sql << " ORDER BY MACH_CODE";
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1234,7 +1233,7 @@ bool query_report_machine_picker_machines(const std::string& connection_string, 
     add_eq(sql, "m.ROOM_CODE", room_code);
     sql << " ORDER BY m.ROOM_CODE, m.MACH_CODE";
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1350,7 +1349,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
     sql << " ORDER BY r.CHK_DATE DESC, r.REP_NO DESC";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1463,7 +1462,7 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
     sql << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1524,7 +1523,7 @@ bool query_latest_report_phone_by_reg_no(const std::string& connection_string, c
         << " ORDER BY CHK_DATE DESC,REP_TIME DESC,REP_NO DESC";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1574,7 +1573,7 @@ bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_
         << " ORDER BY LTRIM(RTRIM(isnull(z2.INPATIENT_NO,'')))";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1647,7 +1646,7 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         << " ORDER BY e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1715,7 +1714,7 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
     std::map<std::string, std::string> mach_names, employee_names;
     {
         auto load_map = [&](const std::string& map_sql, std::map<std::string, std::string>& out) {
-            if (log) log("exec sql: " + map_sql + "\n");
+            if (log) log(std::string("query=") + __func__ + " event=execute\n");
             SQLHSTMT ms = SQL_NULL_HSTMT;
             if (!exec_query(db.dbc, map_sql, ms, error)) return false;
             while (SQLFetch(ms) == SQL_SUCCESS) {
@@ -1798,7 +1797,7 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
     sql << " ORDER BY r.CHK_DATE ASC,r.REP_NO ASC,e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1896,7 +1895,7 @@ bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& qu
         << " FROM src WHERE rn=1 ORDER BY item_code";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1956,7 +1955,7 @@ bool query_report_picture(const std::string& connection_string, const std::strin
         << " ORDER BY PIC_NO,ID";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -1992,7 +1991,7 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
 
     auto exec_one = [&](const std::ostringstream& sql, std::vector<std::string>& cols) -> bool {
         if (log) {
-            log("exec sql: " + sql.str() + "\n");
+            log(std::string("query=") + __func__ + " event=execute\n");
         }
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, sql.str(), stmt, error)) {
@@ -2167,7 +2166,7 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
 
     sql << " ORDER BY a.Apply_Time DESC";
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
@@ -2249,7 +2248,7 @@ bool query_blood_crossmatch_history(const std::string& connection_string, const 
         << " AND cm.Patient_NO='" << sql_escape(no) << "'"
         << " ORDER BY bo.BloodOut_Date DESC,cm.Match_Date DESC,cm.ID DESC";
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
@@ -2297,7 +2296,7 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     const auto employee_dictionary_started = std::chrono::steady_clock::now();
     if (!load_barcode_employee_names(db.dbc, filters.connection_string, employee_names,
                                      employee_cache_hit, employee_error, log)) {
-        if (log) log("barcode employee dictionary unavailable: " + employee_error + "\n");
+        if (log) log("barcode employee dictionary unavailable: diagnostic omitted\n");
         employee_names = std::make_shared<const EmployeeNameMap>();
     }
     const auto employee_dictionary_finished = std::chrono::steady_clock::now();
@@ -2393,7 +2392,7 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
         << where.str()
         << " ORDER BY " << order_expr;
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
@@ -2551,7 +2550,7 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
         << where.str()
         << " ORDER BY b.IN_DATE ASC,b.BARCODE ASC,b.ID ASC";
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
@@ -2633,7 +2632,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
             << " AND (b.DELETE_BIT IS NULL OR b.DELETE_BIT=0)"
             << " AND (b.ZT_FLAG IS NULL OR b.ZT_FLAG<>9)"
             << " ORDER BY b.ID";
-        if (log) log("exec sql: " + sql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
@@ -2723,7 +2722,7 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
             << " WHERE r.TXM_NO='" << escaped << "'"
             << " AND (r.DELETE_BIT IS NULL OR r.DELETE_BIT=0)"
             << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
-        if (log) log("exec sql: " + sql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
@@ -2953,7 +2952,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
     }
 
     auto load_lookup = [&](const std::string& lookup_sql, std::map<std::string, std::string>& out) {
-        if (log) log("exec sql: " + lookup_sql + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
         SQLHSTMT lookup_stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, lookup_sql, lookup_stmt, error)) {
             return false;
@@ -3102,7 +3101,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
     append_report_branch(4008, false);
     report_sql << " ORDER BY 2,1";
 
-    if (log) log("exec sql: " + report_sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, report_sql.str(), stmt, error)) {
@@ -3193,7 +3192,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
         }
         entry_sql << ") ORDER BY e.REP_NO,e.ITEM_CODE";
 
-        if (log) log("exec sql: " + entry_sql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
         SQLHSTMT entry_stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, entry_sql.str(), entry_stmt, error)) {
@@ -3292,7 +3291,7 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
             << ")"
             << " SELECT PATIENT_NO,COMPLETED_APPLY_FORMS FROM completed_apply_forms";
 
-        if (log) log("exec sql: " + completed_apply_sql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
         SQLHSTMT completed_apply_stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, completed_apply_sql.str(), completed_apply_stmt, error)) {
@@ -3405,7 +3404,7 @@ bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSu
              << " isnull(LTRIM(RTRIM(MACH_NAME)),'')"
              << " FROM LS_AS_MACHINE WITH (NOLOCK)"
              << " WHERE isnull(DELETE_BIT,0)=0";
-        if (log) log("exec sql: " + mSql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
         SQLHSTMT mStmt = SQL_NULL_HSTMT;
         if (exec_query(db.dbc, mSql.str(), mStmt, error)) {
             while (SQLFetch(mStmt) == SQL_SUCCESS) {
@@ -3465,7 +3464,7 @@ bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSu
         << " ORDER BY LTRIM(RTRIM(b.BARCODE)), b.ID";
 
     if (log) {
-        log("exec sql: " + sql.str() + "\n");
+        log(std::string("query=") + __func__ + " event=execute\n");
     }
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
@@ -3805,7 +3804,7 @@ bool query_tat_statistics(const TatStatQuery& query, TatStatSummary& summary,
     std::string employee_error;
     if (!load_barcode_employee_names(db.dbc, query.connection_string, employee_names,
                                      cache_hit, employee_error, log)) {
-        if (log) log("tat employee dictionary unavailable: " + employee_error + "\n");
+        if (log) log("tat employee dictionary unavailable: diagnostic omitted\n");
         employee_names = std::make_shared<const EmployeeNameMap>();
     }
 
@@ -3872,7 +3871,7 @@ bool query_tat_statistics(const TatStatQuery& query, TatStatSummary& summary,
         << " ON room.ROOM_CODE=COALESCE(rd.ROOM_CODE,b.ROOM_CODE) AND isnull(room.DELETE_BIT,0)=0"
         << where.str()
         << " ORDER BY b.IN_DATE,b.BARCODE,b.ID";
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
@@ -3988,7 +3987,7 @@ bool query_backup_blood_statistics(const BackupBloodStatQuery& query,
     }
     sql << " ORDER BY a.Apply_Time DESC,a.ApplyFormNO";
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {
         return false;
@@ -4309,7 +4308,7 @@ bool query_transfusion_order_statistics(
         << " WHERE a.Apply_Time>='" << sql_escape(start_date) << "'"
         << " AND a.Apply_Time<DATEADD(day,1,'" << sql_escape(end_date) << "')"
         << " ORDER BY a.Apply_Time DESC,a.ApplyFormNO";
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
@@ -5215,7 +5214,7 @@ bool query_massive_transfusion_statistics(
             << " LEFT JOIN LS_XK_B_CompositionInfo comp WITH (NOLOCK) ON comp.ID=bi.CompositionID"
             << " LEFT JOIN BloodOutSummary bo ON bo.BloodInID=cm.BloodInID"
             << " ORDER BY cm.Patient_NO," << selected_expr << ",cm.BloodInID,cm.ID";
-        if (log) log("exec sql: " + sql.str() + "\n");
+        if (log) log(std::string("query=") + __func__ + " event=execute\n");
         SQLHSTMT stmt = SQL_NULL_HSTMT;
         if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
         std::vector<ActualTransfusionRawRow> raw_rows;
@@ -5272,7 +5271,7 @@ bool query_massive_transfusion_statistics(
         << " AND isnull(a.Delete_Bit,0)=0"
         << " AND LTRIM(RTRIM(isnull(a.ApplyForm_Statue,'')))<>'已删除'"
         << " ORDER BY a.Patient_NO,a.Apply_Time,a.ApplyFormNO,s.ID";
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
@@ -5376,7 +5375,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
              << " AND (y.BSCBZ IS NULL OR y.BSCBZ=0)"
              << " AND y.SQNR LIKE '%" << sql_escape(kBaseOrderKeyword) << "%'"
              << " ORDER BY y.JSSJ,y.TXM,y.YJSQID";
-    if (log) log("exec sql: " + base_sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, base_sql.str(), stmt, error)) {
@@ -5445,7 +5444,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
                   << " AND NULLIF(LTRIM(RTRIM(isnull(b.TXM,''))),'') IS NOT NULL"
                   << " AND b.SQNR LIKE '%" << sql_escape(kBaseOrderKeyword) << "%')"
                   << " ORDER BY d.JSSJ,d.TXM,d.YJSQID";
-    if (log) log("exec sql: " + duplicate_sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, duplicate_sql.str(), stmt, error)) {
@@ -5604,7 +5603,7 @@ bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<Ou
         << where.str()
         << " ORDER BY y.SFRQ DESC";
 
-    if (log) log("exec sql: " + sql.str() + "\n");
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) {

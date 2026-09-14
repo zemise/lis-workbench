@@ -283,6 +283,10 @@ if(BUILD_TESTING)
         target_compile_definitions(window_task_tests PRIVATE
             UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
         add_test(NAME window_task_tests COMMAND window_task_tests)
+        add_executable(log_tests tests/log_test.cpp)
+        target_include_directories(log_tests PRIVATE src)
+        target_link_libraries(log_tests PRIVATE search_core)
+        add_test(NAME log_tests COMMAND log_tests)
     endif()
 endif()
 

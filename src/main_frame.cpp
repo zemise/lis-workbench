@@ -814,7 +814,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     install_crash_handler();
-    applog::init(L"log");
+    applog::init(L"log",
+        static_cast<unsigned>((std::max)(1, search::load_module_int(L"Logging", L"RetentionDays", 14))),
+        static_cast<unsigned long long>((std::max)(1, (std::min)(1024,
+            search::load_module_int(L"Logging", L"MaxMiB", 20)))) * 1024 * 1024);
     LOG_INFO("LIS 工作台 starting");
 
     g_ctx.instance = instance;
