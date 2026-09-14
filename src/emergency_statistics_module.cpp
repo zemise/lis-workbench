@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 
 #include <commctrl.h>
 #include <windows.h>
@@ -18,10 +19,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <exception>
 #include <iterator>
-#include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -29,7 +30,6 @@ namespace {
 constexpr const wchar_t* WND_CLASS = L"EmergencyStatisticsModuleChild";
 constexpr const wchar_t* WINDOW_TITLE = L"急诊样本统计";
 constexpr const wchar_t* PROP_STATE = L"EmergencyStatisticsSt";
-constexpr UINT WM_EMERGENCY_STATS_LOADED = WM_APP + 0x571;
 constexpr UINT_PTR TIMER_REFRESH_DURATIONS = 1;
 
 const COLORREF COLOR_WAITING = RGB(0xFF, 0xFF, 0x54);
@@ -107,6 +107,7 @@ struct EmergencyStatisticsState {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     int sortColumn = 4;
     bool sortAscending = true;
@@ -400,6 +401,33 @@ void resizeLayout(HWND hwnd, EmergencyStatisticsState* st) {
     search::layout_page_feedback(st->feedback);
 }
 
+void finishQuery(EmergencyStatisticsState* st, EmergencyQueryResult result) {
+    if (!st) return;
+    st->querying = false;
+    EnableWindow(st->query, TRUE);
+    search::hide_page_activity(st->feedback);
+    if (!result.ok) {
+        search::show_page_alert(st->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+    st->statSummary = result.summary;
+    st->rows = std::move(result.rows);
+    refreshDynamicDurations(st, false);
+    st->sortColumn = 4;
+    st->sortAscending = true;
+    sortRows(st, 4, false);
+    populateSummary(st);
+    populateDetails(st);
+    wchar_t status[200]{};
+    swprintf(status, 200, L"查询完成：急诊条码 %d，未完成 %d，未上机 %d，明细 %d 条。",
+             st->statSummary.emergency_barcode_count,
+             st->statSummary.unfinished_count,
+             st->statSummary.not_loaded_count,
+             static_cast<int>(st->rows.size()));
+    setStatus(st, status);
+}
+
 void runQuery(HWND hwnd, EmergencyStatisticsState* st) {
     if (!st || st->querying) return;
     const auto connection = search::build_connection_string_w(st->ctx.dbSettings);
@@ -421,13 +449,33 @@ void runQuery(HWND hwnd, EmergencyStatisticsState* st) {
     setStatus(st, L"正在查询急诊条码统计...");
     search::show_page_activity(st->feedback, L"正在查询急诊条码统计，请稍候…");
 
-    std::thread([hwnd, query]() {
-        auto* result = new EmergencyQueryResult();
-        result->ok = search::query_emergency_statistics(query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_EMERGENCY_STATS_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = st->queryTask.start<EmergencyQueryResult>(
+        [query] {
+            EmergencyQueryResult result;
+            result.ok = search::query_emergency_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<EmergencyQueryResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<EmergencyStatisticsState*>(
+                GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !result) {
+                state->querying = false;
+                EnableWindow(state->query, TRUE);
+                search::hide_page_activity(state->feedback);
+                search::show_page_alert(state->feedback,
+                    L"急诊统计查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*result));
+        });
+    if (!queued) {
+        st->querying = false;
+        EnableWindow(st->query, TRUE);
+        search::hide_page_activity(st->feedback);
+        search::show_page_alert(st->feedback, L"无法启动急诊统计后台查询。");
+    }
 }
 
 void openRegularReportForRow(HWND owner, EmergencyStatisticsState* st, int index) {
@@ -558,34 +606,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_EMERGENCY_STATS_LOADED: {
-            std::unique_ptr<EmergencyQueryResult> result(reinterpret_cast<EmergencyQueryResult*>(lp));
-            if (!st) return 0;
-            st->querying = false;
-            EnableWindow(st->query, TRUE);
-            search::hide_page_activity(st->feedback);
-            if (!result->ok) {
-                search::show_page_alert(st->feedback,
-                    L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-            st->statSummary = result->summary;
-            st->rows = std::move(result->rows);
-            refreshDynamicDurations(st, false);
-            st->sortColumn = 4;
-            st->sortAscending = true;
-            sortRows(st, 4, false);
-            populateSummary(st);
-            populateDetails(st);
-            wchar_t status[200]{};
-            swprintf(status, 200, L"查询完成：急诊条码 %d，未完成 %d，未上机 %d，明细 %d 条。",
-                     st->statSummary.emergency_barcode_count,
-                     st->statSummary.unfinished_count,
-                     st->statSummary.not_loaded_count,
-                     static_cast<int>(st->rows.size()));
-            setStatus(st, status);
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
         case app::WM_APP_FONT_CHANGED:
             if (st) {
@@ -613,11 +633,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             if (st) {
                 KillTimer(hwnd, TIMER_REFRESH_DURATIONS);
+                RemovePropW(hwnd, PROP_STATE);
+                st->queryTask.cancel();
                 search::destroy_page_feedback(st->feedback);
                 if (st->bgBrush) DeleteObject(st->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
+                delete st;
             }
-            break;
+            return 0;
     }
     return DefMDIChildProcW(hwnd, msg, wp, lp);
 }
