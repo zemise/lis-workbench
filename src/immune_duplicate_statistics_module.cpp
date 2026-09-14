@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 
 #include <commctrl.h>
 #include <windows.h>
@@ -18,10 +19,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <iterator>
-#include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -30,7 +31,6 @@ constexpr const wchar_t* WND_CLASS = L"ImmuneDuplicateStatisticsModuleChild";
 constexpr const wchar_t* WINDOW_TITLE = L"免疫重复项目统计";
 constexpr const wchar_t* PROP_STATE = L"ImmuneDuplicateStatisticsSt";
 constexpr int IDM_COPY_CELL = 9101;
-constexpr UINT WM_IMMUNE_DUPLICATE_LOADED = WM_APP + 0x574;
 
 enum ControlId {
     IDC_START_TIME = 6901,
@@ -97,6 +97,7 @@ struct ImmuneDuplicateState {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     int sortColumn = -1;
     bool sortAscending = true;
@@ -370,6 +371,51 @@ void resizeLayout(HWND hwnd, ImmuneDuplicateState* st) {
     search::layout_page_feedback(st->feedback);
 }
 
+void finishQuery(ImmuneDuplicateState* st, ImmuneDuplicateQueryResult result) {
+    if (!st) return;
+    st->querying = false;
+    EnableWindow(st->query, TRUE);
+    EnableWindow(st->exportExcel, FALSE);
+    search::hide_page_activity(st->feedback);
+    if (!result.ok) {
+        search::show_page_alert(st->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+
+    st->summary = result.summary;
+    st->rows = std::move(result.rows);
+    st->sortColumn = -1;
+    st->sortAscending = true;
+    populateSummary(st);
+    populateDetails(st);
+
+    wchar_t status[320]{};
+    if (st->summary.base_barcode_count == 0) {
+        swprintf(status, std::size(status), L"该时间段未找到输血常规检查条码。");
+    } else if (st->summary.duplicate_item_count == 0) {
+        swprintf(status, std::size(status),
+                 L"已找到 %d 个基准条码、%d 次住院，未发现疑似重复项目。",
+                 st->summary.base_barcode_count, st->summary.base_patient_count);
+    } else {
+        swprintf(status, std::size(status),
+                 L"查询完成：基准条码 %d，疑似重复住院 %d，重复项目 %d。",
+                 st->summary.base_barcode_count,
+                 st->summary.duplicate_patient_count,
+                 st->summary.duplicate_item_count);
+    }
+    std::wstring statusText(status);
+    if (st->summary.missing_base_barcode_count > 0) {
+        statusText += L" 无条码基准申请 " +
+                      std::to_wstring(st->summary.missing_base_barcode_count) + L" 条。";
+    }
+    if (st->summary.unmatched_inpatient_count > 0) {
+        statusText += L" 未匹配住院信息 " +
+                      std::to_wstring(st->summary.unmatched_inpatient_count) + L" 次。";
+    }
+    setStatus(st, statusText);
+}
+
 void runQuery(HWND hwnd, ImmuneDuplicateState* st) {
     if (!st || st->querying) return;
     const auto connection = search::build_connection_string_w(st->ctx.dbSettings);
@@ -393,14 +439,36 @@ void runQuery(HWND hwnd, ImmuneDuplicateState* st) {
     setStatus(st, L"正在查询免疫重复项目...");
     search::show_page_activity(st->feedback, L"正在查询免疫重复项目，请稍候…");
 
-    std::thread([hwnd, query]() {
-        auto* result = new ImmuneDuplicateQueryResult();
-        result->ok = search::query_immune_duplicate_statistics(
-            query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_IMMUNE_DUPLICATE_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = st->queryTask.start<ImmuneDuplicateQueryResult>(
+        [query] {
+            ImmuneDuplicateQueryResult result;
+            result.ok = search::query_immune_duplicate_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<ImmuneDuplicateQueryResult> result,
+               std::exception_ptr error) {
+            auto* state = reinterpret_cast<ImmuneDuplicateState*>(
+                GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !result) {
+                state->querying = false;
+                EnableWindow(state->query, TRUE);
+                EnableWindow(state->exportExcel, FALSE);
+                search::hide_page_activity(state->feedback);
+                search::show_page_alert(state->feedback,
+                    L"免疫重复统计查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*result));
+        });
+    if (!queued) {
+        st->querying = false;
+        EnableWindow(st->query, TRUE);
+        EnableWindow(st->exportExcel, FALSE);
+        search::hide_page_activity(st->feedback);
+        search::show_page_alert(st->feedback, L"无法启动免疫重复统计后台查询。");
+    }
 }
 
 void showExportUnavailable(HWND hwnd, ImmuneDuplicateState* st) {
@@ -515,53 +583,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_IMMUNE_DUPLICATE_LOADED: {
-            std::unique_ptr<ImmuneDuplicateQueryResult> result(
-                reinterpret_cast<ImmuneDuplicateQueryResult*>(lp));
-            if (!st) return 0;
-            st->querying = false;
-            EnableWindow(st->query, TRUE);
-            EnableWindow(st->exportExcel, FALSE);
-            search::hide_page_activity(st->feedback);
-            if (!result->ok) {
-                search::show_page_alert(st->feedback,
-                    L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-
-            st->summary = result->summary;
-            st->rows = std::move(result->rows);
-            st->sortColumn = -1;
-            st->sortAscending = true;
-            populateSummary(st);
-            populateDetails(st);
-
-            wchar_t status[320]{};
-            if (st->summary.base_barcode_count == 0) {
-                swprintf(status, std::size(status), L"该时间段未找到输血常规检查条码。");
-            } else if (st->summary.duplicate_item_count == 0) {
-                swprintf(status, std::size(status),
-                         L"已找到 %d 个基准条码、%d 次住院，未发现疑似重复项目。",
-                         st->summary.base_barcode_count, st->summary.base_patient_count);
-            } else {
-                swprintf(status, std::size(status),
-                         L"查询完成：基准条码 %d，疑似重复住院 %d，重复项目 %d。",
-                         st->summary.base_barcode_count,
-                         st->summary.duplicate_patient_count,
-                         st->summary.duplicate_item_count);
-            }
-            std::wstring status_text(status);
-            if (st->summary.missing_base_barcode_count > 0) {
-                status_text += L" 无条码基准申请 " +
-                               std::to_wstring(st->summary.missing_base_barcode_count) + L" 条。";
-            }
-            if (st->summary.unmatched_inpatient_count > 0) {
-                status_text += L" 未匹配住院信息 " +
-                               std::to_wstring(st->summary.unmatched_inpatient_count) + L" 次。";
-            }
-            setStatus(st, status_text);
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
         case app::WM_APP_FONT_CHANGED:
             if (st) {
@@ -588,9 +609,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             if (st) {
+                RemovePropW(hwnd, PROP_STATE);
+                st->queryTask.cancel();
                 search::destroy_page_feedback(st->feedback);
                 if (st->bgBrush) DeleteObject(st->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete st;
             }
             return 0;
