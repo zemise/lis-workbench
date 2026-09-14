@@ -4,9 +4,10 @@
 #include "search_text.h"
 
 #include <algorithm>
+#include <exception>
 #include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 #include <windows.h>
 #include <iphlpapi.h>
@@ -44,6 +45,7 @@
 #include "update_source.h"
 #include "version.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 namespace {
 
 constexpr int IDM_QUERY        = 1001;
@@ -76,8 +78,6 @@ constexpr int IDM_STAT7        = 3027;
 constexpr int ID_STATUS        = 4001;
 constexpr int ID_TIMER         = 5001;
 constexpr int ID_AUTO_UPDATE_TIMER = 5002;
-constexpr UINT WM_AUTO_UPDATE_CHECK_DONE = WM_APP + 31;
-constexpr UINT WM_MANUAL_UPDATE_CHECK_DONE = WM_APP + 32;
 
 constexpr const wchar_t* MDI_CHILD_CLASS = L"MdiPlaceholderChild";
 constexpr const wchar_t* UPDATE_CACHE_DIR_NAME = L"LISWorkbench\\UpdateCache";
@@ -86,6 +86,8 @@ constexpr const wchar_t* UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 
 app::Context g_ctx;
 bool g_manualUpdateChecking = false;
+app::WindowTask g_manualUpdateTask;
+app::WindowTask g_autoUpdateTask;
 
 struct MenuDrawText {
     std::wstring text;
@@ -110,6 +112,9 @@ struct UpdateSourceConfig {
     std::wstring manifestUrl;
     std::wstring folderPath;
 };
+
+void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone& done);
+void showAutoUpdateCheckResult(HWND hwnd, const AutoUpdateCheckDone& done);
 
 std::vector<std::unique_ptr<MenuDrawText>> g_menuDrawTexts;
 
@@ -416,21 +421,37 @@ void startManualUpdateCheck(HWND hwnd) {
     setMainStatusText(L"正在检查更新...");
 
     const std::wstring cache_dir = programDataUpdateCacheDir();
-    std::thread([hwnd, cfg, cache_dir]() {
-        auto* done = new ManualUpdateCheckDone;
-        std::unique_ptr<lis_update::IUpdateSource> source;
-        if (cfg.sourceType == lis_update::kSourceHttp) {
-            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
-        } else {
-            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
-        }
+    const bool queued = g_manualUpdateTask.start<ManualUpdateCheckDone>(
+        [cfg, cache_dir] {
+            ManualUpdateCheckDone done;
+            std::unique_ptr<lis_update::IUpdateSource> source;
+            if (cfg.sourceType == lis_update::kSourceHttp) {
+                source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
+            } else {
+                source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
+            }
 
-        done->ok = lis_update::check_and_fetch_update(*source, search::kVersion,
-                                                      cache_dir, done->result, done->error);
-        if (!PostMessageW(hwnd, WM_MANUAL_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
-            delete done;
-        }
-    }).detach();
+            done.ok = lis_update::check_and_fetch_update(
+                *source, search::kVersion, cache_dir, done.result, done.error);
+            return done;
+        },
+        [hwnd](std::optional<ManualUpdateCheckDone> done, std::exception_ptr error) {
+            if (!IsWindow(hwnd)) return;
+            if (error || !done) {
+                g_manualUpdateChecking = false;
+                setMainStatusText(L"就绪");
+                MessageBoxW(hwnd, L"检查更新时发生后台任务异常。",
+                            L"检查更新失败", MB_ICONERROR);
+                return;
+            }
+            showManualUpdateCheckResult(hwnd, *done);
+        });
+    if (!queued) {
+        g_manualUpdateChecking = false;
+        setMainStatusText(L"就绪");
+        MessageBoxW(hwnd, L"无法启动更新检查后台任务。",
+                    L"检查更新失败", MB_ICONERROR);
+    }
 }
 
 void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone& done) {
@@ -487,25 +508,29 @@ void startAutoUpdateCheck(HWND hwnd) {
     if (cfg.sourceType == lis_update::kSourceHttp && cfg.manifestUrl.empty()) return;
     if (cfg.sourceType != lis_update::kSourceHttp && cfg.folderPath.empty()) return;
 
-    std::thread([hwnd, cfg]() {
-        auto* done = new AutoUpdateCheckDone;
-        std::unique_ptr<lis_update::IUpdateSource> source;
-        if (cfg.sourceType == lis_update::kSourceHttp) {
-            source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
-        } else {
-            source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
-        }
+    g_autoUpdateTask.start<AutoUpdateCheckDone>(
+        [cfg] {
+            AutoUpdateCheckDone done;
+            std::unique_ptr<lis_update::IUpdateSource> source;
+            if (cfg.sourceType == lis_update::kSourceHttp) {
+                source = std::make_unique<lis_update::HttpUpdateSource>(cfg.manifestUrl);
+            } else {
+                source = std::make_unique<lis_update::FolderUpdateSource>(cfg.folderPath);
+            }
 
-        lis_update::UpdateManifest manifest;
-        done->ok = source->fetch_manifest(manifest, done->error);
-        if (done->ok && lis_update::compare_version_strings(manifest.version, search::kVersion) > 0) {
-            done->updateAvailable = true;
-            done->version = manifest.version;
-        }
-        if (!PostMessageW(hwnd, WM_AUTO_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(done))) {
-            delete done;
-        }
-    }).detach();
+            lis_update::UpdateManifest manifest;
+            done.ok = source->fetch_manifest(manifest, done.error);
+            if (done.ok &&
+                lis_update::compare_version_strings(manifest.version, search::kVersion) > 0) {
+                done.updateAvailable = true;
+                done.version = manifest.version;
+            }
+            return done;
+        },
+        [hwnd](std::optional<AutoUpdateCheckDone> done, std::exception_ptr error) {
+            if (!IsWindow(hwnd) || error || !done) return;
+            showAutoUpdateCheckResult(hwnd, *done);
+        });
 }
 
 void showAutoUpdateCheckResult(HWND hwnd, const AutoUpdateCheckDone& done) {
@@ -708,22 +733,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-        case WM_AUTO_UPDATE_CHECK_DONE: {
-            std::unique_ptr<AutoUpdateCheckDone> done(
-                reinterpret_cast<AutoUpdateCheckDone*>(lp));
-            if (done) {
-                showAutoUpdateCheckResult(hwnd, *done);
-            }
-            return 0;
-        }
-        case WM_MANUAL_UPDATE_CHECK_DONE: {
-            std::unique_ptr<ManualUpdateCheckDone> done(
-                reinterpret_cast<ManualUpdateCheckDone*>(lp));
-            if (done) {
-                showManualUpdateCheckResult(hwnd, *done);
-            }
-            return 0;
-        }
         case WM_SIZE: {
             HWND tb = GetDlgItem(hwnd, ID_TOOLBAR);
             int tbH = tb ? mtGetHeight(tb) : 28;
@@ -792,6 +801,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             KillTimer(hwnd, ID_TIMER);
             KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
+            g_manualUpdateTask.cancel();
+            g_autoUpdateTask.cancel();
+            g_manualUpdateChecking = false;
             PostQuitMessage(0);
             return 0;
     }
