@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前版本：`v2026.09.10.1`
+当前源码版本：`v2026.09.14`（发布准备中）
 
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)、[PROJECT_OPTIMIZATION_ROADMAP.md](PROJECT_OPTIMIZATION_ROADMAP.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。

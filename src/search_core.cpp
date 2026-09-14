@@ -463,20 +463,6 @@ std::map<std::string, std::string> parse_connection_kv(const std::string& text) 
     return values;
 }
 
-std::string candidate_driver_name(const std::string& candidate) {
-    const auto upper = upper_ascii(candidate);
-    const auto pos = upper.find("DRIVER={");
-    if (pos == std::string::npos) {
-        return "manual";
-    }
-    const auto start = pos + 8;
-    const auto end = candidate.find('}', start);
-    if (end == std::string::npos) {
-        return "manual";
-    }
-    return candidate.substr(start, end - start);
-}
-
 std::vector<std::string> odbc_candidates(const std::string& input) {
     if (input.find("DRIVER=") != std::string::npos || input.find("Driver=") != std::string::npos) {
         return {input};
@@ -704,7 +690,7 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
             remember_odbc_candidate(connection_string, candidate);
             if (log) {
-                log(std::string("db connect ok driver=") + "configured" +
+                log(std::string("db connect ok driver=configured") +
                     (candidate == cached_candidate ? " cached" : "") + "\n");
             }
             return true;
@@ -713,7 +699,7 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
             failed_attempt_logs.push_back(
                 std::string("db connect failed driver=configured") +
                 (candidate == cached_candidate ? " cached" : "") +
-                " diagnostic=omitted" + "\n");
+                " diagnostic=omitted\n");
         }
     }
 
