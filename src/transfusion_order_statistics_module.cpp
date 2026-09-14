@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commctrl.h>
@@ -18,10 +19,10 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <exception>
 #include <iterator>
-#include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -31,7 +32,6 @@ constexpr const wchar_t* LEGEND_CLASS = L"TransfusionOrderStatisticsLegend";
 constexpr const wchar_t* SUMMARY_GROUP_CLASS = L"TransfusionOrderStatisticsSummaryGroup";
 constexpr const wchar_t* WINDOW_TITLE = L"输血单统计";
 constexpr const wchar_t* PROP_STATE = L"TransfusionOrderStatisticsSt";
-constexpr UINT WM_TRANSFUSION_ORDER_LOADED = WM_APP + 0x578;
 
 constexpr COLORREF COLOR_UNREVIEWED = RGB(0xFF, 0xE0, 0xB2);
 constexpr COLORREF COLOR_REVIEWED = RGB(0xBB, 0xDE, 0xFB);
@@ -152,6 +152,7 @@ struct State {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     bool hasLoadedResult = false;
     bool loadedIncludeRejected = false;
@@ -548,6 +549,39 @@ void resizeLayout(HWND hwnd, State* st) {
     search::layout_page_feedback(st->feedback);
 }
 
+void finishQuery(State* st, QueryResult result) {
+    if (!st) return;
+    st->querying = false;
+    setQueryControlsEnabled(st, true);
+    search::hide_page_activity(st->feedback);
+    if (!result.ok) {
+        EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
+        search::show_page_alert(st->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+    st->summary = result.summary;
+    st->rows = std::move(result.rows);
+    st->hasLoadedResult = true;
+    st->loadedIncludeRejected = result.includeRejected;
+    st->loadedIncludeDeleted = result.includeDeleted;
+    st->loadedCampus = search::utf8_to_wide(
+        result.campus.empty() ? "全部" : result.campus);
+    st->loadedStartDate = result.startDate;
+    st->loadedEndDate = result.endDate;
+    st->sortColumn = COL_APPLY_TIME;
+    st->sortAscending = false;
+    sortRows(st, st->sortColumn, false);
+    populateSummary(st);
+    populateDetails(st);
+    EnableWindow(st->exportExcel, !st->rows.empty());
+    std::wstring text = L"查询结果共 " + std::to_wstring(st->summary.total_count) +
+        L" 个输血申请单。院区：" + st->loadedCampus + L"。";
+    if (st->loadedIncludeRejected) text += L" 包含已驳回。";
+    if (st->loadedIncludeDeleted) text += L" 包含已删除。";
+    setStatus(st, text);
+}
+
 void runQuery(HWND hwnd, State* st) {
     if (!st || st->querying) return;
     const auto connection = search::build_connection_string_w(st->ctx.dbSettings);
@@ -571,19 +605,40 @@ void runQuery(HWND hwnd, State* st) {
     EnableWindow(st->exportExcel, FALSE);
     setStatus(st, L"正在查询输血申请单...");
     search::show_page_activity(st->feedback, L"正在查询输血申请单，请稍候…");
-    std::thread([hwnd, query]() {
-        auto* result = new QueryResult();
-        result->includeRejected = query.include_rejected;
-        result->includeDeleted = query.include_deleted;
-        result->campus = query.campus;
-        result->startDate = query.start_date;
-        result->endDate = query.end_date;
-        result->ok = search::query_transfusion_order_statistics(
-            query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_TRANSFUSION_ORDER_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = st->queryTask.start<QueryResult>(
+        [query] {
+            QueryResult result;
+            result.includeRejected = query.include_rejected;
+            result.includeDeleted = query.include_deleted;
+            result.campus = query.campus;
+            result.startDate = query.start_date;
+            result.endDate = query.end_date;
+            result.ok = search::query_transfusion_order_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<QueryResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<State*>(GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !result) {
+                state->querying = false;
+                setQueryControlsEnabled(state, true);
+                search::hide_page_activity(state->feedback);
+                EnableWindow(state->exportExcel,
+                    state->hasLoadedResult && !state->rows.empty());
+                search::show_page_alert(state->feedback,
+                    L"输血申请统计查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*result));
+        });
+    if (!queued) {
+        st->querying = false;
+        setQueryControlsEnabled(st, true);
+        search::hide_page_activity(st->feedback);
+        EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
+        search::show_page_alert(st->feedback, L"无法启动输血申请统计后台查询。");
+    }
 }
 
 std::wstring defaultXlsxName(State* st) {
@@ -769,39 +824,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_TRANSFUSION_ORDER_LOADED: {
-            std::unique_ptr<QueryResult> result(reinterpret_cast<QueryResult*>(lp));
-            if (!st) return 0;
-            st->querying = false;
-            setQueryControlsEnabled(st, true);
-            search::hide_page_activity(st->feedback);
-            if (!result->ok) {
-                EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
-                search::show_page_alert(st->feedback,
-                    L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-            st->summary = result->summary;
-            st->rows = std::move(result->rows);
-            st->hasLoadedResult = true;
-            st->loadedIncludeRejected = result->includeRejected;
-            st->loadedIncludeDeleted = result->includeDeleted;
-            st->loadedCampus = search::utf8_to_wide(result->campus.empty() ? "全部" : result->campus);
-            st->loadedStartDate = result->startDate;
-            st->loadedEndDate = result->endDate;
-            st->sortColumn = COL_APPLY_TIME;
-            st->sortAscending = false;
-            sortRows(st, st->sortColumn, false);
-            populateSummary(st);
-            populateDetails(st);
-            EnableWindow(st->exportExcel, !st->rows.empty());
-            std::wstring text = L"查询结果共 " + std::to_wstring(st->summary.total_count) +
-                L" 个输血申请单。院区：" + st->loadedCampus + L"。";
-            if (st->loadedIncludeRejected) text += L" 包含已驳回。";
-            if (st->loadedIncludeDeleted) text += L" 包含已删除。";
-            setStatus(st, text);
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
         case app::WM_APP_FONT_CHANGED:
             if (st) {
@@ -831,9 +853,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             if (st) {
+                RemovePropW(hwnd, PROP_STATE);
+                st->queryTask.cancel();
                 search::destroy_page_feedback(st->feedback);
                 if (st->bgBrush) DeleteObject(st->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete st;
             }
             return 0;

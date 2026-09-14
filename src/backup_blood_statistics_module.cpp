@@ -10,6 +10,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "win32_control_id.h"
+#include "window_task.h"
 #include "xlsx_writer.h"
 
 #include <commctrl.h>
@@ -18,10 +19,10 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <exception>
 #include <iterator>
-#include <memory>
+#include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -30,7 +31,6 @@ constexpr const wchar_t* WND_CLASS = L"BackupBloodStatisticsModuleChild";
 constexpr const wchar_t* LEGEND_CLASS = L"BackupBloodStatisticsStatusLegend";
 constexpr const wchar_t* WINDOW_TITLE = L"备血统计";
 constexpr const wchar_t* PROP_STATE = L"BackupBloodStatisticsSt";
-constexpr UINT WM_BACKUP_BLOOD_LOADED = WM_APP + 0x575;
 
 constexpr COLORREF COLOR_UNREVIEWED = RGB(0xFF, 0xE0, 0xB2);
 constexpr COLORREF COLOR_REVIEWED = RGB(0xBB, 0xDE, 0xFB);
@@ -137,6 +137,7 @@ struct BackupBloodState {
     HWND status = nullptr;
     search::PageFeedback feedback;
     HBRUSH bgBrush = nullptr;
+    app::WindowTask queryTask;
     bool querying = false;
     bool hasLoadedResult = false;
     bool loadedIncludeDeleted = false;
@@ -557,6 +558,40 @@ void resizeLayout(HWND hwnd, BackupBloodState* st) {
     search::layout_page_feedback(st->feedback);
 }
 
+void finishQuery(BackupBloodState* st, BackupBloodQueryResult result) {
+    if (!st) return;
+    st->querying = false;
+    setQueryControlsEnabled(st, true);
+    search::hide_page_activity(st->feedback);
+    if (!result.ok) {
+        EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
+        search::show_page_alert(st->feedback,
+            L"查询失败：" + search::utf8_to_wide(result.error));
+        return;
+    }
+    st->summary = result.summary;
+    st->allRows = std::move(result.rows);
+    st->hasLoadedResult = true;
+    st->loadedIncludeDeleted = result.includeDeleted;
+    st->loadedCampus = search::utf8_to_wide(
+        result.campus.empty() ? "全部" : result.campus);
+    st->loadedStartDate = result.startDate;
+    st->loadedEndDate = result.endDate;
+    st->sortColumn = COL_APPLY_TIME;
+    st->sortAscending = false;
+    populateSummary(st);
+    populateStatusSummary(st);
+    applyBackupTypeFilter(st);
+    if (st->summary.total_count == 0) {
+        setStatus(st, L"该日期范围内未找到符合条件的备血申请单。院区：" +
+                      st->loadedCampus + L"。" +
+                      (st->summary.missing_apply_form_no_count > 0
+                           ? L" 空申请单号异常 " +
+                                 std::to_wstring(st->summary.missing_apply_form_no_count) + L" 条。"
+                           : L""));
+    }
+}
+
 void runQuery(HWND hwnd, BackupBloodState* st) {
     if (!st || st->querying) return;
     const auto connection = search::build_connection_string_w(st->ctx.dbSettings);
@@ -583,18 +618,39 @@ void runQuery(HWND hwnd, BackupBloodState* st) {
     setStatus(st, L"正在查询备血申请单...");
     search::show_page_activity(st->feedback, L"正在查询备血申请单，请稍候…");
 
-    std::thread([hwnd, query]() {
-        auto* result = new BackupBloodQueryResult();
-        result->includeDeleted = query.include_deleted;
-        result->campus = query.campus;
-        result->startDate = query.start_date;
-        result->endDate = query.end_date;
-        result->ok = search::query_backup_blood_statistics(
-            query, result->summary, result->rows, result->error);
-        if (!PostMessageW(hwnd, WM_BACKUP_BLOOD_LOADED, 0, reinterpret_cast<LPARAM>(result))) {
-            delete result;
-        }
-    }).detach();
+    const bool queued = st->queryTask.start<BackupBloodQueryResult>(
+        [query] {
+            BackupBloodQueryResult result;
+            result.includeDeleted = query.include_deleted;
+            result.campus = query.campus;
+            result.startDate = query.start_date;
+            result.endDate = query.end_date;
+            result.ok = search::query_backup_blood_statistics(
+                query, result.summary, result.rows, result.error);
+            return result;
+        },
+        [hwnd](std::optional<BackupBloodQueryResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<BackupBloodState*>(GetPropW(hwnd, PROP_STATE));
+            if (!state) return;
+            if (error || !result) {
+                state->querying = false;
+                setQueryControlsEnabled(state, true);
+                search::hide_page_activity(state->feedback);
+                EnableWindow(state->exportExcel,
+                    state->hasLoadedResult && !state->rows.empty());
+                search::show_page_alert(state->feedback,
+                    L"备血统计查询发生后台任务异常。");
+                return;
+            }
+            finishQuery(state, std::move(*result));
+        });
+    if (!queued) {
+        st->querying = false;
+        setQueryControlsEnabled(st, true);
+        search::hide_page_activity(st->feedback);
+        EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
+        search::show_page_alert(st->feedback, L"无法启动备血统计后台查询。");
+    }
 }
 
 std::wstring defaultXlsxName(BackupBloodState* st) {
@@ -768,39 +824,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_BACKUP_BLOOD_LOADED: {
-            std::unique_ptr<BackupBloodQueryResult> result(reinterpret_cast<BackupBloodQueryResult*>(lp));
-            if (!st) return 0;
-            st->querying = false;
-            setQueryControlsEnabled(st, true);
-            search::hide_page_activity(st->feedback);
-            if (!result->ok) {
-                EnableWindow(st->exportExcel, st->hasLoadedResult && !st->rows.empty());
-                search::show_page_alert(st->feedback,
-                    L"查询失败：" + search::utf8_to_wide(result->error));
-                return 0;
-            }
-            st->summary = result->summary;
-            st->allRows = std::move(result->rows);
-            st->hasLoadedResult = true;
-            st->loadedIncludeDeleted = result->includeDeleted;
-            st->loadedCampus = search::utf8_to_wide(result->campus.empty() ? "全部" : result->campus);
-            st->loadedStartDate = result->startDate;
-            st->loadedEndDate = result->endDate;
-            st->sortColumn = COL_APPLY_TIME;
-            st->sortAscending = false;
-            populateSummary(st);
-            populateStatusSummary(st);
-            applyBackupTypeFilter(st);
-            if (st->summary.total_count == 0) {
-                setStatus(st, L"该日期范围内未找到符合条件的备血申请单。院区：" +
-                              st->loadedCampus + L"。"
-                              + (st->summary.missing_apply_form_no_count > 0
-                                     ? L" 空申请单号异常 " + std::to_wstring(st->summary.missing_apply_form_no_count) + L" 条。"
-                                     : L""));
-            }
-            return 0;
-        }
         case app::WM_APP_SETTINGS_CHANGED:
         case app::WM_APP_FONT_CHANGED:
             if (st) {
@@ -829,9 +852,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             if (st) {
+                RemovePropW(hwnd, PROP_STATE);
+                st->queryTask.cancel();
                 search::destroy_page_feedback(st->feedback);
                 if (st->bgBrush) DeleteObject(st->bgBrush);
-                RemovePropW(hwnd, PROP_STATE);
                 delete st;
             }
             return 0;
