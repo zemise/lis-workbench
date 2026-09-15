@@ -808,6 +808,21 @@ struct ImmuneDuplicateStatQuery {
     std::string connection_string;
     std::string start_time;
     std::string end_time;
+    std::string base_item_codes;       // YJ_ZYSQ.YZXMID, separated by semicolons or commas
+    std::string duplicate_item_codes;  // YJ_ZYSQ.YZXMID, separated by semicolons or commas
+};
+
+struct ImmuneDuplicateItemCatalogQuery {
+    std::string connection_string;
+    std::string start_time;
+    std::string end_time;
+};
+
+struct ImmuneDuplicateItemCatalogRow {
+    std::string item_code;
+    std::string order_text;
+    std::string record_count;
+    std::string last_sign_time;
 };
 
 struct ImmuneDuplicateStatSummary {
@@ -823,12 +838,14 @@ struct ImmuneDuplicateStatSummary {
 };
 
 struct ImmuneDuplicateStatDetailRow {
+    std::string inpatient_id;
     std::string patient_no;
     std::string name;
     std::string type_name;
     std::string department;
     std::string bed_no;
     std::string base_barcode;
+    std::string base_item_code;
     std::string base_sample_no;
     std::string base_order_text;
     std::string base_sign_time;
@@ -953,6 +970,7 @@ bool query_massive_transfusion_statistics(const MassiveTransfusionStatQuery& que
                                           std::vector<MassiveTransfusionComponentDetailRow>& audit_rows,
                                           std::string& error, LogFn log = {});
 bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query, ImmuneDuplicateStatSummary& summary, std::vector<ImmuneDuplicateStatDetailRow>& rows, std::string& error, LogFn log = {});
+bool query_immune_duplicate_item_catalog(const ImmuneDuplicateItemCatalogQuery& query, std::vector<ImmuneDuplicateItemCatalogRow>& rows, std::string& error, LogFn log = {});
 bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<OutpatientChargeRow>& rows, std::string& error, LogFn log = {});
 
 }  // namespace search

@@ -318,6 +318,34 @@ std::string sql_item_code_list(const std::string& text, const char* fallback) {
     return out.str();
 }
 
+bool strict_numeric_code_list(const std::string& text,
+                              std::string& sql_list,
+                              std::set<std::string>& codes) {
+    sql_list.clear();
+    codes.clear();
+    std::string token;
+    auto flush = [&]() {
+        if (token.empty()) return;
+        codes.insert(token);
+        token.clear();
+    };
+    for (unsigned char ch : text) {
+        if (std::isdigit(ch)) {
+            token.push_back(static_cast<char>(ch));
+        } else if (ch == ';' || ch == ',' || ch == '|' || ch == '/' || std::isspace(ch)) {
+            flush();
+        } else {
+            return false;
+        }
+    }
+    flush();
+    for (const auto& code : codes) {
+        if (!sql_list.empty()) sql_list += ",";
+        sql_list += code;
+    }
+    return !sql_list.empty();
+}
+
 std::string sql_room_machine_filter(const std::string& text, const char* report_alias) {
     std::vector<std::pair<std::string, std::vector<std::string>>> groups;
     std::set<std::string> seen_pairs;
@@ -5305,10 +5333,6 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
     error = "query_immune_duplicate_statistics is only available on Windows";
     return false;
 #else
-    constexpr const char* kBaseOrderKeyword = "输血前常规检查";
-    constexpr const char* kHepatitisKeyword = "乙肝三对";
-    constexpr const char* kSyphilisKeyword = "梅毒";
-
     const std::string start_time = trim(query.start_time);
     const std::string end_time = trim(query.end_time);
     if (start_time.empty() || end_time.empty()) {
@@ -5319,6 +5343,24 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
         error = "start_time must not be later than end_time";
         return false;
     }
+    std::string base_code_sql;
+    std::string duplicate_code_sql;
+    std::set<std::string> base_codes;
+    std::set<std::string> duplicate_codes;
+    if (!strict_numeric_code_list(query.base_item_codes, base_code_sql, base_codes)) {
+        error = "base_item_codes must contain one or more numeric YZXMID values";
+        return false;
+    }
+    if (!strict_numeric_code_list(query.duplicate_item_codes, duplicate_code_sql, duplicate_codes)) {
+        error = "duplicate_item_codes must contain one or more numeric YZXMID values";
+        return false;
+    }
+    for (const auto& code : base_codes) {
+        if (duplicate_codes.count(code) != 0) {
+            error = "base_item_codes and duplicate_item_codes must not overlap";
+            return false;
+        }
+    }
 
     DbContext db;
     if (!connect(query.connection_string, db, error, log)) {
@@ -5327,6 +5369,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
 
     struct BaseGroup {
         std::set<std::string> barcodes;
+        std::set<std::string> item_codes;
         std::string patient_no;
         std::string name;
         std::string department;
@@ -5348,7 +5391,8 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
              << "isnull(LTRIM(RTRIM(CONVERT(varchar(100),z.INPATIENT_NO))),''),"
              << "isnull(LTRIM(RTRIM(CONVERT(varchar(200),z.NAME))),''),"
              << "isnull(NULLIF(LTRIM(RTRIM(dept.NAME)),''),"
-             << "isnull(LTRIM(RTRIM(CONVERT(varchar(100),y.SQKS))),''))"
+             << "isnull(LTRIM(RTRIM(CONVERT(varchar(100),y.SQKS))),'')),"
+             << "isnull(CONVERT(varchar(30),y.YZXMID),'')"
              << " FROM YJ_ZYSQ y WITH (NOLOCK)"
              << " LEFT JOIN ZY_INPATIENT z WITH (NOLOCK) ON z.INPATIENT_ID=y.INPATIENT_ID"
              << " LEFT JOIN JC_DEPT_PROPERTY dept WITH (NOLOCK)"
@@ -5359,7 +5403,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
              << " AND y.JSSJ<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
              << " AND y.ZXKS IN (102,401)"
              << " AND (y.BSCBZ IS NULL OR y.BSCBZ=0)"
-             << " AND y.SQNR LIKE '%" << sql_escape(kBaseOrderKeyword) << "%'"
+             << " AND y.YZXMID IN (" << base_code_sql << ")"
              << " ORDER BY y.JSSJ,y.TXM,y.YJSQID";
     if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
@@ -5376,6 +5420,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
         const std::string patient_no = fetch_column(stmt, 6);
         const std::string name = fetch_column(stmt, 7);
         const std::string department = fetch_column(stmt, 8);
+        const std::string item_code = fetch_column(stmt, 9);
         if (inpatient_id.empty()) {
             continue;
         }
@@ -5385,6 +5430,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
         }
         auto& group = base_groups[inpatient_id];
         group.barcodes.insert(barcode);
+        if (!item_code.empty()) group.item_codes.insert(item_code);
         base_barcodes.insert(barcode);
         fill_if_empty(group.patient_no, patient_no);
         fill_if_empty(group.name, name);
@@ -5413,22 +5459,14 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
                   << "isnull(CONVERT(varchar(36),d.INPATIENT_ID),''),"
                   << "isnull(LTRIM(RTRIM(CONVERT(varchar(100),d.TXM))),''),"
                   << "isnull(LTRIM(RTRIM(CONVERT(varchar(500),d.SQNR))),''),"
-                  << "isnull(CONVERT(varchar(19),d.JSSJ,120),'')"
+                  << "isnull(CONVERT(varchar(19),d.JSSJ,120),''),"
+                  << "isnull(CONVERT(varchar(30),d.YZXMID),'')"
                   << " FROM YJ_ZYSQ d WITH (NOLOCK)"
                   << " WHERE d.JSSJ>='" << sql_escape(start_time) << "'"
                   << " AND d.JSSJ<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
                   << " AND d.ZXKS IN (102,401)"
                   << " AND (d.BSCBZ IS NULL OR d.BSCBZ=0)"
-                  << " AND (d.SQNR LIKE '%" << sql_escape(kHepatitisKeyword) << "%'"
-                  << " OR d.SQNR LIKE '%" << sql_escape(kSyphilisKeyword) << "%')"
-                  << " AND EXISTS (SELECT 1 FROM YJ_ZYSQ b WITH (NOLOCK)"
-                  << " WHERE b.INPATIENT_ID=d.INPATIENT_ID"
-                  << " AND b.JSSJ>='" << sql_escape(start_time) << "'"
-                  << " AND b.JSSJ<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
-                  << " AND b.ZXKS IN (102,401)"
-                  << " AND (b.BSCBZ IS NULL OR b.BSCBZ=0)"
-                  << " AND NULLIF(LTRIM(RTRIM(isnull(b.TXM,''))),'') IS NOT NULL"
-                  << " AND b.SQNR LIKE '%" << sql_escape(kBaseOrderKeyword) << "%')"
+                  << " AND d.YZXMID IN (" << duplicate_code_sql << ")"
                   << " ORDER BY d.JSSJ,d.TXM,d.YJSQID";
     if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
@@ -5454,6 +5492,7 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
         const std::string duplicate_barcode = fetch_column(stmt, 3);
         const std::string duplicate_order_text = fetch_column(stmt, 4);
         const std::string duplicate_sign_time = fetch_column(stmt, 5);
+        const std::string duplicate_item_code = fetch_column(stmt, 6);
         if (request_id.empty() || !seen_request_ids.insert(request_id).second) {
             continue;
         }
@@ -5465,22 +5504,19 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
         const bool same_barcode = !duplicate_barcode.empty() && base.barcodes.count(duplicate_barcode) != 0;
 
         ImmuneDuplicateStatDetailRow row;
+        row.inpatient_id = inpatient_id;
         row.patient_no = base.patient_no;
         row.name = base.name;
         row.type_name = "住院";
         row.department = base.department;
         row.base_barcode = join_barcodes(base.barcodes);
+        row.base_item_code = join_barcodes(base.item_codes);
         row.base_order_text = base.order_text;
         row.base_sign_time = base.sign_time;
         row.duplicate_barcode = duplicate_barcode;
+        row.duplicate_item_code = duplicate_item_code;
         row.duplicate_item_name = duplicate_order_text;
-        const bool hepatitis = duplicate_order_text.find(kHepatitisKeyword) != std::string::npos;
-        const bool syphilis = duplicate_order_text.find(kSyphilisKeyword) != std::string::npos;
-        if (hepatitis) row.duplicate_category = kHepatitisKeyword;
-        if (syphilis) {
-            if (!row.duplicate_category.empty()) row.duplicate_category += "/";
-            row.duplicate_category += kSyphilisKeyword;
-        }
+        row.duplicate_category = "指定项目";
         row.duplicate_sign_time = duplicate_sign_time;
         row.relation = same_barcode ? "同条码" : "跨条码";
         rows.push_back(std::move(row));
@@ -5498,6 +5534,62 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
     summary.duplicate_patient_count = static_cast<int>(duplicate_patients.size());
     summary.duplicate_barcode_count = static_cast<int>(duplicate_barcodes.size());
     summary.duplicate_item_count = static_cast<int>(rows.size());
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_immune_duplicate_item_catalog(const ImmuneDuplicateItemCatalogQuery& query,
+                                         std::vector<ImmuneDuplicateItemCatalogRow>& rows,
+                                         std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)query;
+    (void)log;
+    error = "query_immune_duplicate_item_catalog is only available on Windows";
+    return false;
+#else
+    const std::string start_time = trim(query.start_time);
+    const std::string end_time = trim(query.end_time);
+    if (start_time.empty() || end_time.empty()) {
+        error = "start_time and end_time are required";
+        return false;
+    }
+    if (start_time > end_time) {
+        error = "start_time must not be later than end_time";
+        return false;
+    }
+
+    DbContext db;
+    if (!connect(query.connection_string, db, error, log)) return false;
+
+    std::ostringstream sql;
+    sql << "SELECT TOP (1000) "
+        << "CONVERT(varchar(30),y.YZXMID),"
+        << "LTRIM(RTRIM(isnull(CONVERT(varchar(500),y.SQNR),''))),"
+        << "CONVERT(varchar(30),COUNT_BIG(*)),"
+        << "isnull(CONVERT(varchar(19),MAX(y.JSSJ),120),'')"
+        << " FROM YJ_ZYSQ y WITH (NOLOCK)"
+        << " WHERE y.JSSJ>='" << sql_escape(start_time) << "'"
+        << " AND y.JSSJ<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
+        << " AND y.ZXKS IN (102,401)"
+        << " AND (y.BSCBZ IS NULL OR y.BSCBZ=0)"
+        << " AND y.YZXMID IS NOT NULL"
+        << " GROUP BY y.YZXMID,LTRIM(RTRIM(isnull(CONVERT(varchar(500),y.SQNR),'')))"
+        << " ORDER BY MAX(y.JSSJ) DESC,COUNT_BIG(*) DESC,y.YZXMID";
+    if (log) log(std::string("query=") + __func__ + " event=execute\n");
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        ImmuneDuplicateItemCatalogRow row;
+        row.item_code = fetch_column(stmt, 1);
+        row.order_text = fetch_column(stmt, 2);
+        row.record_count = fetch_column(stmt, 3);
+        row.last_sign_time = fetch_column(stmt, 4);
+        rows.push_back(std::move(row));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
