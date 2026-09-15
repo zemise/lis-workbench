@@ -4,6 +4,8 @@
 
 当前源码版本：`v2026.09.14`（发布准备中）
 
+2026-09-15 起暂停集中优化，后续转入新模块开发。已完成内容、遗留风险、开发约定及恢复顺序统一记录在 [持续优化路线图的暂停交接记录](PROJECT_OPTIMIZATION_ROADMAP.md#2026-09-15-暂停与恢复交接)。版本更新已合入 main，正式 tag / Release 尚待发布流程执行。
+
 项目已经整理为可长期演进的结构。
 详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)、[PROJECT_OPTIMIZATION_ROADMAP.md](PROJECT_OPTIMIZATION_ROADMAP.md) 和 [QT_MIGRATION_GUIDE.md](QT_MIGRATION_GUIDE.md)。
 
