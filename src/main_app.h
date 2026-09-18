@@ -10,6 +10,7 @@ namespace app {
 
 constexpr UINT WM_APP_SETTINGS_CHANGED = WM_APP + 20;
 constexpr UINT WM_APP_FONT_CHANGED = WM_APP + 21;
+constexpr UINT WM_APP_DB_SETTINGS_CHANGED = WM_APP + 22;
 
 struct Context {
     HINSTANCE instance = nullptr;

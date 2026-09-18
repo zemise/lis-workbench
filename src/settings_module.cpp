@@ -1225,6 +1225,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     auto* gctx = static_cast<app::Context*>(st->ctx.appContext);
                     gctx->dbSettings = st->app.db;
                     gctx->fontSize = st->app.ui.font_size;
+                    if (gctx->mainWindow) {
+                        SendMessageW(gctx->mainWindow, app::WM_APP_DB_SETTINGS_CHANGED, 0, 0);
+                    }
                     if (gctx->mainWindow && oldFontSize != st->app.ui.font_size) {
                         SendMessageW(gctx->mainWindow, app::WM_APP_SETTINGS_CHANGED, 0, 0);
                     } else {

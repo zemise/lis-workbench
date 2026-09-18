@@ -113,6 +113,29 @@ struct ResultRow {
     std::string critical_high_bound;  // LS_AS_DEF_ITEMSCOPE.DNBOUND1
 };
 
+struct AutoDeleteCrpReportState {
+    std::string rep_no;
+    bool patient_info_complete = false;
+};
+
+struct AutoDeleteCrpCycleQuery {
+    std::string connection_string;
+    std::string day_start;
+    std::string day_end;
+    std::string last_scanned_rep_no;
+    std::vector<std::string> pending_rep_nos;
+    bool catch_up = false;
+    int report_batch_size = 500;
+    int sql_batch_size = 200;
+};
+
+struct AutoDeleteCrpCycleResult {
+    std::string last_scanned_rep_no;
+    std::vector<AutoDeleteCrpReportState> discovered_reports;
+    std::vector<AutoDeleteCrpReportState> pending_report_states;
+    int updated_entry_count = 0;
+};
+
 struct QualityControlLisQuery {
     std::string connection_string;
     std::string start_date;
@@ -917,6 +940,10 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_string, const std::string& reg_no, std::vector<std::string>& inpatient_nos, std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
+bool run_auto_delete_crp_cycle(const AutoDeleteCrpCycleQuery& query,
+                               AutoDeleteCrpCycleResult& result,
+                               std::string& error,
+                               LogFn log = {});
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});

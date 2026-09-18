@@ -3,6 +3,8 @@
 
 #ifdef _WIN32
 
+#include "auto_delete_crp_service.h"
+
 #include "app_settings_io.h"
 #include "barcode_label_printing.h"
 #include "main_app.h"
@@ -339,6 +341,8 @@ void acceptMachinePicker(MachinePickerState* ps) {
         const auto& m = ps->machines[static_cast<size_t>(sel)];
         SetWindowTextW(ps->report->machineEdit, search::utf8_to_wide(m.mach_name).c_str());
         ps->report->selectedMachineCode = m.mach_code;
+        ps->report->selectedMachineGroupCode = m.group_code;
+        ps->report->selectedMachineGroupResolved = true;
         ps->report->selectedRoomCode = m.room_code;
         regularUpdateQuickMachineButtonLabels(ps->report);
     }
@@ -1213,7 +1217,10 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     // 标本信息
     const int sRows = 7, sH = gh(sRows);
     grp(L"标本信息", gx, gy, gw, sH);
-    st->selectedMachineCode.clear(); st->selectedRoomCode.clear();
+    st->selectedMachineCode.clear();
+    st->selectedMachineGroupCode.clear();
+    st->selectedMachineGroupResolved = false;
+    st->selectedRoomCode.clear();
     lbl(L"检验仪器", lx, rowY(0), lw);
     const int pbw = 34, pbx = gr - pbw;
     st->machineEdit = edt(L"", ix, rowY(0) - 2, std::max(80, pbx - ix - 6), eh, ES_CENTER | ES_READONLY);
@@ -1621,16 +1628,34 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
     const auto settings = st->ctx.dbSettings;
     const auto input = buildReportQueryInput(st);
     const std::string qd = input.start_date;
+    const bool resolveMachineGroup = !st->selectedMachineGroupResolved;
     const HWND hwnd = st->hwnd;
 
     const bool queued = st->reportQueryTask.start<ReportLoadResult>(
-        [settings, input, gen, preserveState, qd] {
+        [settings, input, gen, preserveState, qd, resolveMachineGroup] {
             ReportLoadResult result;
             result.generation = gen;
             result.preserveState = preserveState;
             result.queryDate = qd;
             result.ok = search::run_report_query(
                 settings, input, result.rows, result.connectionString, result.error);
+            if (result.ok && resolveMachineGroup) {
+                std::vector<search::MachineOption> machines;
+                std::string lookupError;
+                if (search::load_report_machine_picker_machine_options(
+                        settings, input.room_code, machines, lookupError)) {
+                    result.machineGroupLookupCompleted = true;
+                    for (const auto& machine : machines) {
+                        if (search::trim(machine.room_code) == search::trim(input.room_code) &&
+                            search::trim(machine.mach_code) == search::trim(input.mach_code)) {
+                            result.selectedMachineGroupCode = machine.group_code;
+                            break;
+                        }
+                    }
+                } else {
+                    LOG_WARN("Regular report quick machine group lookup failed: " + lookupError);
+                }
+            }
             return result;
         },
         [hwnd](std::optional<ReportLoadResult> result, std::exception_ptr error) {
@@ -2219,6 +2244,10 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
+    if (result->machineGroupLookupCompleted) {
+        st->selectedMachineGroupCode = std::move(result->selectedMachineGroupCode);
+        st->selectedMachineGroupResolved = true;
+    }
     const bool ps = result->preserveState;
     const std::vector<search::ReportRow> prev = st->reportRows;
     std::string selId;
@@ -2363,6 +2392,16 @@ bool applyQuickMachineSlot(RegularReportState* st, int slot, bool showMissingMes
                              search::trim(st->selectedRoomCode) == search::trim(nextRoom);
     SetWindowTextW(st->machineEdit, name.empty() ? code.c_str() : name.c_str());
     st->selectedMachineCode = nextCode;
+    st->selectedMachineGroupCode.clear();
+    st->selectedMachineGroupResolved = false;
+    for (const auto& machine : st->cachedMachinePickerMachines) {
+        if (search::trim(machine.mach_code) == search::trim(nextCode) &&
+            search::trim(machine.room_code) == search::trim(nextRoom)) {
+            st->selectedMachineGroupCode = machine.group_code;
+            st->selectedMachineGroupResolved = true;
+            break;
+        }
+    }
     st->selectedRoomCode = nextRoom;
     regularUpdateQuickMachineButtonLabels(st);
     runReportQuery(st, sameMachine && hasSelectedReportRow(st));
@@ -2394,6 +2433,8 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     }
 
     st->selectedMachineCode = machCode;
+    st->selectedMachineGroupCode.clear();
+    st->selectedMachineGroupResolved = false;
     st->selectedRoomCode = search::trim(target.room_code);
     st->pendingOpenReport = true;
     st->pendingOpenRepNo = repNo;
@@ -2430,6 +2471,13 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
                 REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_TREND, L"趋势图");
+    if (search::trim(st->selectedMachineCode) == "1011" ||
+        search::trim(st->selectedMachineGroupCode) == "101101") {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        UINT flags = MF_STRING;
+        if (auto_delete_crp_service().enabled()) flags |= MF_CHECKED;
+        AppendMenuW(menu, flags, REGULAR_IDM_AUTO_DELETE_CRP, L"自动删除CRP");
+    }
     TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
                    pt.x, pt.y, 0, st->hwnd, nullptr);
     DestroyMenu(menu);
@@ -2672,6 +2720,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (LOWORD(wp) == REGULAR_IDM_REPORT_TREND) {
                 regularShowTrendForContext(st);
+                return 0;
+            }
+            if (LOWORD(wp) == REGULAR_IDM_AUTO_DELETE_CRP) {
+                auto& service = auto_delete_crp_service();
+                service.setEnabled(!service.enabled());
                 return 0;
             }
             break;
