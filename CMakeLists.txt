@@ -158,7 +158,6 @@ endif()
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
     src/main_frame.cpp
-    src/auto_delete_crp_service.cpp
     src/menu_toolbar.cpp
     src/backup_blood_statistics_module.cpp
     src/barcode_label_printing.cpp

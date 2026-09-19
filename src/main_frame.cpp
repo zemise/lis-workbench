@@ -19,7 +19,6 @@
 
 #include "app_settings.h"
 #include "app_settings_io.h"
-#include "auto_delete_crp_service.h"
 #include "backup_blood_statistics_module.h"
 #include "crash_handler.h"
 #include "emergency_statistics_module.h"
@@ -716,7 +715,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             setupStatusBar(hwnd);
             updateTimePane(hwnd);
             SetTimer(hwnd, ID_TIMER, 1000, nullptr);
-            auto_delete_crp_service().initialize(hwnd, g_ctx.dbSettings);
             if (shouldAutoCheckUpdateToday()) {
                 markAutoCheckUpdateToday();
                 SetTimer(hwnd, ID_AUTO_UPDATE_TIMER, 15000, nullptr);
@@ -732,8 +730,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (wp == ID_AUTO_UPDATE_TIMER) {
                 KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
                 startAutoUpdateCheck(hwnd);
-            } else if (wp == IDT_AUTO_DELETE_CRP) {
-                auto_delete_crp_service().onTimer();
             }
             return 0;
         }
@@ -799,16 +795,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             rebuildUiFont(g_ctx.fontSize);
             broadcastSettingsChangedToMdiChildren();
             return 0;
-        case app::WM_APP_DB_SETTINGS_CHANGED:
-            auto_delete_crp_service().updateDbSettings(g_ctx.dbSettings);
-            return 0;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, ID_TIMER);
             KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
-            auto_delete_crp_service().shutdown();
             g_manualUpdateTask.cancel();
             g_autoUpdateTask.cancel();
             g_manualUpdateChecking = false;

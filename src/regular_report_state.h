@@ -57,7 +57,6 @@ constexpr int REGULAR_IDC_BOTTOM_NEXT_REPORT = 5409;
 constexpr int REGULAR_IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
 constexpr int REGULAR_IDM_REPORT_TREND = 5222;
-constexpr int REGULAR_IDM_AUTO_DELETE_CRP = 5223;
 constexpr int REGULAR_IDC_BOTTOM_TREND = 5425;
 
 constexpr int REGULAR_REPORT_COLUMN_COUNT = 30;
@@ -206,8 +205,6 @@ struct ReportLoadResult {
     std::vector<search::ReportRow> rows;
     std::string connectionString;
     std::string queryDate;
-    std::string selectedMachineGroupCode;
-    bool machineGroupLookupCompleted = false;
     std::string error;
 };
 
@@ -350,8 +347,6 @@ struct RegularReportState {
     HBRUSH blackBrush = nullptr;
     HFONT groupTitleFont = nullptr;
     std::string selectedMachineCode;
-    std::string selectedMachineGroupCode;
-    bool selectedMachineGroupResolved = false;
     std::string selectedRoomCode;
     bool machinePickerCacheLoaded = false;
     std::string machinePickerCacheConnectionString;

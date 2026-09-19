@@ -81,7 +81,6 @@ Win32 后台操作统一使用现有 `window_task.h/.cpp`：页面或主框架�
 | `main.cpp` | Win32 入口、消息循环、窗口过程、全局状态（独立查询工具） |
 | `main_frame.cpp` | 主程序入口、g_modules[] 菜单注册表、自动菜单/分发、主工具栏快捷入口、工具栏专用入口分发、MDI 活动页与工具栏 active/关闭状态同步，以及 `系统 -> 检查更新` |
 | `main_app.h` | 主程序全局上下文 |
-| `auto_delete_crp_service.cpp/h` | 主窗口生命周期的自动删除 CRP 服务；状态保存到 `[RegularReport] AutoDeleteCrpEnabled`，启用后每 60 秒按当天 `CHK_DATE`、`GROUP_CODE=101101` 和 `REP_NO` 水位增量扫描，短期复查延迟写入报告，并仅把人口学信息完整报告中 `ITEM_CODE=91089` 的未删除明细更新为 `DELETE_BIT=1`；关闭常规报告子窗口不停止任务，数据库失败只记录日志并在后续周期重试 |
 | `module_registry.h` | ModuleContext + ModuleDef 统一模块接口；MDI 子窗口按标题激活的单实例 helper |
 | `menu_toolbar.cpp/h` | 原生 Win32 自定义工具栏组件；GDI 双缓冲绘制浅色 command bar，支持 hover/pressed/active/disabled、右侧文字型关闭按钮和拉伸占位 |
 | `barcode_label_printing.cpp/h` | Win32 主程序条码标签打印共享 helper，统一读取 `[RegularReport] BarcodePrinterName`，封装 LabelPrint 打印调用；常规报告和标本签收中心共用；检测到 Zebra/ZD888t 时复用 LabelPrint Zebra 测试打印的默认布局，并读取 `[RegularReport] ZebraChineseFont` 在 `E:SIMSUN.TTF` 和 `E:CSONG.TTF` 间选择单一中文字体，避免 fallback 叠印，且 Zebra 路径下 `组合项目` 按条码水平区域居中显示 |
