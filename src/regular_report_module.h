@@ -5,6 +5,7 @@
 #include "module_registry.h"
 
 #include <string>
+#include <vector>
 
 struct RegularReportOpenTarget {
     std::string rep_no;
@@ -13,6 +14,9 @@ struct RegularReportOpenTarget {
     std::string mach_code;
     std::string mach_name;
     std::string room_code;
+    // Item codes to highlight with an orange background in the result list
+    // after the report is opened.
+    std::vector<std::string> highlight_item_codes;
 };
 
 constexpr UINT WM_REGULAR_OPEN_REPORT = WM_APP + 175;

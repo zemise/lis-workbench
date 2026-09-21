@@ -164,6 +164,26 @@ struct QualityControlSampleItemRow {
     int point_count = 0;
 };
 
+struct ScheduledCheckItemOption {
+    std::string item_code;
+    std::string item_name;
+    std::string item_eng;
+    std::string unit;
+};
+
+struct ScheduledCheckResultRow {
+    std::string entry_id;
+    std::string rep_no;
+    std::string oper_no;
+    std::string room_code;
+    std::string mach_code;
+    std::string mach_name;
+    std::string inspect_date;
+    std::string item_code;
+    std::string item_name;
+    std::string result;
+};
+
 struct LisSummary {
     std::string abo;
     std::string rhd;
@@ -902,6 +922,13 @@ bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log = {});
+bool query_scheduled_check_items(const std::string& connection_string,
+                                 std::vector<ScheduledCheckItemOption>& rows,
+                                 std::string& error, LogFn log = {});
+bool query_scheduled_check_results(const std::string& connection_string,
+                                   const std::vector<std::string>& item_codes,
+                                   std::vector<ScheduledCheckResultRow>& rows,
+                                   std::string& error, LogFn log = {});
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no, std::vector<unsigned char>& picture, std::string& error, LogFn log = {});
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});

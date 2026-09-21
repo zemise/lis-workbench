@@ -178,6 +178,9 @@ add_executable(main_app WIN32
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
+    src/scheduled_result_check_core.cpp
+    src/scheduled_result_check_module.cpp
+    src/scheduled_result_check_store.cpp
     src/specimen_sign_module.cpp
     src/settings_module.cpp
     src/tat_statistics_module.cpp
@@ -227,6 +230,13 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(scheduled_result_check_tests
+        tests/scheduled_result_check_test.cpp
+        src/scheduled_result_check_core.cpp
+    )
+    target_include_directories(scheduled_result_check_tests PRIVATE src)
+    add_test(NAME scheduled_result_check_tests COMMAND scheduled_result_check_tests)
+
     add_executable(transfusion_order_core_tests
         tests/transfusion_order_statistics_test.cpp
         src/search_core.cpp

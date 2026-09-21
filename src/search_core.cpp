@@ -5685,4 +5685,104 @@ bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<Ou
 #endif
 }
 
+bool query_scheduled_check_items(const std::string& connection_string,
+                                 std::vector<ScheduledCheckItemOption>& rows,
+                                 std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string; (void)log;
+    error = "scheduled check item query is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    if (log) log("query=query_scheduled_check_items event=execute\n");
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    const std::string sql =
+        "SELECT isnull(LTRIM(RTRIM(CONVERT(varchar(20),ITEM_CODE))),''),"
+        " isnull(LTRIM(RTRIM(ITEM_NAME)),''),isnull(LTRIM(RTRIM(ENG_NAME)),''),"
+        " isnull(RTRIM(UNIT),'') FROM LS_AS_ITEM WITH (NOLOCK)"
+        " WHERE isnull(DELETE_BIT,0)=0"
+        " ORDER BY ITEM_CODE,ITEM_NAME";
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    std::unordered_map<std::string, size_t> item_index;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        ScheduledCheckItemOption row;
+        row.item_code = trim(fetch_column(stmt, 1));
+        row.item_name = trim(fetch_column(stmt, 2));
+        row.item_eng = trim(fetch_column(stmt, 3));
+        row.unit = trim(fetch_column(stmt, 4));
+        if (row.item_code.empty()) continue;
+        const auto found = item_index.find(row.item_code);
+        if (found == item_index.end()) {
+            item_index.emplace(row.item_code, rows.size());
+            rows.push_back(std::move(row));
+            continue;
+        }
+        auto& current = rows[found->second];
+        if (current.item_name.empty()) current.item_name = row.item_name;
+        if (current.item_eng.empty()) current.item_eng = row.item_eng;
+        if (current.unit.empty()) current.unit = row.unit;
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_scheduled_check_results(const std::string& connection_string,
+                                   const std::vector<std::string>& item_codes,
+                                   std::vector<ScheduledCheckResultRow>& rows,
+                                   std::string& error, LogFn log) {
+    rows.clear();
+    if (item_codes.empty()) { error.clear(); return true; }
+#ifndef _WIN32
+    (void)connection_string; (void)log;
+    error = "scheduled check result query is only available on Windows";
+    return false;
+#else
+    const std::string code_list = sql_string_list(item_codes);
+    if (code_list.empty()) {
+        error.clear();
+        return true;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    std::ostringstream sql;
+    sql << "SELECT CAST(e.ID AS varchar(30)),CAST(r.REP_NO AS varchar(30)),"
+        << "isnull(r.OPER_NO,''),isnull(CAST(r.ROOM_CODE AS varchar(20)),''),"
+        << "isnull(CAST(r.MACH_CODE AS varchar(20)),''),isnull(m.MACH_NAME,''),"
+        << "isnull(CONVERT(varchar(19),r.CHK_DATE,120),''),"
+        << "isnull(CAST(e.ITEM_CODE AS varchar(20)),''),"
+        << "isnull(i.ITEM_NAME,e.ITEM_NAME),isnull(e.RESULT,'')"
+        << " FROM LS_AS_REPORT r WITH (NOLOCK)"
+        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO"
+        << " AND isnull(e.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON i.ITEM_CODE=e.ITEM_CODE"
+        << " AND isnull(i.DELETE_BIT,0)=0"
+        << " LEFT JOIN LS_AS_MACHINE m WITH (NOLOCK) ON m.MACH_CODE=r.MACH_CODE"
+        << " AND isnull(m.DELETE_BIT,0)=0"
+        << " WHERE isnull(r.DELETE_BIT,0)=0"
+        << " AND r.CHK_DATE>=CONVERT(date,GETDATE())"
+        << " AND r.CHK_DATE<DATEADD(day,1,CONVERT(date,GETDATE()))"
+        << " AND e.ITEM_CODE IN (" << code_list << ')'
+        << " ORDER BY r.REP_NO,e.ITEM_CODE,e.ID";
+    if (log) log("query=query_scheduled_check_results event=execute\n");
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        ScheduledCheckResultRow row;
+        row.entry_id = fetch_column(stmt, 1); row.rep_no = fetch_column(stmt, 2);
+        row.oper_no = fetch_column(stmt, 3); row.room_code = fetch_column(stmt, 4);
+        row.mach_code = fetch_column(stmt, 5); row.mach_name = fetch_column(stmt, 6);
+        row.inspect_date = fetch_column(stmt, 7); row.item_code = fetch_column(stmt, 8);
+        row.item_name = fetch_column(stmt, 9); row.result = fetch_column(stmt, 10);
+        rows.push_back(std::move(row));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
 }  // namespace search

@@ -910,13 +910,23 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     const auto idx = static_cast<size_t>(cd->nmcd.dwItemSpec);
                     if (st && idx < st->resultRows.size()) {
                         const auto& rd = st->resultRows[idx];
-                        cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
-                            ? REGULAR_COLOR_WHITE
-                            : (regularResultRowHasCriticalValue(rd)
-                                ? REGULAR_COLOR_CRITICAL_FINAL
-                                : REGULAR_COLOR_RESULT_SIDE_BG);
-                        const COLORREF c = regularResultTextColor(rd);
-                        if (c != CLR_INVALID) cd->clrText = c;
+                        const bool highlighted =
+                            std::find(st->highlightItemCodes.begin(),
+                                      st->highlightItemCodes.end(),
+                                      rd.item_code) !=
+                            st->highlightItemCodes.end();
+                        if (highlighted) {
+                            cd->clrTextBk = RGB(0xFF, 0xD9, 0x9A);
+                            cd->clrText = RGB(0x70, 0x2F, 0x14);
+                        } else {
+                            cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
+                                ? REGULAR_COLOR_WHITE
+                                : (regularResultRowHasCriticalValue(rd)
+                                    ? REGULAR_COLOR_CRITICAL_FINAL
+                                    : REGULAR_COLOR_RESULT_SIDE_BG);
+                            const COLORREF c = regularResultTextColor(rd);
+                            if (c != CLR_INVALID) cd->clrText = c;
+                        }
                     } else {
                         cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
                             ? REGULAR_COLOR_WHITE : REGULAR_COLOR_RESULT_SIDE_BG;
@@ -2398,6 +2408,7 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     st->pendingOpenReport = true;
     st->pendingOpenRepNo = repNo;
     st->pendingOpenOperNo = search::trim(target.oper_no);
+    st->highlightItemCodes = target.highlight_item_codes;
 
     const std::wstring machineText = search::utf8_to_wide(
         search::trim(target.mach_name).empty() ? machCode : search::trim(target.mach_name));
