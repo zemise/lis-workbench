@@ -30,8 +30,16 @@
 #include <unordered_set>
 #include <vector>
 #include <windowsx.h>
+#include <dwmapi.h>
 
 namespace {
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
 
 constexpr const wchar_t *TITLE = L"定时核查结果";
 constexpr const wchar_t *CLASS_NAME = L"ScheduledResultCheckWindow";
@@ -48,7 +56,8 @@ constexpr int IDC_DELETE = 8106, IDC_TOGGLE = 8107, IDC_SCAN = 8108,
               IDC_RULES = 8109, IDC_ALERTS = 8110;
 constexpr int IDC_HANDLED = 8111, IDC_STATUS = 8112;
 constexpr int IDC_NEW = 8113, IDC_RULE_SETTINGS = 8114, IDC_VALUE_MODE = 8115,
-              IDC_VALUE = 8116, IDC_MACHINE = 8117;
+              IDC_VALUE = 8116, IDC_MACHINE = 8117, IDC_ALERT_SEARCH = 8118,
+              IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121;
 
 struct ScanResult {
   bool ok = false;
@@ -67,6 +76,7 @@ struct Monitor {
   bool rescan_requested = false;
   bool full_rescan_requested = false;
   HWND reminder = nullptr;
+  HFONT reminder_font = nullptr;
   bool reminder_expanded = true;
   bool notification_icon_added = false;
   std::vector<scheduled_check::Alert> unhandled;
@@ -91,11 +101,13 @@ struct State {
        scan = nullptr, ruleSettings = nullptr, valueMode = nullptr,
        value = nullptr, machine = nullptr, machineButton = nullptr;
   HWND rulesList = nullptr, alertsList = nullptr, handled = nullptr,
-       status = nullptr;
+       handledAll = nullptr, status = nullptr, tabs = nullptr,
+       alertSearch = nullptr, progress = nullptr;
   std::vector<search::ScheduledCheckItemOption> items;
   std::vector<search::ScheduledCheckItemOption> allItems;
   std::vector<scheduled_check::Rule> rules;
   std::vector<scheduled_check::Alert> alerts;
+  std::vector<scheduled_check::Alert> allAlerts;
   app::WindowTask itemTask;
   app::WindowTask machineItemTask;
   std::string roomCode, machCode, machName;
@@ -103,14 +115,45 @@ struct State {
   bool machineItemsLoaded = false;
   bool dictionaryLoaded = false;
   std::string pendingLeftCode, pendingRightCode;
+  std::wstring alertFilter;
+  int alertsSortColumn = 0;
+  bool alertsSortAscending = true;
   bool rulesExpanded = false;
   bool valueModeChecked = false;
+  bool syncingRules = false;
 };
 
 void refresh(State *st);
 void loadAlerts(State *st);
 void updateReminder(bool emphasize = false);
 void applyRuleEditorVisibility(State *st);
+
+COLORREF mixColor(COLORREF a, COLORREF b, int aWeight, int bWeight) {
+  return RGB((GetRValue(a) * aWeight + GetRValue(b) * bWeight) /
+                 (aWeight + bWeight),
+             (GetGValue(a) * aWeight + GetGValue(b) * bWeight) /
+                 (aWeight + bWeight),
+             (GetBValue(a) * aWeight + GetBValue(b) * bWeight) /
+                 (aWeight + bWeight));
+}
+
+COLORREF reminderAccentColor() {
+  DWORD value = 0;
+  BOOL opaque = FALSE;
+  if (SUCCEEDED(DwmGetColorizationColor(&value, &opaque))) {
+    const COLORREF color = static_cast<COLORREF>(value) & 0x00FFFFFF;
+    if (color != 0)
+      return color;
+  }
+  return RGB(216, 78, 55);
+}
+
+bool reminderAccentIsLight(COLORREF accent) {
+  return (GetRValue(accent) * 299 + GetGValue(accent) * 587 +
+          GetBValue(accent) * 114) /
+             1000 >
+         150;
+}
 
 std::wstring w(const std::string &s) { return search::utf8_to_wide(s); }
 std::wstring alertLine(const scheduled_check::Alert &a) {
@@ -230,6 +273,25 @@ RECT reminderActionRect(HWND hwnd, int row) {
   const int top = reminderRowsTop(hwnd) + row * reminderRowHeight(hwnd);
   return {client.right - pad - width, top + inset, client.right - pad,
           top + reminderRowHeight(hwnd) - inset};
+}
+
+void drawReminderActionButton(HDC dc, const RECT &rect, bool pressed,
+                              COLORREF accent) {
+  const float scale = search::dpi_scale_factor(WindowFromDC(dc));
+  HBRUSH fill = CreateSolidBrush(
+      pressed ? mixColor(accent, RGB(255, 255, 255), 55, 45)
+              : mixColor(accent, RGB(255, 255, 255), 25, 75));
+  HPEN border = CreatePen(
+      PS_SOLID, 1,
+      pressed ? mixColor(accent, RGB(0, 0, 0), 70, 30) : accent);
+  HGDIOBJ oldBrush = SelectObject(dc, fill);
+  HGDIOBJ oldPen = SelectObject(dc, border);
+  const int radius = static_cast<int>(10 * scale + 0.5f);
+  RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+  SelectObject(dc, oldPen);
+  SelectObject(dc, oldBrush);
+  DeleteObject(border);
+  DeleteObject(fill);
 }
 
 int reminderToggleWidth(HWND hwnd) {
@@ -498,14 +560,18 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     const float scale = search::dpi_scale_factor(hwnd);
     const int pad = static_cast<int>(14 * scale + 0.5f);
     const int headerHeight = static_cast<int>(48 * scale + 0.5f);
+    const COLORREF accent = reminderAccentColor();
+    const bool accentLight = reminderAccentIsLight(accent);
     RECT header = rc;
     header.bottom = headerHeight;
-    HBRUSH headerBrush = CreateSolidBrush(RGB(216, 78, 55));
+    HBRUSH headerBrush = CreateSolidBrush(accent);
     FillRect(dc, &header, headerBrush);
     DeleteObject(headerBrush);
-    HGDIOBJ oldFont = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    HGDIOBJ oldFont = SelectObject(
+        dc, g_monitor.reminder_font ? g_monitor.reminder_font
+                                    : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
+    SetTextColor(dc, accentLight ? RGB(55, 48, 42) : RGB(255, 255, 255));
     RECT titleRect{pad, 0, rc.right - static_cast<int>(100 * scale),
                    headerHeight};
     const std::wstring title = L"! 定时核查：" +
@@ -545,13 +611,7 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DrawTextW(dc, detail.c_str(), -1, &detailRow,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         const bool pressed = g_monitor.reminder_pressed_alert_id == alert.id;
-        HBRUSH buttonBrush =
-            CreateSolidBrush(pressed ? RGB(241, 211, 181) : RGB(255, 235, 212));
-        FillRect(dc, &action, buttonBrush);
-        DeleteObject(buttonBrush);
-        HBRUSH buttonBorder = CreateSolidBrush(RGB(184, 83, 48));
-        FrameRect(dc, &action, buttonBorder);
-        DeleteObject(buttonBorder);
+        drawReminderActionButton(dc, action, pressed, accent);
         SetTextColor(dc, RGB(112, 47, 20));
         RECT buttonText = action;
         DrawTextW(dc, L"标记已处理", -1, &buttonText,
@@ -564,7 +624,7 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
     SelectObject(dc, oldFont);
-    HBRUSH border = CreateSolidBrush(RGB(216, 78, 55));
+    HBRUSH border = CreateSolidBrush(accent);
     FrameRect(dc, &rc, border);
     DeleteObject(border);
     EndPaint(hwnd, &ps);
@@ -581,8 +641,20 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 bool ensureReminderWindow() {
   if (g_monitor.reminder && IsWindow(g_monitor.reminder))
     return true;
+  if (!g_monitor.reminder_font) {
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
+      g_monitor.reminder_font = CreateFontIndirectW(&ncm.lfMessageFont);
+    if (!g_monitor.reminder_font)
+      g_monitor.reminder_font = CreateFontW(
+          -12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+          DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  }
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
+  wc.style = CS_DROPSHADOW;
   wc.lpfnWndProc = reminderProc;
   wc.hInstance = g_monitor.ctx.instance;
   wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
@@ -594,6 +666,11 @@ bool ensureReminderWindow() {
       CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                       REMINDER_CLASS_NAME, TITLE, WS_POPUP, 0, 0, 0, 0, nullptr,
                       nullptr, g_monitor.ctx.instance, nullptr);
+  if (g_monitor.reminder) {
+    const int corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(g_monitor.reminder, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corner, sizeof(corner));
+  }
   return g_monitor.reminder != nullptr;
 }
 
@@ -998,6 +1075,8 @@ bool triggerScan(bool forceFull = false) {
                           w(result->progress_warning);
             }
             SetWindowTextW(st->status, status.c_str());
+            if (st->progress)
+              ShowWindow(st->progress, SW_HIDE);
           }
         }
         const bool hasFresh = !error && result && result->ok &&
@@ -1020,6 +1099,7 @@ void loadRules(State *st) {
     SetWindowTextW(st->status, w(e).c_str());
     return;
   }
+  st->syncingRules = true;
   ListView_DeleteAllItems(st->rulesList);
   for (size_t i = 0; i < st->rules.size(); ++i) {
     const auto &r = st->rules[i];
@@ -1036,14 +1116,45 @@ void loadRules(State *st) {
             r.mach_code.empty() ? L"未限定（旧规则）"
                                 : w(r.mach_name + " [" + r.room_code + "/" +
                                     r.mach_code + "]"));
+    ListView_SetCheckState(st->rulesList, static_cast<int>(i), r.enabled);
+  }
+  st->syncingRules = false;
+}
+std::string alertSortValue(const scheduled_check::Alert &a, int column) {
+  switch (column) {
+  case 0: return a.discovered_at;
+  case 1: return a.handled ? "已处理" : "未处理";
+  case 2: return a.rule_name;
+  case 3: return a.rep_no;
+  case 4: return a.oper_no;
+  case 5: return a.left_item_name;
+  case 6: return a.left_result_text;
+  case 7: return a.op;
+  case 8: return a.compare_with_value ? "固定值" : a.right_item_name;
+  default: return a.right_result_text;
   }
 }
-void loadAlerts(State *st) {
-  std::string e;
-  if (!scheduled_check::load_review_alerts(st->alerts, e)) {
-    SetWindowTextW(st->status, w(e).c_str());
-    return;
+
+void applyAlertFilter(State *st) {
+  st->alerts.clear();
+  const std::wstring filter = st->alertFilter;
+  for (const auto &a : st->allAlerts) {
+    if (!filter.empty()) {
+      const std::wstring rep = w(a.rep_no);
+      const std::wstring oper = w(a.oper_no);
+      if (rep.find(filter) == std::wstring::npos &&
+          oper.find(filter) == std::wstring::npos)
+        continue;
+    }
+    st->alerts.push_back(a);
   }
+  std::stable_sort(
+      st->alerts.begin(), st->alerts.end(),
+      [st](const scheduled_check::Alert &a, const scheduled_check::Alert &b) {
+        const std::string left = alertSortValue(a, st->alertsSortColumn);
+        const std::string right = alertSortValue(b, st->alertsSortColumn);
+        return st->alertsSortAscending ? left < right : left > right;
+      });
   ListView_DeleteAllItems(st->alertsList);
   size_t pending = 0;
   for (size_t i = 0; i < st->alerts.size(); ++i) {
@@ -1065,6 +1176,15 @@ void loadAlerts(State *st) {
   const std::wstring title =
       L"待处理 " + std::to_wstring(pending) + L" 条（并显示今日已处理）";
   SetWindowTextW(st->alertsTitle, title.c_str());
+}
+
+void loadAlerts(State *st) {
+  std::string e;
+  if (!scheduled_check::load_review_alerts(st->allAlerts, e)) {
+    SetWindowTextW(st->status, w(e).c_str());
+    return;
+  }
+  applyAlertFilter(st);
 }
 void refresh(State *st) {
   loadRules(st);
@@ -1422,19 +1542,26 @@ void openAlert(State *st, int row) {
 }
 
 void applyRuleEditorVisibility(State *st) {
-  const int show = st->rulesExpanded ? SW_SHOW : SW_HIDE;
+  const int rulesShow = st->rulesExpanded ? SW_SHOW : SW_HIDE;
+  const int alertsShow = st->rulesExpanded ? SW_HIDE : SW_SHOW;
   for (HWND control :
        {st->nameLabel, st->leftLabel, st->opLabel, st->rightLabel,
         st->machineLabel, st->machine, st->machineButton, st->name,
         st->left, st->op, st->valueMode, st->newRule, st->save, st->del,
         st->toggle, st->rulesTitle, st->rulesList})
-    ShowWindow(control, show);
-  ShowWindow(st->right, show && !st->valueModeChecked ? SW_SHOW : SW_HIDE);
-  ShowWindow(st->value, show && st->valueModeChecked ? SW_SHOW : SW_HIDE);
+    ShowWindow(control, rulesShow);
+  ShowWindow(st->right,
+             rulesShow && !st->valueModeChecked ? SW_SHOW : SW_HIDE);
+  ShowWindow(st->value,
+             rulesShow && st->valueModeChecked ? SW_SHOW : SW_HIDE);
+  for (HWND control :
+       {st->alertSearch, st->handled, st->handledAll, st->alertsTitle,
+        st->alertsList})
+    ShowWindow(control, alertsShow);
+  // The legacy expand/collapse button is replaced by the tab control.
+  ShowWindow(st->ruleSettings, SW_HIDE);
   SetWindowTextW(st->rightLabel,
                  st->valueModeChecked ? L"固定值：" : L"项目 B：");
-  SetWindowTextW(st->ruleSettings,
-                 st->rulesExpanded ? L"收起规则设置" : L"规则设置");
 }
 
 void layout(HWND hwnd, State *st) {
@@ -1461,18 +1588,27 @@ void layout(HWND hwnd, State *st) {
   const int contentW = (std::max)(S(300), w - pad * 2);
   int y = pad;
 
+  const int tabH = S(30);
+  MoveWindow(st->tabs, pad, y, contentW, tabH, TRUE);
+  y += tabH + S(10);
+  const int statusY = (std::max)(y + S(120), h - pad - statusH);
+  MoveWindow(st->progress, pad, h - pad - statusH - S(28), contentW, S(18),
+             TRUE);
+
   if (!st->rulesExpanded) {
-    const int settingsW =
-        search::measure_control_text_width(hwnd, st->ruleSettings, 96, 18);
+    const int searchW = S(220);
     const int scanW =
         search::measure_control_text_width(hwnd, st->scan, 86, 18);
-    MoveWindow(st->ruleSettings, pad, y, settingsW, controlH, TRUE);
-    MoveWindow(st->scan, pad + settingsW + gap, y, scanW, controlH, TRUE);
-    y += controlH + S(10);
+    const int handledAllW = S(130);
+    const int handledW = S(105);
+    MoveWindow(st->alertSearch, pad, y, searchW, controlH, TRUE);
+    MoveWindow(st->scan, pad + searchW + gap, y, scanW, controlH, TRUE);
+    MoveWindow(st->handledAll, w - pad - handledW - gap - handledAllW, y,
+               handledAllW, controlH, TRUE);
+    MoveWindow(st->handled, w - pad - handledW, y, handledW, controlH, TRUE);
+    y += controlH + S(8);
     MoveWindow(st->alertsTitle, pad, y + S(3), contentW - S(125), titleH, TRUE);
-    MoveWindow(st->handled, w - pad - S(115), y, S(115), controlH, TRUE);
-    y += controlH + S(5);
-    const int statusY = (std::max)(y + S(100), h - pad - statusH);
+    y += titleH + S(2);
     MoveWindow(st->alertsList, pad, y, contentW,
                (std::max)(S(80), statusY - y - S(5)), TRUE);
     MoveWindow(st->status, pad, statusY, contentW, statusH, TRUE);
@@ -1539,8 +1675,6 @@ void layout(HWND hwnd, State *st) {
     HWND hwnd;
     int width;
   } buttons[] = {
-      {st->ruleSettings,
-       search::measure_control_text_width(hwnd, st->ruleSettings, 104, 18)},
       {st->newRule,
        search::measure_control_text_width(hwnd, st->newRule, 70, 18)},
       {st->save, search::measure_control_text_width(hwnd, st->save, 86, 18)},
@@ -1561,17 +1695,8 @@ void layout(HWND hwnd, State *st) {
   MoveWindow(st->rulesTitle, pad, y, contentW, titleH, TRUE);
   y += titleH;
 
-  const int statusY = (std::max)(y + S(180), h - pad - statusH);
-  const int availableForLists = (std::max)(S(220), statusY - y - S(42));
-  const int rulesH = (std::max)(S(110), availableForLists * 38 / 100);
+  const int rulesH = (std::max)(S(110), statusY - y - S(5));
   MoveWindow(st->rulesList, pad, y, contentW, rulesH, TRUE);
-
-  y += rulesH + S(8);
-  MoveWindow(st->alertsTitle, pad, y + S(3), contentW - S(125), titleH, TRUE);
-  MoveWindow(st->handled, w - pad - S(105), y, S(105), controlH, TRUE);
-  y += controlH + S(5);
-  const int alertsH = (std::max)(S(90), statusY - y - S(5));
-  MoveWindow(st->alertsList, pad, y, contentW, alertsH, TRUE);
   MoveWindow(st->status, pad, statusY, contentW, statusH, TRUE);
 }
 
@@ -1623,7 +1748,8 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         win32_control_id(IDC_RULES), st->ctx.instance, nullptr);
     ListView_SetExtendedListViewStyle(st->rulesList, LVS_EX_FULLROWSELECT |
                                                          LVS_EX_GRIDLINES |
-                                                         LVS_EX_DOUBLEBUFFER);
+                                                         LVS_EX_DOUBLEBUFFER |
+                                                         LVS_EX_CHECKBOXES);
     const wchar_t *rh[] = {L"状态", L"规则名称", L"项目 A", L"关系", L"项目 B", L"检验仪器"};
     int rw[] = {70, 180, 250, 60, 250, 180};
     for (int i = 0; i < 6; ++i)
@@ -1645,6 +1771,25 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     for (int i = 0; i < 10; ++i)
       search::add_list_column(st->alertsList, i, ah[i], aw[i]);
     st->status = search::create_label(hwnd, L"正在加载项目字典...", 0, 0, 0, 0);
+    st->tabs = CreateWindowExW(
+        0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0,
+        hwnd, win32_control_id(IDC_TABS), st->ctx.instance, nullptr);
+    TCITEMW tab{};
+    tab.mask = TCIF_TEXT;
+    tab.pszText = const_cast<wchar_t *>(L"待处理");
+    TabCtrl_InsertItem(st->tabs, 0, &tab);
+    tab.pszText = const_cast<wchar_t *>(L"规则设置");
+    TabCtrl_InsertItem(st->tabs, 1, &tab);
+    TabCtrl_SetCurSel(st->tabs, st->rulesExpanded ? 1 : 0);
+    st->alertSearch = search::create_edit(hwnd, IDC_ALERT_SEARCH, 0, 0, 0, 0);
+    SendMessageW(st->alertSearch, EM_SETCUEBANNER, TRUE,
+                 reinterpret_cast<LPARAM>(L"搜索样本号 / 报告号"));
+    st->handledAll = search::create_button(hwnd, IDC_HANDLED_ALL,
+                                           L"全部标记已处理", 0, 0, 0, 0);
+    st->progress = CreateWindowExW(
+        0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_MARQUEE, 0, 0, 0, 0, hwnd,
+        win32_control_id(IDC_PROGRESS), st->ctx.instance, nullptr);
+    SendMessageW(st->progress, PBM_SETMARQUEE, TRUE, 30);
     search::apply_font_to_children(hwnd, st->ctx.uiFont);
     fillItems(st);
     applyRuleEditorVisibility(st);
@@ -1688,9 +1833,18 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         HIWORD(wp) == CBN_KILLFOCUS);
       return 0;
     }
+    if (LOWORD(wp) == IDC_ALERT_SEARCH && HIWORD(wp) == EN_CHANGE) {
+      wchar_t buffer[256]{};
+      GetWindowTextW(st->alertSearch, buffer, 256);
+      st->alertFilter = buffer;
+      applyAlertFilter(st);
+      return 0;
+    }
     switch (LOWORD(wp)) {
     case IDC_RULE_SETTINGS:
       st->rulesExpanded = !st->rulesExpanded;
+      if (st->tabs)
+        TabCtrl_SetCurSel(st->tabs, st->rulesExpanded ? 1 : 0);
       applyRuleEditorVisibility(st);
       layout(hwnd, st);
       return 0;
@@ -1770,6 +1924,8 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case IDC_SCAN:
+      if (st->progress)
+        ShowWindow(st->progress, SW_SHOW);
       SetWindowTextW(st->status, run_scheduled_result_check_now()
                                      ? L"正在扫描当日结果..."
                                      : L"已有扫描正在运行，已安排随后重扫。");
@@ -1785,6 +1941,27 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         loadAlerts(st);
         updateReminder();
       }
+      return 0;
+    }
+    case IDC_HANDLED_ALL: {
+      std::string e;
+      int count = 0;
+      for (const auto &a : st->allAlerts) {
+        if (a.handled)
+          continue;
+        if (!scheduled_check::set_alert_handled(a.id, true, e)) {
+          MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
+          loadAlerts(st);
+          updateReminder();
+          return 0;
+        }
+        ++count;
+      }
+      SetWindowTextW(st->status,
+                     (L"已标记 " + std::to_wstring(count) +
+                      L" 条为已处理。").c_str());
+      loadAlerts(st);
+      updateReminder();
       return 0;
     }
     }
@@ -1805,8 +1982,47 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           return CDRF_DODEFAULT;
         }
       }
-      if (n->idFrom == IDC_RULES && n->code == LVN_ITEMCHANGED)
+      if (n->idFrom == IDC_TABS && n->code == TCN_SELCHANGE) {
+        st->rulesExpanded = TabCtrl_GetCurSel(st->tabs) == 1;
+        applyRuleEditorVisibility(st);
+        layout(hwnd, st);
+        return 0;
+      }
+      if (n->idFrom == IDC_ALERTS && n->code == LVN_COLUMNCLICK) {
+        auto *col = reinterpret_cast<NMLISTVIEW *>(lp);
+        if (st->alertsSortColumn == col->iSubItem)
+          st->alertsSortAscending = !st->alertsSortAscending;
+        else {
+          st->alertsSortColumn = col->iSubItem;
+          st->alertsSortAscending = true;
+        }
+        applyAlertFilter(st);
+        return 0;
+      }
+      if (n->idFrom == IDC_RULES && n->code == LVN_ITEMCHANGED) {
+        auto *item = reinterpret_cast<NMLISTVIEW *>(lp);
+        if (!st->syncingRules && (item->uChanged & LVIF_STATE) &&
+            ((item->uNewState ^ item->uOldState) & LVIS_STATEIMAGEMASK)) {
+          const int row = item->iItem;
+          if (row >= 0 && row < static_cast<int>(st->rules.size())) {
+            const bool checked =
+                ((item->uNewState & LVIS_STATEIMAGEMASK) >> 12) == 2;
+            std::string e;
+            if (!scheduled_check::set_rule_enabled(st->rules[row].id, checked,
+                                                   e)) {
+              MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
+              loadRules(st);
+              return 0;
+            }
+            st->rules[row].enabled = checked;
+            setItem(st->rulesList, row, 0, checked ? L"启用" : L"停用");
+            updateReminder();
+            run_scheduled_result_check_now();
+            return 0;
+          }
+        }
         selectRule(st);
+      }
       if (n->idFrom == IDC_ALERTS && n->code == NM_DBLCLK)
         openAlert(st, selected(st->alertsList));
     }
@@ -1888,6 +2104,10 @@ void stop_scheduled_result_check_monitor() {
   }
   if (g_monitor.reminder)
     DestroyWindow(g_monitor.reminder);
+  if (g_monitor.reminder_font) {
+    DeleteObject(g_monitor.reminder_font);
+    g_monitor.reminder_font = nullptr;
+  }
   g_monitor.unhandled.clear();
   g_monitor.main = nullptr;
   g_page = nullptr;
