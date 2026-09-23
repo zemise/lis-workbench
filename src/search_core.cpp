@@ -5772,7 +5772,8 @@ bool query_scheduled_check_items(const std::string& connection_string,
 bool query_scheduled_check_results(const std::string& connection_string,
                                    const std::vector<std::string>& item_codes,
                                    std::vector<ScheduledCheckResultRow>& rows,
-                                   std::string& error, LogFn log) {
+                                   std::string& error, LogFn log,
+                                   const ScheduledCheckResultQuery& query) {
     rows.clear();
     if (item_codes.empty()) { error.clear(); return true; }
 #ifndef _WIN32
@@ -5780,6 +5781,21 @@ bool query_scheduled_check_results(const std::string& connection_string,
     error = "scheduled check result query is only available on Windows";
     return false;
 #else
+    const auto valid_rep_no = [](const std::string& value) {
+        return !value.empty() && value.size() <= 10 &&
+            std::all_of(value.begin(), value.end(), [](unsigned char c) {
+                return c >= '0' && c <= '9';
+            });
+    };
+    if ((!query.lower_exclusive.empty() && !valid_rep_no(query.lower_exclusive)) ||
+        (!query.upper_inclusive.empty() && !valid_rep_no(query.upper_inclusive)) ||
+        (!query.room_code.empty() && !valid_rep_no(query.room_code)) ||
+        (!query.mach_code.empty() && !valid_rep_no(query.mach_code)) ||
+        std::any_of(query.report_nos.begin(), query.report_nos.end(),
+                    [&](const std::string& no) { return !valid_rep_no(no); })) {
+        error = "invalid scheduled check REP_NO";
+        return false;
+    }
     const std::string code_list = sql_string_list(item_codes);
     if (code_list.empty()) {
         error.clear();
@@ -5795,15 +5811,33 @@ bool query_scheduled_check_results(const std::string& connection_string,
         << "isnull(LTRIM(RTRIM(CAST(e.ITEM_CODE AS varchar(20)))),''),"
         << "isnull(e.ITEM_NAME,''),isnull(e.ITEM_ENG,''),isnull(e.RESULT,'')"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
-        << " INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO"
-        << " AND isnull(e.DELETE_BIT,0)=0"
-        << " LEFT JOIN LS_AS_MACHINE m WITH (NOLOCK) ON m.MACH_CODE=r.MACH_CODE"
-        << " AND isnull(m.DELETE_BIT,0)=0"
-        << " WHERE isnull(r.DELETE_BIT,0)=0"
-        << " AND r.CHK_DATE>=CONVERT(date,GETDATE())"
-        << " AND r.CHK_DATE<DATEADD(day,1,CONVERT(date,GETDATE()))"
+        << (query.include_empty_reports ? " LEFT JOIN " : " INNER JOIN ")
+        << "LS_AS_REPENTRY e WITH (NOLOCK) ON e.REP_NO=r.REP_NO"
+        << " AND e.DELETE_BIT=0"
         << " AND e.ITEM_CODE IN (" << code_list << ')'
-        << " ORDER BY r.REP_NO,e.ITEM_CODE,e.ID";
+        << " LEFT JOIN LS_AS_MACHINE m WITH (NOLOCK) ON m.MACH_CODE=r.MACH_CODE"
+        << " AND m.ROOM_CODE=r.ROOM_CODE"
+        << " AND isnull(m.DELETE_BIT,0)=0"
+        << " WHERE r.DELETE_BIT=0"
+        << " AND r.CHK_DATE>=CONVERT(date,GETDATE())"
+        << " AND r.CHK_DATE<DATEADD(day,1,CONVERT(date,GETDATE()))";
+    if (!query.lower_exclusive.empty())
+        sql << " AND r.REP_NO>" << query.lower_exclusive;
+    if (!query.room_code.empty())
+        sql << " AND r.ROOM_CODE=" << query.room_code;
+    if (!query.mach_code.empty())
+        sql << " AND r.MACH_CODE=" << query.mach_code;
+    if (!query.upper_inclusive.empty())
+        sql << " AND r.REP_NO<=" << query.upper_inclusive;
+    if (!query.report_nos.empty()) {
+        sql << " AND r.REP_NO IN (";
+        for (size_t i = 0; i < query.report_nos.size(); ++i) {
+            if (i) sql << ',';
+            sql << query.report_nos[i];
+        }
+        sql << ')';
+    }
+    sql << " ORDER BY r.REP_NO,e.ITEM_CODE,e.ID";
     if (log) log("query=query_scheduled_check_results event=execute\n");
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
@@ -5818,6 +5852,80 @@ bool query_scheduled_check_results(const std::string& connection_string,
         row.item_eng = trim(fetch_column(stmt, 10));
         row.result = fetch_column(stmt, 11);
         rows.push_back(std::move(row));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_scheduled_check_machine_item_codes(const std::string& connection_string,
+                                              const std::string& room_code,
+                                              const std::string& mach_code,
+                                              std::vector<std::string>& codes,
+                                              std::string& error) {
+    codes.clear();
+#ifndef _WIN32
+    (void)connection_string; (void)room_code; (void)mach_code;
+    error = "scheduled check machine items are only available on Windows";
+    return false;
+#else
+    const auto numeric = [](const std::string& value) {
+        return !value.empty() && value.size() <= 10 &&
+            std::all_of(value.begin(), value.end(), [](unsigned char c) {
+                return c >= '0' && c <= '9';
+            });
+    };
+    if (!numeric(room_code) || !numeric(mach_code)) {
+        error = "invalid scheduled check machine";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, {})) return false;
+    const std::string sql =
+        "SELECT DISTINCT CAST(gi.ITEM_CODE AS varchar(20))"
+        " FROM LS_AS_GROUP g WITH (NOLOCK)"
+        " INNER JOIN LS_AS_GROUP_ITEM gi WITH (NOLOCK)"
+        " ON gi.GROUP_CODE=g.GROUP_CODE AND gi.ROOM_CODE=g.ROOM_CODE"
+        " WHERE g.DELETE_BIT=0 AND g.ROOM_CODE=" + room_code +
+        " AND g.MACH_CODE=" + mach_code;
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS)
+        codes.push_back(trim(fetch_column(stmt, 1)));
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_scheduled_check_report_bounds(const std::string& connection_string,
+                                         std::string& day,
+                                         std::string& min_rep_no,
+                                         std::string& max_rep_no,
+                                         std::string& error, LogFn log) {
+    day.clear(); min_rep_no.clear(); max_rep_no.clear();
+#ifndef _WIN32
+    (void)connection_string; (void)log;
+    error = "scheduled check report query is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT CONVERT(varchar(10),GETDATE(),120),"
+        "isnull(CAST(MIN(REP_NO) AS varchar(30)),''),"
+        "isnull(CAST(MAX(REP_NO) AS varchar(30)),'')"
+        " FROM LS_AS_REPORT WITH (NOLOCK)"
+        " WHERE DELETE_BIT=0"
+        " AND CHK_DATE>=CONVERT(date,GETDATE())"
+        " AND CHK_DATE<DATEADD(day,1,CONVERT(date,GETDATE()))";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        day = fetch_column(stmt, 1);
+        min_rep_no = fetch_column(stmt, 2);
+        max_rep_no = fetch_column(stmt, 3);
     }
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();

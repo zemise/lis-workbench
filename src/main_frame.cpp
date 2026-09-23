@@ -861,7 +861,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
       startAutoUpdateCheck(hwnd);
     } else if (wp == ID_SCHEDULED_CHECK_TIMER) {
-      run_scheduled_result_check_now();
+      run_scheduled_result_check_timer();
     }
     return 0;
   }

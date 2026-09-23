@@ -111,6 +111,10 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
       const auto leftIt = report.second.find(rule.left_item_code);
       if (leftIt == report.second.end())
         continue;
+      if (!rule.mach_code.empty() &&
+          (leftIt->second.mach_code != rule.mach_code ||
+           leftIt->second.room_code != rule.room_code))
+        continue;
       double leftValue = 0.0, rightValue = threshold;
       if (!parse_number(leftIt->second.result, leftValue)) {
         if (skipped_non_numeric)
@@ -122,6 +126,10 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
                                : report.second.find(rule.right_item_code);
       if (!rule.compare_with_value) {
         if (rightIt == report.second.end())
+          continue;
+        if (!rule.mach_code.empty() &&
+            (rightIt->second.mach_code != rule.mach_code ||
+             rightIt->second.room_code != rule.room_code))
           continue;
         if (!parse_number(rightIt->second.result, rightValue)) {
           if (skipped_non_numeric)
@@ -168,6 +176,39 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
     }
   }
   return matches;
+}
+
+bool needs_result_followup(const std::vector<Rule> &rules,
+                           const std::vector<ResultRow> &rows) {
+  std::map<std::string, ResultRow> results;
+  for (const auto &row : rows) {
+    if (row.item_code.empty())
+      continue;
+    auto &selected = results[row.item_code];
+    const bool selected_empty = trim(selected.result).empty();
+    const bool candidate_empty = trim(row.result).empty();
+    if (selected.entry_id.empty() || (selected_empty && !candidate_empty) ||
+        (selected_empty == candidate_empty &&
+         newer_entry_id(row.entry_id, selected.entry_id)))
+      selected = row;
+  }
+  for (const auto &rule : rules) {
+    if (!rule.enabled || rule.left_item_code.empty())
+      continue;
+    const auto left = results.find(rule.left_item_code);
+    const auto right = rule.compare_with_value
+                           ? results.end()
+                           : results.find(rule.right_item_code);
+    if (left == results.end() && right == results.end())
+      continue;
+    double value = 0.0;
+    if (left == results.end() || !parse_number(left->second.result, value))
+      return true;
+    if (!rule.compare_with_value &&
+        (right == results.end() || !parse_number(right->second.result, value)))
+      return true;
+  }
+  return false;
 }
 
 } // namespace scheduled_check

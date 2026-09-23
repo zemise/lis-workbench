@@ -11,6 +11,7 @@ void start_scheduled_result_check_monitor(HWND main_window,
                                           const ModuleContext &ctx);
 void stop_scheduled_result_check_monitor();
 bool run_scheduled_result_check_now();
+bool run_scheduled_result_check_timer();
 void handle_scheduled_result_check_notification(LPARAM event_code);
 
 #endif

@@ -100,7 +100,13 @@ bool ensure_rule_columns(sqlite3 *db, std::string &error) {
              "compare_with_value INTEGER NOT NULL DEFAULT 0", error) &&
          add_column_if_missing(
              db, "scheduled_result_rule", "right_value_text",
-             "right_value_text TEXT NOT NULL DEFAULT ''", error);
+             "right_value_text TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(db, "scheduled_result_rule", "room_code",
+                               "room_code TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(db, "scheduled_result_rule", "mach_code",
+                               "mach_code TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(db, "scheduled_result_rule", "mach_name",
+                               "mach_name TEXT NOT NULL DEFAULT ''", error);
 }
 bool ensure_alert_columns(sqlite3 *db, std::string &error) {
   return add_column_if_missing(
@@ -133,6 +139,7 @@ CREATE TABLE IF NOT EXISTS scheduled_result_rule(
  operator TEXT NOT NULL,right_item_code TEXT NOT NULL,right_item_name TEXT NOT NULL DEFAULT '',
  right_item_unit TEXT NOT NULL DEFAULT '',
  compare_with_value INTEGER NOT NULL DEFAULT 0,right_value_text TEXT NOT NULL DEFAULT '',
+ room_code TEXT NOT NULL DEFAULT '',mach_code TEXT NOT NULL DEFAULT '',mach_name TEXT NOT NULL DEFAULT '',
  created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scheduled_result_alert(
  id INTEGER PRIMARY KEY AUTOINCREMENT,rule_id INTEGER NOT NULL,rule_name TEXT NOT NULL DEFAULT '',
@@ -150,6 +157,15 @@ CREATE TABLE IF NOT EXISTS scheduled_result_alert(
 CREATE TABLE IF NOT EXISTS scheduled_result_observation(
  rule_id INTEGER NOT NULL,fingerprint TEXT NOT NULL,observed_at TEXT NOT NULL,
  PRIMARY KEY(rule_id,fingerprint),FOREIGN KEY(rule_id) REFERENCES scheduled_result_rule(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS scheduled_result_scan_progress(
+ id INTEGER PRIMARY KEY CHECK(id=1),day TEXT NOT NULL,rule_signature TEXT NOT NULL,
+ high_watermark TEXT NOT NULL,day_min_rep_no TEXT NOT NULL,
+ sweep_max_rep_no TEXT NOT NULL,
+ sweep_step INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS scheduled_result_pending_report(
+ rep_no TEXT PRIMARY KEY,first_seen INTEGER NOT NULL,next_scan INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_scheduled_pending_due
+ ON scheduled_result_pending_report(next_scan);
 CREATE INDEX IF NOT EXISTS idx_scheduled_alert_day ON scheduled_result_alert(discovered_at,handled);
 CREATE INDEX IF NOT EXISTS idx_scheduled_alert_rep ON scheduled_result_alert(rep_no,rule_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_alert_pending ON scheduled_result_alert(handled,id DESC);
@@ -265,7 +281,7 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
   if (!prepare(db,
                "SELECT enabled,name,left_item_code,left_item_name,left_item_"
                "unit,operator,right_item_code,right_item_name,right_item_unit,"
-               "compare_with_value,right_value_text "
+               "compare_with_value,right_value_text,room_code,mach_code,mach_name "
                "FROM scheduled_result_rule WHERE id=?",
                statement, error))
     return false;
@@ -288,7 +304,10 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
             text(statement.p, 8) == rule.right_item_unit &&
             (sqlite3_column_int(statement.p, 9) != 0) ==
                 rule.compare_with_value &&
-            text(statement.p, 10) == rule.right_value_text;
+            text(statement.p, 10) == rule.right_value_text &&
+            text(statement.p, 11) == rule.room_code &&
+            text(statement.p, 12) == rule.mach_code &&
+            text(statement.p, 13) == rule.mach_name;
   return true;
 }
 
@@ -315,7 +334,8 @@ bool load_rules(std::vector<Rule> &rows, std::string &error) {
                "id,name,enabled,left_item_code,left_item_name,left_item_unit,"
                "operator,"
                "right_item_code,right_item_name,right_item_unit,"
-               "compare_with_value,right_value_text,created_at,updated_at "
+               "compare_with_value,right_value_text,room_code,mach_code,"
+               "mach_name,created_at,updated_at "
                "FROM scheduled_result_rule ORDER BY id",
                st, error))
     return false;
@@ -334,8 +354,11 @@ bool load_rules(std::vector<Rule> &rows, std::string &error) {
     r.right_item_unit = text(st.p, 9);
     r.compare_with_value = sqlite3_column_int(st.p, 10) != 0;
     r.right_value_text = text(st.p, 11);
-    r.created_at = text(st.p, 12);
-    r.updated_at = text(st.p, 13);
+    r.room_code = text(st.p, 12);
+    r.mach_code = text(st.p, 13);
+    r.mach_name = text(st.p, 14);
+    r.created_at = text(st.p, 15);
+    r.updated_at = text(st.p, 16);
     rows.push_back(std::move(r));
   }
   if (rc != SQLITE_DONE) {
@@ -358,8 +381,8 @@ bool save_rule(Rule &r, std::string &error) {
             "INSERT INTO "
             "scheduled_result_rule(name,enabled,left_item_code,left_item_name,"
             "left_item_unit,operator,right_item_code,right_item_name,right_"
-            "item_unit,compare_with_value,right_value_text,created_at,updated_"
-            "at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "item_unit,compare_with_value,right_value_text,room_code,mach_code,"
+            "mach_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             st, error))
       return false;
     bind(st.p, 1, r.name);
@@ -373,8 +396,11 @@ bool save_rule(Rule &r, std::string &error) {
     bind(st.p, 9, r.right_item_unit);
     sqlite3_bind_int(st.p, 10, r.compare_with_value ? 1 : 0);
     bind(st.p, 11, r.right_value_text);
-    bind(st.p, 12, now);
-    bind(st.p, 13, now);
+    bind(st.p, 12, r.room_code);
+    bind(st.p, 13, r.mach_code);
+    bind(st.p, 14, r.mach_name);
+    bind(st.p, 15, now);
+    bind(st.p, 16, now);
     if (sqlite3_step(st.p) != SQLITE_DONE) {
       error = sqlite3_errmsg(db.p);
       return false;
@@ -394,7 +420,7 @@ bool save_rule(Rule &r, std::string &error) {
             "name=?,enabled=?,left_item_code=?,left_item_name=?,"
             "left_item_unit=?,operator=?,right_item_code=?,right_item_name=?,"
             "right_item_unit=?,compare_with_value=?,right_value_text=?,"
-            "updated_at=? WHERE id=?",
+            "room_code=?,mach_code=?,mach_name=?,updated_at=? WHERE id=?",
             st, error)) {
       rollback(db.p);
       return false;
@@ -410,8 +436,11 @@ bool save_rule(Rule &r, std::string &error) {
     bind(st.p, 9, r.right_item_unit);
     sqlite3_bind_int(st.p, 10, r.compare_with_value ? 1 : 0);
     bind(st.p, 11, r.right_value_text);
-    bind(st.p, 12, now);
-    sqlite3_bind_int(st.p, 13, r.id);
+    bind(st.p, 12, r.room_code);
+    bind(st.p, 13, r.mach_code);
+    bind(st.p, 14, r.mach_name);
+    bind(st.p, 15, now);
+    sqlite3_bind_int(st.p, 16, r.id);
     if (sqlite3_step(st.p) != SQLITE_DONE) {
       error = sqlite3_errmsg(db.p);
       rollback(db.p);
@@ -658,6 +687,115 @@ bool set_alert_handled(int id, bool handled, std::string &error) {
     error = "待处理记录已不存在，请刷新后重试";
     return false;
   }
+  error.clear();
+  return true;
+}
+
+bool load_scan_progress(ScanProgress &progress,
+                        std::vector<PendingReport> &pending,
+                        std::string &error) {
+  progress = {};
+  pending.clear();
+  Db db;
+  if (!ready(db, error))
+    return false;
+  {
+    Stmt st;
+    if (!prepare(db.p,
+                 "SELECT day,rule_signature,high_watermark,day_min_rep_no,"
+                 "sweep_max_rep_no,sweep_step "
+                 "FROM scheduled_result_scan_progress "
+                 "WHERE id=1", st, error))
+      return false;
+    const int rc = sqlite3_step(st.p);
+    if (rc == SQLITE_ROW) {
+      progress.day = text(st.p, 0);
+      progress.rule_signature = text(st.p, 1);
+      progress.high_watermark = text(st.p, 2);
+      progress.day_min_rep_no = text(st.p, 3);
+      progress.sweep_max_rep_no = text(st.p, 4);
+      progress.sweep_step = sqlite3_column_int(st.p, 5);
+    } else if (rc != SQLITE_DONE) {
+      error = sqlite3_errmsg(db.p);
+      return false;
+    }
+  }
+  Stmt st;
+  if (!prepare(db.p,
+               "SELECT rep_no,first_seen,next_scan FROM "
+               "scheduled_result_pending_report", st, error))
+    return false;
+  int rc = SQLITE_OK;
+  while ((rc = sqlite3_step(st.p)) == SQLITE_ROW) {
+    PendingReport row;
+    row.rep_no = text(st.p, 0);
+    row.first_seen = sqlite3_column_int64(st.p, 1);
+    row.next_scan = sqlite3_column_int64(st.p, 2);
+    pending.push_back(std::move(row));
+  }
+  if (rc != SQLITE_DONE) {
+    error = sqlite3_errmsg(db.p);
+    return false;
+  }
+  error.clear();
+  return true;
+}
+
+bool save_scan_progress(const ScanProgress &progress,
+                        const std::vector<PendingReport> &pending,
+                        std::string &error) {
+  Db db;
+  if (!ready(db, error) || !exec(db.p, "BEGIN IMMEDIATE", error))
+    return false;
+  bool ok = false;
+  do {
+    Stmt state;
+    if (!prepare(db.p,
+                 "INSERT OR REPLACE INTO scheduled_result_scan_progress"
+                 "(id,day,rule_signature,high_watermark,day_min_rep_no,"
+                 "sweep_max_rep_no,sweep_step) "
+                 "VALUES(1,?,?,?,?,?,?)",
+                 state, error))
+      break;
+    bind(state.p, 1, progress.day);
+    bind(state.p, 2, progress.rule_signature);
+    bind(state.p, 3, progress.high_watermark);
+    bind(state.p, 4, progress.day_min_rep_no);
+    bind(state.p, 5, progress.sweep_max_rep_no);
+    sqlite3_bind_int(state.p, 6, progress.sweep_step);
+    if (sqlite3_step(state.p) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db.p);
+      break;
+    }
+    if (!exec(db.p, "DELETE FROM scheduled_result_pending_report", error))
+      break;
+    Stmt row;
+    if (!prepare(db.p,
+                 "INSERT INTO scheduled_result_pending_report"
+                 "(rep_no,first_seen,next_scan) VALUES(?,?,?)",
+                 row, error))
+      break;
+    ok = true;
+    for (const auto &item : pending) {
+      sqlite3_reset(row.p);
+      sqlite3_clear_bindings(row.p);
+      bind(row.p, 1, item.rep_no);
+      sqlite3_bind_int64(row.p, 2, item.first_seen);
+      sqlite3_bind_int64(row.p, 3, item.next_scan);
+      if (sqlite3_step(row.p) != SQLITE_DONE) {
+        error = sqlite3_errmsg(db.p);
+        ok = false;
+        break;
+      }
+    }
+  } while (false);
+  if (!ok) {
+    std::string rollback_error;
+    exec(db.p, "ROLLBACK", rollback_error);
+    return false;
+  }
+  if (!exec(db.p, "COMMIT", error))
+    return false;
   error.clear();
   return true;
 }

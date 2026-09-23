@@ -16,6 +16,10 @@ struct Rule {
   std::string right_item_code;
   std::string right_item_name;
   std::string right_item_unit;
+  // Empty machine code denotes a legacy, unscoped rule.
+  std::string room_code;
+  std::string mach_code;
+  std::string mach_name;
   // When true the right side is a literal threshold (right_value_text) and the
   // right_item_* fields are ignored.
   bool compare_with_value = false;
@@ -74,5 +78,9 @@ std::string item_display_name(const std::string &english,
 std::vector<Match> evaluate(const std::vector<Rule> &rules,
                             const std::vector<ResultRow> &rows,
                             int *skipped_non_numeric = nullptr);
+// A report is unfinished only when at least one selected rule item is present
+// but a required numeric value is still absent/invalid.
+bool needs_result_followup(const std::vector<Rule> &rules,
+                           const std::vector<ResultRow> &rows);
 
 } // namespace scheduled_check

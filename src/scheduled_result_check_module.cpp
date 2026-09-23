@@ -4,6 +4,7 @@
 
 #include "app_settings_io.h"
 #include "main_app.h"
+#include "machine_picker_popup.h"
 #include "regular_report_module.h"
 #include "resource.h"
 #include "scheduled_result_check_core.h"
@@ -16,11 +17,17 @@
 
 #include <algorithm>
 #include <commctrl.h>
+#include <cstdint>
+#include <ctime>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <shellapi.h>
+#include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <windowsx.h>
 
@@ -41,12 +48,13 @@ constexpr int IDC_DELETE = 8106, IDC_TOGGLE = 8107, IDC_SCAN = 8108,
               IDC_RULES = 8109, IDC_ALERTS = 8110;
 constexpr int IDC_HANDLED = 8111, IDC_STATUS = 8112;
 constexpr int IDC_NEW = 8113, IDC_RULE_SETTINGS = 8114, IDC_VALUE_MODE = 8115,
-              IDC_VALUE = 8116;
+              IDC_VALUE = 8116, IDC_MACHINE = 8117;
 
 struct ScanResult {
   bool ok = false;
   std::string error;
   std::string dictionary_warning;
+  std::string progress_warning;
   int row_count = 0;
   int match_count = 0;
   int skipped = 0;
@@ -57,6 +65,7 @@ struct Monitor {
   ModuleContext ctx;
   app::WindowTask task;
   bool rescan_requested = false;
+  bool full_rescan_requested = false;
   HWND reminder = nullptr;
   bool reminder_expanded = true;
   bool notification_icon_added = false;
@@ -75,17 +84,25 @@ HWND g_page = nullptr;
 struct State {
   ModuleContext ctx;
   HWND nameLabel = nullptr, leftLabel = nullptr, opLabel = nullptr,
-       rightLabel = nullptr, rulesTitle = nullptr, alertsTitle = nullptr;
+       rightLabel = nullptr, machineLabel = nullptr, rulesTitle = nullptr,
+       alertsTitle = nullptr;
   HWND name = nullptr, left = nullptr, op = nullptr, right = nullptr,
        newRule = nullptr, save = nullptr, del = nullptr, toggle = nullptr,
        scan = nullptr, ruleSettings = nullptr, valueMode = nullptr,
-       value = nullptr;
+       value = nullptr, machine = nullptr, machineButton = nullptr;
   HWND rulesList = nullptr, alertsList = nullptr, handled = nullptr,
        status = nullptr;
   std::vector<search::ScheduledCheckItemOption> items;
+  std::vector<search::ScheduledCheckItemOption> allItems;
   std::vector<scheduled_check::Rule> rules;
   std::vector<scheduled_check::Alert> alerts;
   app::WindowTask itemTask;
+  app::WindowTask machineItemTask;
+  std::string roomCode, machCode, machName;
+  std::unordered_set<std::string> machineItemCodes;
+  bool machineItemsLoaded = false;
+  bool dictionaryLoaded = false;
+  std::string pendingLeftCode, pendingRightCode;
   bool rulesExpanded = false;
   bool valueModeChecked = false;
 };
@@ -656,13 +673,75 @@ void updateReminder(bool emphasize) {
   InvalidateRect(g_monitor.reminder, nullptr, TRUE);
 }
 
-ScanResult executeScan(const ModuleContext &ctx) {
+std::string ruleSignature(const std::vector<scheduled_check::Rule> &rules) {
+  std::ostringstream out;
+  const auto field = [&out](const std::string &value) {
+    out << value.size() << ':' << value;
+  };
+  for (const auto &rule : rules) {
+    out << rule.id << ':' << rule.enabled << ':' << rule.compare_with_value;
+    field(rule.name);
+    field(rule.left_item_code);
+    field(rule.left_item_name);
+    field(rule.left_item_unit);
+    field(rule.op);
+    field(rule.right_item_code);
+    field(rule.right_item_name);
+    field(rule.right_item_unit);
+    field(rule.right_value_text);
+    field(rule.room_code);
+    field(rule.mach_code);
+  }
+  return out.str();
+}
+
+std::uint64_t reportNumber(const std::string &value) {
+  return value.empty() ? 0 : std::strtoull(value.c_str(), nullptr, 10);
+}
+
+using ItemLookup = std::unordered_map<
+    std::string, const search::ScheduledCheckItemOption *>;
+
+scheduled_check::ResultRow makeResultRow(
+    const search::ScheduledCheckResultRow &source, const ItemLookup &items) {
+  scheduled_check::ResultRow row;
+  row.entry_id = source.entry_id;
+  row.rep_no = source.rep_no;
+  row.oper_no = source.oper_no;
+  row.room_code = source.room_code;
+  row.mach_code = source.mach_code;
+  row.mach_name = source.mach_name;
+  row.inspect_date = source.inspect_date;
+  row.item_code = search::trim(source.item_code);
+  row.item_name = search::trim(source.item_name);
+  row.item_eng = search::trim(source.item_eng);
+  if (const auto found = items.find(row.item_code); found != items.end()) {
+    if (!found->second->item_name.empty())
+      row.item_name = found->second->item_name;
+    if (!found->second->item_eng.empty())
+      row.item_eng = found->second->item_eng;
+  }
+  row.result = source.result;
+  return row;
+}
+
+ScanResult executeScan(const ModuleContext &ctx, bool forceFull) {
   ScanResult out;
   std::vector<scheduled_check::Rule> rules;
   if (!scheduled_check::load_rules(rules, out.error))
     return out;
-  std::vector<std::string> codes;
+  std::vector<scheduled_check::Rule> legacyRules;
+  std::map<std::pair<std::string, std::string>,
+           std::vector<scheduled_check::Rule>> machineRules;
   for (const auto &r : rules)
+    if (r.enabled) {
+      if (r.room_code.empty() || r.mach_code.empty())
+        legacyRules.push_back(r);
+      else
+        machineRules[{r.room_code, r.mach_code}].push_back(r);
+    }
+  std::vector<std::string> codes;
+  for (const auto &r : legacyRules)
     if (r.enabled) {
       codes.push_back(r.left_item_code);
       codes.push_back(r.right_item_code);
@@ -672,7 +751,7 @@ ScanResult executeScan(const ModuleContext &ctx) {
   codes.erase(std::remove_if(codes.begin(), codes.end(),
                              [](const std::string &code) { return code.empty(); }),
               codes.end());
-  if (codes.empty()) {
+  if (codes.empty() && machineRules.empty()) {
     out.ok = true;
     return out;
   }
@@ -690,58 +769,209 @@ ScanResult executeScan(const ModuleContext &ctx) {
     out.dictionary_warning = dictionaryError.empty()
                                  ? "项目字典加载失败"
                                  : dictionaryError;
-  std::unordered_map<std::string, const search::ScheduledCheckItemOption *>
-      itemsByCode;
+  ItemLookup itemsByCode;
   itemsByCode.reserve(items.size());
   for (const auto &item : items)
     itemsByCode.emplace(item.item_code, &item);
-  std::vector<search::ScheduledCheckResultRow> source;
-  if (!search::query_scheduled_check_results(connection, codes, source,
-                                             out.error))
+  std::vector<scheduled_check::Match> matches;
+  scheduled_check::ScanProgress progress;
+  std::vector<scheduled_check::PendingReport> pending;
+  if (!legacyRules.empty()) {
+  std::string day, minRepNo, maxRepNo;
+  if (!search::query_scheduled_check_report_bounds(
+          connection, day, minRepNo, maxRepNo, out.error))
     return out;
-  out.row_count = static_cast<int>(source.size());
+  if (!scheduled_check::load_scan_progress(progress, pending, out.error))
+    return out;
+  const std::string signature = ruleSignature(legacyRules);
+  const std::uint64_t maxNumber = reportNumber(maxRepNo);
+  const std::uint64_t oldHigh = reportNumber(progress.high_watermark);
+  const bool full = forceFull || progress.day != day ||
+                    progress.rule_signature != signature ||
+                    progress.high_watermark.empty() || maxNumber < oldHigh;
+  if (!full && !minRepNo.empty() &&
+      (progress.day_min_rep_no.empty() || progress.day_min_rep_no == "0" ||
+       reportNumber(minRepNo) < reportNumber(progress.day_min_rep_no)))
+    progress.day_min_rep_no = minRepNo;
+  if (!full && progress.sweep_max_rep_no == "0" && !maxRepNo.empty())
+    progress.sweep_max_rep_no = maxRepNo;
+  std::vector<search::ScheduledCheckResultRow> source;
+  const auto appendQuery = [&](const search::ScheduledCheckResultQuery &query) {
+    std::vector<search::ScheduledCheckResultRow> batch;
+    if (!search::query_scheduled_check_results(connection, codes, batch,
+                                               out.error, {}, query))
+      return false;
+    source.insert(source.end(), std::make_move_iterator(batch.begin()),
+                  std::make_move_iterator(batch.end()));
+    return true;
+  };
+  std::unordered_set<std::string> dueReports;
+  if (full) {
+    search::ScheduledCheckResultQuery query;
+    query.include_empty_reports = true;
+    if (!appendQuery(query))
+      return out;
+    pending.clear();
+    progress.day_min_rep_no = minRepNo.empty() ? "0" : minRepNo;
+    progress.sweep_max_rep_no = maxRepNo.empty() ? "0" : maxRepNo;
+    progress.sweep_step = 0;
+  } else {
+    // Recheck a small overlap: REP_NO allocation and transaction commit order
+    // need not be identical. Older unfinished reports are handled below.
+    const std::uint64_t overlapLow = oldHigh > 100 ? oldHigh - 100 : 0;
+    search::ScheduledCheckResultQuery recent;
+    recent.lower_exclusive = std::to_string(overlapLow);
+    recent.upper_inclusive = maxRepNo.empty() ? "0" : maxRepNo;
+    recent.include_empty_reports = true;
+    if (maxNumber > overlapLow && !appendQuery(recent))
+      return out;
+
+    const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+    std::vector<std::string> due;
+    for (const auto &item : pending) {
+      const std::uint64_t no = reportNumber(item.rep_no);
+      if (item.next_scan <= now && no <= overlapLow) {
+        due.push_back(item.rep_no);
+        dueReports.insert(item.rep_no);
+      }
+    }
+    for (size_t begin = 0; begin < due.size(); begin += 200) {
+      search::ScheduledCheckResultQuery query;
+      query.include_empty_reports = true;
+      query.report_nos.assign(due.begin() + begin,
+                              due.begin() + (std::min)(due.size(), begin + 200));
+      if (!appendQuery(query))
+        return out;
+    }
+
+    // Patrol one fifteenth of today's numeric REP_NO range per minute.
+    // The upper bound stays fixed until all segments of this cycle complete.
+    const std::uint64_t sweepMin = reportNumber(progress.day_min_rep_no);
+    const std::uint64_t sweepMax = reportNumber(progress.sweep_max_rep_no);
+    if (sweepMin > 0 && sweepMax >= sweepMin) {
+      const std::uint64_t width = (sweepMax - sweepMin + 15) / 15;
+      const int step = (std::max)(0, (std::min)(14, progress.sweep_step));
+      const std::uint64_t first = sweepMin + step * width;
+      if (first <= sweepMax) {
+        search::ScheduledCheckResultQuery query;
+        query.lower_exclusive = std::to_string(first - 1);
+        query.upper_inclusive = std::to_string(
+            (std::min)(sweepMax, first + width - 1));
+        if (!appendQuery(query))
+          return out;
+      }
+    }
+    progress.sweep_step = (progress.sweep_step + 1) % 15;
+    if (progress.sweep_step == 0)
+      progress.sweep_max_rep_no = maxRepNo.empty() ? "0" : maxRepNo;
+  }
+  progress.day = day;
+  progress.rule_signature = signature;
+  progress.high_watermark = maxRepNo.empty() ? "0" : maxRepNo;
+  if (progress.day_min_rep_no.empty())
+    progress.day_min_rep_no = minRepNo.empty() ? "0" : minRepNo;
+  out.row_count = static_cast<int>(std::count_if(
+      source.begin(), source.end(),
+      [](const auto &row) { return !row.entry_id.empty(); }));
   std::vector<scheduled_check::ResultRow> rows;
   rows.reserve(source.size());
+  std::map<std::string, std::vector<scheduled_check::ResultRow>> byReport;
   for (const auto &s : source) {
-    scheduled_check::ResultRow r;
-    r.entry_id = s.entry_id;
-    r.rep_no = s.rep_no;
-    r.oper_no = s.oper_no;
-    r.room_code = s.room_code;
-    r.mach_code = s.mach_code;
-    r.mach_name = s.mach_name;
-    r.inspect_date = s.inspect_date;
-    r.item_code = search::trim(s.item_code);
-    r.item_name = search::trim(s.item_name);
-    r.item_eng = search::trim(s.item_eng);
-    if (const auto found = itemsByCode.find(r.item_code);
-        found != itemsByCode.end()) {
-      if (!found->second->item_name.empty())
-        r.item_name = found->second->item_name;
-      if (!found->second->item_eng.empty())
-        r.item_eng = found->second->item_eng;
-    }
-    r.result = s.result;
+    auto &reportRows = byReport[s.rep_no];
+    if (s.entry_id.empty())
+      continue; // LEFT JOIN marker for a report with no selected project yet.
+    auto r = makeResultRow(s, itemsByCode);
+    reportRows.push_back(r);
     rows.push_back(std::move(r));
   }
-  auto matches = scheduled_check::evaluate(rules, rows, &out.skipped);
+  auto legacyMatches = scheduled_check::evaluate(legacyRules, rows, &out.skipped);
+  matches.insert(matches.end(), std::make_move_iterator(legacyMatches.begin()),
+                 std::make_move_iterator(legacyMatches.end()));
+  std::unordered_map<std::string, scheduled_check::PendingReport> pendingByNo;
+  for (const auto &item : pending)
+    pendingByNo[item.rep_no] = item;
+  for (const auto &no : dueReports)
+    if (byReport.count(no) == 0)
+      pendingByNo.erase(no); // Report was deleted or moved out of today.
+  const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+  const std::uint64_t recentFloor = maxNumber > 100 ? maxNumber - 100 : 0;
+  for (const auto &report : byReport) {
+    const bool recent = reportNumber(report.first) > recentFloor;
+    const auto existing = pendingByNo.find(report.first);
+    const bool tracked = existing != pendingByNo.end();
+    const bool unfinished = scheduled_check::needs_result_followup(
+                                legacyRules, report.second) ||
+                            (report.second.empty() && (recent || tracked));
+    if (!unfinished || (!recent && !tracked)) {
+      pendingByNo.erase(report.first);
+      continue;
+    }
+    scheduled_check::PendingReport item = tracked
+        ? existing->second : scheduled_check::PendingReport{};
+    item.rep_no = report.first;
+    if (item.first_seen == 0)
+      item.first_seen = now;
+    const std::int64_t age = now - item.first_seen;
+    item.next_scan = now + (age < 30 * 60 ? 60 : age < 4 * 60 * 60 ? 300 : 900);
+    pendingByNo[report.first] = std::move(item);
+  }
+  pending.clear();
+  pending.reserve(pendingByNo.size());
+  for (auto &item : pendingByNo)
+    pending.push_back(std::move(item.second));
+  }
+  for (const auto &[machine, groupRules] : machineRules) {
+    std::vector<std::string> machineCodes;
+    for (const auto &rule : groupRules) {
+      machineCodes.push_back(rule.left_item_code);
+      if (!rule.compare_with_value)
+        machineCodes.push_back(rule.right_item_code);
+    }
+    std::sort(machineCodes.begin(), machineCodes.end());
+    machineCodes.erase(std::unique(machineCodes.begin(), machineCodes.end()),
+                       machineCodes.end());
+    search::ScheduledCheckResultQuery query;
+    query.room_code = machine.first;
+    query.mach_code = machine.second;
+    std::vector<search::ScheduledCheckResultRow> source;
+    if (!search::query_scheduled_check_results(connection, machineCodes, source,
+                                               out.error, {}, query))
+      return out;
+    std::vector<scheduled_check::ResultRow> machineRows;
+    machineRows.reserve(source.size());
+    for (const auto &s : source) {
+      if (s.entry_id.empty())
+        continue;
+      machineRows.push_back(makeResultRow(s, itemsByCode));
+      ++out.row_count;
+    }
+    auto found = scheduled_check::evaluate(groupRules, machineRows, &out.skipped);
+    matches.insert(matches.end(), std::make_move_iterator(found.begin()),
+                   std::make_move_iterator(found.end()));
+  }
   out.match_count = static_cast<int>(matches.size());
   if (!scheduled_check::record_matches(rules, matches, out.fresh, out.error))
     return out;
+  if (!legacyRules.empty() &&
+      !scheduled_check::save_scan_progress(progress, pending,
+                                           out.progress_warning)) {
+    // Matches have already been committed; retry this range next time.
+  }
   out.ok = true;
   return out;
 }
 
-bool triggerScan() {
+bool triggerScan(bool forceFull = false) {
   if (!g_monitor.main)
     return false;
   if (g_monitor.task.active()) {
     g_monitor.rescan_requested = true;
+    g_monitor.full_rescan_requested |= forceFull;
     return false;
   }
   const ModuleContext ctx = g_monitor.ctx;
   return g_monitor.task.start<ScanResult>(
-      [ctx] { return executeScan(ctx); },
+      [ctx, forceFull] { return executeScan(ctx, forceFull); },
       [](std::optional<ScanResult> result, std::exception_ptr error) {
         if (g_page) {
           auto *st = reinterpret_cast<State *>(
@@ -755,13 +985,17 @@ bool triggerScan() {
               status = L"扫描失败：" + w(result->error);
             } else {
               status = result->dictionary_warning.empty()
-                           ? L"扫描完成："
-                           : L"项目字典加载失败，英文名可能缺失。扫描完成：";
+                           ? L""
+                           : L"项目字典加载失败，英文名可能缺失。";
+              status += L"扫描完成：";
               status += L"读取 " + std::to_wstring(result->row_count) +
                        L" 行，命中 " + std::to_wstring(result->match_count) +
                        L" 条，新增 " + std::to_wstring(result->fresh.size()) +
                        L" 条，跳过非数值 " + std::to_wstring(result->skipped) +
                        L" 组。";
+              if (!result->progress_warning.empty())
+                status += L" 扫描进度未保存，下轮将重试：" +
+                          w(result->progress_warning);
             }
             SetWindowTextW(st->status, status.c_str());
           }
@@ -773,7 +1007,9 @@ bool triggerScan() {
           showSystemNotification(result->fresh);
         if (g_monitor.rescan_requested && g_monitor.main) {
           g_monitor.rescan_requested = false;
-          triggerScan();
+          const bool full = g_monitor.full_rescan_requested;
+          g_monitor.full_rescan_requested = false;
+          triggerScan(full);
         }
       });
 }
@@ -796,6 +1032,10 @@ void loadRules(State *st) {
             r.compare_with_value
                 ? L"固定值 " + w(r.right_value_text)
                 : w(r.right_item_name + " (" + r.right_item_code + ")"));
+    setItem(st->rulesList, i, 5,
+            r.mach_code.empty() ? L"未限定（旧规则）"
+                                : w(r.mach_name + " [" + r.room_code + "/" +
+                                    r.mach_code + "]"));
   }
 }
 void loadAlerts(State *st) {
@@ -830,7 +1070,7 @@ void refresh(State *st) {
   loadRules(st);
   loadAlerts(st);
   SetWindowTextW(st->status,
-                 L"主程序运行期间每分钟自动扫描当日结果；LIS 数据库只读。");
+                 L"仪器规则每分钟核查该仪器当日结果；旧规则沿用增量轮巡。LIS 数据库只读。");
 }
 
 int comboSelection(HWND combo) {
@@ -860,8 +1100,8 @@ void autoMatchItemCode(State *st, HWND combo, const wchar_t *side,
   const int index = exactItemCodeIndex(st, code, !forceExact);
   if (index < 0) {
     if (forceExact) {
-      const std::wstring message = std::wstring(side) + L"未找到项目代码 “" +
-                                   w(code) + L"”，请核对后重新输入。";
+      const std::wstring message = std::wstring(side) + L"的代码 “" +
+                                   w(code) + L"”不在该仪器的可选项目中。";
       SetWindowTextW(st->status, message.c_str());
     }
     return;
@@ -884,11 +1124,15 @@ int resolveItem(State *st, HWND combo) {
   const std::string key = search::trim(windowText(combo));
   if (key.empty())
     return -1;
+  const bool numericCode = std::all_of(
+      key.begin(), key.end(), [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
   int match = -1;
   for (size_t i = 0; i < st->items.size(); ++i) {
     const auto &item = st->items[i];
     if (item.item_code == key || item.item_name == key || item.item_eng == key)
       return static_cast<int>(i);
+    if (numericCode)
+      continue; // A typed ITEM_CODE must match exactly, never by substring.
     if (item.item_code.find(key) != std::string::npos ||
         item.item_name.find(key) != std::string::npos ||
         item.item_eng.find(key) != std::string::npos) {
@@ -900,6 +1144,19 @@ int resolveItem(State *st, HWND combo) {
   return match;
 }
 void fillItems(State *st) {
+  const int oldLeft = resolveItem(st, st->left);
+  const int oldRight = resolveItem(st, st->right);
+  const auto selectedCode = [&](const std::string &pending, int index) {
+    if (!pending.empty()) return pending;
+    return index >= 0 ? st->items[index].item_code : std::string{};
+  };
+  const std::string leftCode = selectedCode(st->pendingLeftCode, oldLeft);
+  const std::string rightCode = selectedCode(st->pendingRightCode, oldRight);
+  st->items.clear();
+  if (st->machineItemsLoaded && st->dictionaryLoaded)
+    for (const auto &item : st->allItems)
+      if (st->machineItemCodes.count(item.item_code))
+        st->items.push_back(item);
   for (HWND c : {st->left, st->right}) {
     SendMessageW(c, CB_RESETCONTENT, 0, 0);
     for (const auto &i : st->items) {
@@ -911,7 +1168,74 @@ void fillItems(State *st) {
       SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
     }
   }
-  SetWindowTextW(st->status, L"项目字典已加载，可新建核查规则。");
+  EnableWindow(st->left, st->machineItemsLoaded && !st->items.empty());
+  EnableWindow(st->right, st->machineItemsLoaded && !st->items.empty());
+  EnableWindow(st->save, st->machineItemsLoaded && !st->items.empty());
+  for (size_t i = 0; i < st->items.size(); ++i) {
+    if (st->items[i].item_code == leftCode)
+      SendMessageW(st->left, CB_SETCURSEL, i, 0);
+    if (st->items[i].item_code == rightCode)
+      SendMessageW(st->right, CB_SETCURSEL, i, 0);
+  }
+  if (st->machineItemsLoaded && st->dictionaryLoaded) {
+    st->pendingLeftCode.clear();
+    st->pendingRightCode.clear();
+  }
+  if (!st->machineItemsLoaded)
+    SetWindowTextW(st->status, L"请先选择检验仪器，再选择该仪器的项目。");
+  else if (!st->dictionaryLoaded)
+    SetWindowTextW(st->status, L"项目字典尚未加载，暂不能选择项目。");
+  else if (st->items.empty())
+    SetWindowTextW(st->status, L"该仪器在 LS_AS_GROUP_ITEM 中没有可选项目，请核对 LIS 配置。");
+  else {
+    const std::wstring message = L"该仪器可选 " +
+        std::to_wstring(st->items.size()) +
+        L" 个项目；可输入项目代码精确匹配。";
+    SetWindowTextW(st->status, message.c_str());
+  }
+}
+void loadMachineItems(HWND hwnd, State *st) {
+  st->machineItemCodes.clear();
+  st->machineItemsLoaded = false;
+  fillItems(st);
+  if (st->roomCode.empty() || st->machCode.empty()) {
+    return;
+  }
+  const auto connection = search::wide_to_utf8(
+      search::build_connection_string_w(st->ctx.dbSettings));
+  const auto room = st->roomCode, machine = st->machCode;
+  if (connection.empty()) {
+    SetWindowTextW(st->status, L"请先配置数据库连接，无法加载仪器项目。");
+    return;
+  }
+  SetWindowTextW(st->status, L"正在加载所选仪器的项目...");
+  if (!st->machineItemTask.start<
+      std::pair<std::vector<std::string>, std::string>>(
+      [connection, room, machine] {
+        std::pair<std::vector<std::string>, std::string> result;
+        search::query_scheduled_check_machine_item_codes(
+            connection, room, machine, result.first, result.second);
+        return result;
+      },
+      [hwnd, room, machine](auto result, std::exception_ptr) {
+        if (!IsWindow(hwnd)) return;
+        auto *state = reinterpret_cast<State *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (!state || state->roomCode != room ||
+            state->machCode != machine) return;
+        if (!result) {
+          SetWindowTextW(state->status, L"仪器项目加载异常，请重选仪器后重试。");
+          return;
+        }
+        if (!result->second.empty()) {
+          SetWindowTextW(state->status, L"仪器项目加载失败，请重选仪器后重试；已禁止保存规则。");
+          return;
+        }
+        state->machineItemCodes.insert(result->first.begin(),
+                                       result->first.end());
+        state->machineItemsLoaded = true;
+        fillItems(state);
+      }))
+    SetWindowTextW(st->status, L"仪器项目任务启动失败，请重选仪器后重试。");
 }
 void startItemLoad(HWND hwnd, State *st) {
   const auto connection = search::wide_to_utf8(
@@ -936,16 +1260,27 @@ void startItemLoad(HWND hwnd, State *st) {
           SetWindowTextW(st->status, w(result->second).c_str());
           return;
         }
-        st->items = std::move(result->first);
+        st->allItems = std::move(result->first);
+        st->dictionaryLoaded = true;
         fillItems(st);
       });
 }
 
 void saveRule(HWND hwnd, State *st) {
+  if (st->roomCode.empty() || st->machCode.empty()) {
+    MessageBoxW(hwnd, L"请先选择检验仪器；旧规则更新前也需要绑定仪器。",
+                TITLE, MB_ICONINFORMATION);
+    return;
+  }
+  if (!st->machineItemsLoaded || st->items.empty()) {
+    MessageBoxW(hwnd, L"该仪器的项目尚未加载成功，不能保存规则。请核对 LIS 配置并重选仪器。",
+                TITLE, MB_ICONINFORMATION);
+    return;
+  }
   const int l = resolveItem(st, st->left);
   const int o = comboSelection(st->op);
   if (l < 0 || o < 0 || l >= static_cast<int>(st->items.size())) {
-    MessageBoxW(hwnd, L"请选择项目 A 和比较关系；项目 A 支持输入唯一的项目代码或完整名称。",
+    MessageBoxW(hwnd, L"请选择该仪器的项目 A 和比较关系；项目代码须属于所选仪器。",
                 TITLE, MB_ICONINFORMATION);
     return;
   }
@@ -953,6 +1288,9 @@ void saveRule(HWND hwnd, State *st) {
   const int sel = selected(st->rulesList);
   if (sel >= 0 && sel < static_cast<int>(st->rules.size()))
     rule = st->rules[sel];
+  rule.room_code = st->roomCode;
+  rule.mach_code = st->machCode;
+  rule.mach_name = st->machName;
   const auto &li = st->items[l];
   rule.name = search::trim(windowText(st->name));
   static const char *ops[] = {">", ">=", "<", "<=", "=", "!="};
@@ -978,7 +1316,7 @@ void saveRule(HWND hwnd, State *st) {
   } else {
     const int r = resolveItem(st, st->right);
     if (r < 0 || r >= static_cast<int>(st->items.size())) {
-      MessageBoxW(hwnd, L"请选择项目 B；也可以输入唯一的项目代码或完整名称。",
+      MessageBoxW(hwnd, L"请选择该仪器的项目 B；项目代码须属于所选仪器。",
                   TITLE, MB_ICONINFORMATION);
       return;
     }
@@ -1013,6 +1351,18 @@ void selectRule(State *st) {
     return;
   const auto &r = st->rules[row];
   SetWindowTextW(st->name, w(r.name).c_str());
+  st->roomCode = r.room_code;
+  st->machCode = r.mach_code;
+  st->machName = r.mach_name;
+  SetWindowTextW(st->machine,
+                 r.mach_code.empty()
+                     ? L"未限定（旧规则）"
+                     : w(r.mach_name + " [" + r.room_code + "/" + r.mach_code + "]").c_str());
+  st->pendingLeftCode.clear();
+  st->pendingRightCode.clear();
+  loadMachineItems(g_page, st);
+  st->pendingLeftCode = r.left_item_code;
+  st->pendingRightCode = r.right_item_code;
   auto pick = [&](HWND c, const std::string &code) {
     for (size_t i = 0; i < st->items.size(); ++i)
       if (st->items[i].item_code == code) {
@@ -1036,6 +1386,10 @@ void selectRule(State *st) {
 void clearEditor(State *st) {
   ListView_SetItemState(st->rulesList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
   SetWindowTextW(st->name, L"");
+  st->roomCode.clear(); st->machCode.clear(); st->machName.clear();
+  st->pendingLeftCode.clear(); st->pendingRightCode.clear();
+  SetWindowTextW(st->machine, L"尚未选择检验仪器");
+  loadMachineItems(g_page, st);
   SendMessageW(st->left, CB_SETCURSEL, -1, 0);
   SendMessageW(st->right, CB_SETCURSEL, -1, 0);
   SendMessageW(st->op, CB_SETCURSEL, 0, 0);
@@ -1070,7 +1424,8 @@ void openAlert(State *st, int row) {
 void applyRuleEditorVisibility(State *st) {
   const int show = st->rulesExpanded ? SW_SHOW : SW_HIDE;
   for (HWND control :
-       {st->nameLabel, st->leftLabel, st->opLabel, st->rightLabel, st->name,
+       {st->nameLabel, st->leftLabel, st->opLabel, st->rightLabel,
+        st->machineLabel, st->machine, st->machineButton, st->name,
         st->left, st->op, st->valueMode, st->newRule, st->save, st->del,
         st->toggle, st->rulesTitle, st->rulesList})
     ShowWindow(control, show);
@@ -1096,6 +1451,7 @@ void layout(HWND hwnd, State *st) {
   const int gap = S(8);
   const int labelW = (std::max)(
       {search::measure_control_text_width(hwnd, st->nameLabel, 72, 6),
+       search::measure_control_text_width(hwnd, st->machineLabel, 72, 6),
        search::measure_control_text_width(hwnd, st->leftLabel, 72, 6),
        search::measure_control_text_width(hwnd, st->opLabel, 72, 6),
        search::measure_control_text_width(hwnd, st->rightLabel, 72, 6)});
@@ -1123,32 +1479,61 @@ void layout(HWND hwnd, State *st) {
     return;
   }
 
-  // Use two filter rows instead of one long fixed-width row. This remains
-  // readable with larger fonts, high DPI, and narrower MDI client areas.
-  const int row1LeftW = (std::max)(S(220), contentW * 34 / 100);
-  MoveWindow(st->nameLabel, pad, y + S(4), labelW, controlH, TRUE);
-  MoveWindow(st->name, pad + labelW, y, row1LeftW - labelW - gap, controlH,
-             TRUE);
-  const int leftGroupX = pad + row1LeftW + gap;
-  MoveWindow(st->leftLabel, leftGroupX, y + S(4), labelW, controlH, TRUE);
-  MoveWindow(st->left, leftGroupX + labelW, y,
-             (std::max)(S(160), w - pad - leftGroupX - labelW), S(320), TRUE);
-
-  y += controlH + gap;
-  const int opGroupW = (std::max)(S(190), contentW * 24 / 100);
-  MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
-  MoveWindow(st->op, pad + labelW, y, opGroupW - labelW - gap, S(200), TRUE);
-  const int valueModeX = pad + opGroupW + gap;
+  // Wide pages use two columns; narrow pages keep one task per row so labels
+  // and editable project fields never compete for the same horizontal space.
+  const int pickerW = search::measure_control_text_width(
+      hwnd, st->machineButton, 96, 18);
   const int valueModeW =
       search::measure_control_text_width(hwnd, st->valueMode, 96, 18);
-  MoveWindow(st->valueMode, valueModeX, y, valueModeW, controlH, TRUE);
-  const int rightGroupX = valueModeX + valueModeW + gap;
-  MoveWindow(st->rightLabel, rightGroupX, y + S(4), labelW, controlH, TRUE);
-  const int rightW = (std::max)(S(120), w - pad - rightGroupX - labelW);
-  MoveWindow(st->right, rightGroupX + labelW, y, rightW, S(320), TRUE);
-  MoveWindow(st->value, rightGroupX + labelW, y, rightW, controlH, TRUE);
-
-  y += controlH + gap;
+  if (contentW >= S(900)) {
+    const int half = (contentW - gap) / 2;
+    const int rightX = pad + half + gap;
+    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->machine, pad + labelW, y,
+               half - labelW - pickerW - gap, controlH, TRUE);
+    MoveWindow(st->machineButton, pad + half - pickerW, y,
+               pickerW, controlH, TRUE);
+    MoveWindow(st->nameLabel, rightX, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->name, rightX + labelW, y,
+               contentW - half - gap - labelW, controlH, TRUE);
+    y += controlH + gap;
+    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->left, pad + labelW, y, half - labelW, S(320), TRUE);
+    MoveWindow(st->rightLabel, rightX, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->right, rightX + labelW, y,
+               contentW - half - gap - labelW, S(320), TRUE);
+    MoveWindow(st->value, rightX + labelW, y,
+               contentW - half - gap - labelW, controlH, TRUE);
+    y += controlH + gap;
+    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
+    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
+               valueModeW, controlH, TRUE);
+    y += controlH + gap;
+  } else {
+    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->machine, pad + labelW, y,
+               (std::max)(S(80), contentW - labelW - pickerW - gap), controlH,
+               TRUE);
+    MoveWindow(st->machineButton, w - pad - pickerW, y,
+               pickerW, controlH, TRUE);
+    y += controlH + gap;
+    MoveWindow(st->nameLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->name, pad + labelW, y, contentW - labelW, controlH, TRUE);
+    y += controlH + gap;
+    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->left, pad + labelW, y, contentW - labelW, S(320), TRUE);
+    y += controlH + gap;
+    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
+    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
+               valueModeW, controlH, TRUE);
+    y += controlH + gap;
+    MoveWindow(st->rightLabel, pad, y + S(4), labelW, controlH, TRUE);
+    MoveWindow(st->right, pad + labelW, y, contentW - labelW, S(320), TRUE);
+    MoveWindow(st->value, pad + labelW, y, contentW - labelW, controlH, TRUE);
+    y += controlH + gap;
+  }
   int buttonX = pad;
   struct ButtonLayout {
     HWND hwnd;
@@ -1164,6 +1549,10 @@ void layout(HWND hwnd, State *st) {
        search::measure_control_text_width(hwnd, st->toggle, 92, 18)},
       {st->scan, search::measure_control_text_width(hwnd, st->scan, 86, 18)}};
   for (const auto &button : buttons) {
+    if (buttonX > pad && buttonX + button.width > w - pad) {
+      buttonX = pad;
+      y += controlH + gap;
+    }
     MoveWindow(button.hwnd, buttonX, y, button.width, controlH, TRUE);
     buttonX += button.width + gap;
   }
@@ -1196,6 +1585,10 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
     g_page = hwnd;
     st->nameLabel = search::create_label(hwnd, L"规则名称：", 0, 0, 0, 0);
+    st->machineLabel = search::create_label(hwnd, L"检验仪器：", 0, 0, 0, 0);
+    st->machine = search::create_label(hwnd, L"尚未选择检验仪器", 0, 0, 0, 0);
+    st->machineButton = search::create_button(
+        hwnd, IDC_MACHINE, L"选择仪器", 0, 0, 0, 0);
     st->leftLabel = search::create_label(hwnd, L"项目 A：", 0, 0, 0, 0);
     st->opLabel = search::create_label(hwnd, L"比较关系：", 0, 0, 0, 0);
     st->rightLabel = search::create_label(hwnd, L"项目 B：", 0, 0, 0, 0);
@@ -1231,9 +1624,9 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     ListView_SetExtendedListViewStyle(st->rulesList, LVS_EX_FULLROWSELECT |
                                                          LVS_EX_GRIDLINES |
                                                          LVS_EX_DOUBLEBUFFER);
-    const wchar_t *rh[] = {L"状态", L"规则名称", L"项目 A", L"关系", L"项目 B"};
-    int rw[] = {70, 180, 250, 60, 250};
-    for (int i = 0; i < 5; ++i)
+    const wchar_t *rh[] = {L"状态", L"规则名称", L"项目 A", L"关系", L"项目 B", L"检验仪器"};
+    int rw[] = {70, 180, 250, 60, 250, 180};
+    for (int i = 0; i < 6; ++i)
       search::add_list_column(st->rulesList, i, rh[i], rw[i]);
     st->handled =
         search::create_button(hwnd, IDC_HANDLED, L"标记已处理", 0, 0, 0, 0);
@@ -1253,6 +1646,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       search::add_list_column(st->alertsList, i, ah[i], aw[i]);
     st->status = search::create_label(hwnd, L"正在加载项目字典...", 0, 0, 0, 0);
     search::apply_font_to_children(hwnd, st->ctx.uiFont);
+    fillItems(st);
     applyRuleEditorVisibility(st);
     refresh(st);
     layout(hwnd, st);
@@ -1267,8 +1661,14 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (st && st->ctx.appContext) {
       auto *context = static_cast<app::Context *>(st->ctx.appContext);
       st->ctx.dbSettings = context->dbSettings;
+      st->allItems.clear();
+      st->dictionaryLoaded = false;
       st->items.clear();
+      st->machineItemCodes.clear();
+      st->machineItemsLoaded = false;
+      fillItems(st);
       startItemLoad(hwnd, st);
+      if (!st->machCode.empty()) loadMachineItems(hwnd, st);
     }
     return 0;
   case app::WM_APP_FONT_CHANGED:
@@ -1303,6 +1703,38 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case IDC_NEW:
       clearEditor(st);
       return 0;
+    case IDC_MACHINE: {
+      search::MachinePickerPopupOptions options;
+      options.owner = hwnd;
+      options.anchor = st->machineButton;
+      options.font = st->ctx.uiFont;
+      options.db_settings = st->ctx.dbSettings;
+      options.current_room_code = st->roomCode;
+      options.current_mach_code = st->machCode;
+      options.include_all_rooms = true;
+      options.on_accept = [hwnd](const search::MachineOption &machine) {
+        if (!IsWindow(hwnd)) return;
+        auto *state = reinterpret_cast<State *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (!state) return;
+        const bool sameMachine = state->roomCode == machine.room_code &&
+                                 state->machCode == machine.mach_code;
+        const int leftIndex = sameMachine ? resolveItem(state, state->left) : -1;
+        const int rightIndex = sameMachine ? resolveItem(state, state->right) : -1;
+        state->pendingLeftCode = leftIndex >= 0
+                                     ? state->items[leftIndex].item_code : "";
+        state->pendingRightCode = rightIndex >= 0
+                                      ? state->items[rightIndex].item_code : "";
+        state->roomCode = machine.room_code;
+        state->machCode = machine.mach_code;
+        state->machName = machine.mach_name;
+        SetWindowTextW(state->machine,
+                       w(machine.mach_name + " [" + machine.room_code + "/" +
+                         machine.mach_code + "]").c_str());
+        loadMachineItems(hwnd, state);
+      };
+      search::show_machine_picker_popup(options);
+      return 0;
+    }
     case IDC_SAVE:
       saveRule(hwnd, st);
       return 0;
@@ -1382,6 +1814,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_NCDESTROY:
     if (st) {
       st->itemTask.cancel();
+      st->machineItemTask.cancel();
       if (g_page == hwnd)
         g_page = nullptr;
       delete st;
@@ -1438,11 +1871,12 @@ void start_scheduled_result_check_monitor(HWND main_window,
   std::string e;
   scheduled_check::ensure_store(e);
   updateReminder();
-  triggerScan();
+  triggerScan(true);
 }
 void stop_scheduled_result_check_monitor() {
   g_monitor.task.cancel();
   g_monitor.rescan_requested = false;
+  g_monitor.full_rescan_requested = false;
   g_monitor.reminder_pressed_alert_id = 0;
   if (g_monitor.notification_icon_added) {
     NOTIFYICONDATAW data{};
@@ -1458,7 +1892,8 @@ void stop_scheduled_result_check_monitor() {
   g_monitor.main = nullptr;
   g_page = nullptr;
 }
-bool run_scheduled_result_check_now() { return triggerScan(); }
+bool run_scheduled_result_check_now() { return triggerScan(true); }
+bool run_scheduled_result_check_timer() { return triggerScan(false); }
 void handle_scheduled_result_check_notification(LPARAM event_code) {
   if (event_code == WM_LBUTTONUP || event_code == WM_LBUTTONDBLCLK ||
       event_code == NIN_BALLOONUSERCLICK)

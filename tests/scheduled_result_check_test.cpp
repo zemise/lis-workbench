@@ -56,6 +56,26 @@ int main() {
   int skipped = 0;
   auto matches = scheduled_check::evaluate({rule}, rows, &skipped);
   CHECK(matches.size() == 1 && matches[0].rep_no == "R1" && skipped == 0);
+  rule.room_code = "10";
+  rule.mach_code = "2015";
+  CHECK(scheduled_check::evaluate({rule}, rows).empty());
+  rows[0].room_code = rows[1].room_code = "10";
+  rows[0].mach_code = rows[1].mach_code = "2015";
+  CHECK(scheduled_check::evaluate({rule}, rows).size() == 1);
+  rows[0].mach_code = "2016";
+  CHECK(scheduled_check::evaluate({rule}, rows).empty());
+  rows[0].mach_code = "2015";
+  rows[1].mach_code = "2016";
+  CHECK(scheduled_check::evaluate({rule}, rows).empty());
+  rows[1].mach_code = "2015";
+  rule.room_code.clear();
+  rule.mach_code.clear();
+  CHECK(!scheduled_check::needs_result_followup({rule}, {rows[0], rows[1]}));
+  CHECK(scheduled_check::needs_result_followup({rule}, {rows[0]}));
+  CHECK(!scheduled_check::needs_result_followup({rule}, {}));
+  auto unrelated = rows[2];
+  unrelated.item_code = "C";
+  CHECK(!scheduled_check::needs_result_followup({rule}, {unrelated}));
   CHECK(matches[0].left_item_eng == "ALT" &&
         matches[0].right_item_eng == "AST");
   scheduled_check::ResultRow olderNonEmpty = rows[0];
@@ -80,6 +100,7 @@ int main() {
   CHECK(matches.empty());
   rule.enabled = true;
   rows[1].result = "阴性";
+  CHECK(scheduled_check::needs_result_followup({rule}, {rows[0], rows[1]}));
   matches = scheduled_check::evaluate({rule}, rows, &skipped);
   CHECK(matches.empty() && skipped == 1);
 
@@ -104,6 +125,7 @@ int main() {
   CHECK(matches.size() == 1 && matches[0].rep_no == "R2" &&
         matches[0].compare_with_value &&
         matches[0].right_result_text == "5.0");
+  CHECK(!scheduled_check::needs_result_followup({thresholdRule}, valueRows));
   thresholdRule.right_value_text = "10";
   matches = scheduled_check::evaluate({thresholdRule}, valueRows, &skipped);
   CHECK(matches.empty());
