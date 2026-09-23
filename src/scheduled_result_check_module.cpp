@@ -20,6 +20,7 @@
 #include <limits>
 #include <shellapi.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <windowsx.h>
 
@@ -30,6 +31,10 @@ constexpr const wchar_t *CLASS_NAME = L"ScheduledResultCheckWindow";
 constexpr const wchar_t *REMINDER_CLASS_NAME = L"ScheduledResultReminderWindow";
 constexpr const wchar_t *CONFIG_SECTION = L"ScheduledResultCheck";
 constexpr UINT REMINDER_ICON_ID = 0x5343;
+constexpr int REMINDER_WIDTH = 390;
+constexpr int REMINDER_EXPANDED_HEIGHT = 240;
+constexpr int REMINDER_COLLAPSED_HEIGHT = 62;
+constexpr size_t REMINDER_VISIBLE_ROWS = 3;
 constexpr int IDC_NAME = 8101, IDC_LEFT = 8102, IDC_OP = 8103, IDC_RIGHT = 8104,
               IDC_SAVE = 8105;
 constexpr int IDC_DELETE = 8106, IDC_TOGGLE = 8107, IDC_SCAN = 8108,
@@ -41,6 +46,7 @@ constexpr int IDC_NEW = 8113, IDC_RULE_SETTINGS = 8114, IDC_VALUE_MODE = 8115,
 struct ScanResult {
   bool ok = false;
   std::string error;
+  std::string dictionary_warning;
   int row_count = 0;
   int match_count = 0;
   int skipped = 0;
@@ -60,6 +66,7 @@ struct Monitor {
   int reminder_y = 0;
   bool reminder_dragging = false;
   bool reminder_drag_moved = false;
+  int reminder_pressed_alert_id = 0;
   POINT reminder_drag_cursor{};
   POINT reminder_drag_origin{};
 } g_monitor;
@@ -84,6 +91,7 @@ struct State {
 };
 
 void refresh(State *st);
+void loadAlerts(State *st);
 void updateReminder(bool emphasize = false);
 void applyRuleEditorVisibility(State *st);
 
@@ -95,6 +103,22 @@ std::wstring alertLine(const scheduled_check::Alert &a) {
                                        w(a.right_result_text);
   return w(a.left_item_name) + L" " + w(a.left_result_text) + L" " + w(a.op) +
          L" " + right;
+}
+std::wstring reminderItemName(const std::string &english,
+                              const std::string &chinese,
+                              const std::string &code) {
+  return w(scheduled_check::item_display_name(english, chinese, code));
+}
+std::wstring reminderAlertLine(const scheduled_check::Alert &a) {
+  const std::wstring right =
+      a.compare_with_value
+          ? w(a.right_result_text)
+          : reminderItemName(a.right_item_eng, a.right_item_name,
+                             a.right_item_code) +
+                L" " + w(a.right_result_text);
+  return reminderItemName(a.left_item_eng, a.left_item_name,
+                          a.left_item_code) +
+         L" " + w(a.left_result_text) + L" " + w(a.op) + L" " + right;
 }
 std::string windowText(HWND h) {
   int n = GetWindowTextLengthW(h);
@@ -137,7 +161,9 @@ void openReminderCenter() {
   if (!g_monitor.main)
     return;
   activateMainWindow();
-  create_scheduled_result_check_module(g_monitor.ctx);
+  if (HWND page = create_scheduled_result_check_module(g_monitor.ctx))
+    SendMessageW(g_monitor.ctx.mdiClient, WM_MDIMAXIMIZE,
+                 reinterpret_cast<WPARAM>(page), 0);
 }
 
 // Jump from a floating reminder row straight to the corresponding regular
@@ -155,6 +181,9 @@ void openReminderAlert(size_t row) {
                                   a.mach_code, a.mach_name, a.room_code,
                                   highlightCodes};
   HWND report = create_regular_report_module(g_monitor.ctx);
+  if (report)
+    SendMessageW(g_monitor.ctx.mdiClient, WM_MDIMAXIMIZE,
+                 reinterpret_cast<WPARAM>(report), 0);
   if (!report || !PostMessageW(report, WM_REGULAR_OPEN_REPORT, 0,
                                reinterpret_cast<LPARAM>(target))) {
     delete target;
@@ -163,6 +192,27 @@ void openReminderAlert(size_t row) {
 
 int reminderHeaderHeight(HWND hwnd) {
   return static_cast<int>(48 * search::dpi_scale_factor(hwnd) + 0.5f);
+}
+
+int reminderRowHeight(HWND hwnd) {
+  return static_cast<int>(48 * search::dpi_scale_factor(hwnd) + 0.5f);
+}
+
+int reminderRowsTop(HWND hwnd) {
+  return reminderHeaderHeight(hwnd) +
+         static_cast<int>(8 * search::dpi_scale_factor(hwnd) + 0.5f);
+}
+
+RECT reminderActionRect(HWND hwnd, int row) {
+  RECT client{};
+  GetClientRect(hwnd, &client);
+  const float scale = search::dpi_scale_factor(hwnd);
+  const int pad = static_cast<int>(14 * scale + 0.5f);
+  const int width = static_cast<int>(100 * scale + 0.5f);
+  const int inset = static_cast<int>(7 * scale + 0.5f);
+  const int top = reminderRowsTop(hwnd) + row * reminderRowHeight(hwnd);
+  return {client.right - pad - width, top + inset, client.right - pad,
+          top + reminderRowHeight(hwnd) - inset};
 }
 
 int reminderToggleWidth(HWND hwnd) {
@@ -190,14 +240,13 @@ int reminderRowAt(HWND hwnd, int x, int y) {
     return -1;
   const float scale = search::dpi_scale_factor(hwnd);
   const int pad = static_cast<int>(14 * scale + 0.5f);
-  const int rowHeight = static_cast<int>(38 * scale + 0.5f);
-  const int top =
-      reminderHeaderHeight(hwnd) + static_cast<int>(8 * scale + 0.5f);
+  const int rowHeight = reminderRowHeight(hwnd);
+  const int top = reminderRowsTop(hwnd);
   RECT rc{};
   GetClientRect(hwnd, &rc);
   if (x < pad || x > rc.right - pad || y < top)
     return -1;
-  const size_t count = (std::min)(g_monitor.unhandled.size(), size_t{3});
+  const size_t count = (std::min)(g_monitor.unhandled.size(), REMINDER_VISIBLE_ROWS);
   const int index = (y - top) / rowHeight;
   if (index < 0 || index >= static_cast<int>(count))
     return -1;
@@ -206,15 +255,39 @@ int reminderRowAt(HWND hwnd, int x, int y) {
   return index;
 }
 
+bool reminderHitAction(HWND hwnd, int row, int x, int y) {
+  const RECT action = reminderActionRect(hwnd, row);
+  return x >= action.left && x < action.right && y >= action.top &&
+         y < action.bottom;
+}
+
+void markReminderAlertHandled(HWND hwnd, int alertId) {
+  std::string error;
+  if (!scheduled_check::set_alert_handled(alertId, true, error)) {
+    MessageBoxW(hwnd, w(error).c_str(), TITLE, MB_ICONERROR);
+    updateReminder();
+    return;
+  }
+  if (g_page) {
+    auto *st = reinterpret_cast<State *>(GetWindowLongPtrW(g_page, GWLP_USERDATA));
+    if (st)
+      loadAlerts(st);
+  }
+  updateReminder();
+}
+
 void positionReminder() {
   if (!g_monitor.reminder)
     return;
   MONITORINFO info{};
   info.cbSize = sizeof(info);
   const float scale = search::dpi_scale_factor(g_monitor.reminder);
-  const int width = static_cast<int>(420 * scale + 0.5f);
+  const int width = static_cast<int>(REMINDER_WIDTH * scale + 0.5f);
   const int height =
-      static_cast<int>((g_monitor.reminder_expanded ? 210 : 62) * scale + 0.5f);
+      static_cast<int>((g_monitor.reminder_expanded ? REMINDER_EXPANDED_HEIGHT
+                                                   : REMINDER_COLLAPSED_HEIGHT) *
+                           scale +
+                       0.5f);
   const int margin = static_cast<int>(14 * scale + 0.5f);
   POINT desired{g_monitor.reminder_x, g_monitor.reminder_y};
   const HMONITOR monitor =
@@ -254,9 +327,12 @@ void resizeReminderKeepingBottom(HWND hwnd) {
   GetWindowRect(hwnd, &windowRect);
   const int bottom = windowRect.bottom;
   const float scale = search::dpi_scale_factor(hwnd);
-  const int width = static_cast<int>(420 * scale + 0.5f);
+  const int width = static_cast<int>(REMINDER_WIDTH * scale + 0.5f);
   const int height =
-      static_cast<int>((g_monitor.reminder_expanded ? 210 : 62) * scale + 0.5f);
+      static_cast<int>((g_monitor.reminder_expanded ? REMINDER_EXPANDED_HEIGHT
+                                                   : REMINDER_COLLAPSED_HEIGHT) *
+                           scale +
+                       0.5f);
   MONITORINFO info{};
   info.cbSize = sizeof(info);
   POINT anchor{windowRect.left, windowRect.top};
@@ -295,6 +371,14 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_LBUTTONDOWN: {
     const int x = GET_X_LPARAM(lp);
     const int y = GET_Y_LPARAM(lp);
+    const int row = reminderRowAt(hwnd, x, y);
+    if (row >= 0 && reminderHitAction(hwnd, row, x, y)) {
+      g_monitor.reminder_pressed_alert_id =
+          g_monitor.unhandled[static_cast<size_t>(row)].id;
+      SetCapture(hwnd);
+      InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    }
     if (reminderHitDragArea(hwnd, x, y)) {
       RECT windowRect{};
       GetWindowRect(hwnd, &windowRect);
@@ -343,6 +427,19 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_LBUTTONUP: {
     const int x = GET_X_LPARAM(lp);
     const int y = GET_Y_LPARAM(lp);
+    if (g_monitor.reminder_pressed_alert_id != 0) {
+      const int pressedId = g_monitor.reminder_pressed_alert_id;
+      g_monitor.reminder_pressed_alert_id = 0;
+      if (GetCapture() == hwnd)
+        ReleaseCapture();
+      const int row = reminderRowAt(hwnd, x, y);
+      if (row >= 0 && reminderHitAction(hwnd, row, x, y) &&
+          g_monitor.unhandled[static_cast<size_t>(row)].id == pressedId)
+        markReminderAlertHandled(hwnd, pressedId);
+      else
+        InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    }
     if (g_monitor.reminder_dragging) {
       const bool moved = g_monitor.reminder_drag_moved;
       g_monitor.reminder_dragging = false;
@@ -371,6 +468,7 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_CAPTURECHANGED:
     g_monitor.reminder_dragging = false;
     g_monitor.reminder_drag_moved = false;
+    g_monitor.reminder_pressed_alert_id = 0;
     return 0;
   case WM_PAINT: {
     PAINTSTRUCT ps{};
@@ -403,18 +501,44 @@ LRESULT CALLBACK reminderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     DrawTextW(dc, g_monitor.reminder_expanded ? L"收起" : L"展开", -1,
               &toggleRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     if (g_monitor.reminder_expanded) {
-      SetTextColor(dc, RGB(55, 48, 42));
-      const size_t count = (std::min)(g_monitor.unhandled.size(), size_t{3});
-      int top = headerHeight + static_cast<int>(8 * scale);
-      const int rowHeight = static_cast<int>(38 * scale);
+      const size_t count = (std::min)(g_monitor.unhandled.size(), REMINDER_VISIBLE_ROWS);
       for (size_t i = 0; i < count; ++i) {
         const auto &alert = g_monitor.unhandled[i];
-        const std::wstring line =
-            w(alert.discovered_at.substr(11, 5)) + L"  " + alertLine(alert);
-        RECT row{pad, top, rc.right - pad, top + rowHeight};
-        DrawTextW(dc, line.c_str(), -1, &row,
+        const int top = reminderRowsTop(hwnd) +
+                        static_cast<int>(i) * reminderRowHeight(hwnd);
+        const RECT action = reminderActionRect(hwnd, static_cast<int>(i));
+        const int textRight = action.left - static_cast<int>(10 * scale + 0.5f);
+        RECT sampleRow{pad, top, textRight,
+                       top + static_cast<int>(22 * scale + 0.5f)};
+        const std::wstring sample =
+            alert.oper_no.empty() ? L"样本号未记录"
+                                  : L"样本号 " + w(alert.oper_no);
+        const std::wstring time =
+            alert.discovered_at.size() >= 16
+                ? L"  ·  " + w(alert.discovered_at.substr(11, 5))
+                : L"";
+        SetTextColor(dc, RGB(112, 47, 20));
+        const std::wstring heading = sample + time;
+        DrawTextW(dc, heading.c_str(), -1, &sampleRow,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        top += rowHeight;
+        RECT detailRow{pad, sampleRow.bottom, textRight,
+                       top + reminderRowHeight(hwnd)};
+        SetTextColor(dc, RGB(55, 48, 42));
+        const std::wstring detail = reminderAlertLine(alert);
+        DrawTextW(dc, detail.c_str(), -1, &detailRow,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const bool pressed = g_monitor.reminder_pressed_alert_id == alert.id;
+        HBRUSH buttonBrush =
+            CreateSolidBrush(pressed ? RGB(241, 211, 181) : RGB(255, 235, 212));
+        FillRect(dc, &action, buttonBrush);
+        DeleteObject(buttonBrush);
+        HBRUSH buttonBorder = CreateSolidBrush(RGB(184, 83, 48));
+        FrameRect(dc, &action, buttonBorder);
+        DeleteObject(buttonBorder);
+        SetTextColor(dc, RGB(112, 47, 20));
+        RECT buttonText = action;
+        DrawTextW(dc, L"标记已处理", -1, &buttonText,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       SetTextColor(dc, RGB(130, 72, 42));
       RECT footer{pad, rc.bottom - static_cast<int>(32 * scale), rc.right - pad,
@@ -558,6 +682,19 @@ ScanResult executeScan(const ModuleContext &ctx) {
     out.error = "数据库连接未配置";
     return out;
   }
+  std::vector<search::ScheduledCheckItemOption> items;
+  std::string dictionaryError;
+  const bool dictionaryLoaded =
+      search::query_scheduled_check_items(connection, items, dictionaryError);
+  if (!dictionaryLoaded)
+    out.dictionary_warning = dictionaryError.empty()
+                                 ? "项目字典加载失败"
+                                 : dictionaryError;
+  std::unordered_map<std::string, const search::ScheduledCheckItemOption *>
+      itemsByCode;
+  itemsByCode.reserve(items.size());
+  for (const auto &item : items)
+    itemsByCode.emplace(item.item_code, &item);
   std::vector<search::ScheduledCheckResultRow> source;
   if (!search::query_scheduled_check_results(connection, codes, source,
                                              out.error))
@@ -574,8 +711,16 @@ ScanResult executeScan(const ModuleContext &ctx) {
     r.mach_code = s.mach_code;
     r.mach_name = s.mach_name;
     r.inspect_date = s.inspect_date;
-    r.item_code = s.item_code;
-    r.item_name = s.item_name;
+    r.item_code = search::trim(s.item_code);
+    r.item_name = search::trim(s.item_name);
+    r.item_eng = search::trim(s.item_eng);
+    if (const auto found = itemsByCode.find(r.item_code);
+        found != itemsByCode.end()) {
+      if (!found->second->item_name.empty())
+        r.item_name = found->second->item_name;
+      if (!found->second->item_eng.empty())
+        r.item_eng = found->second->item_eng;
+    }
     r.result = s.result;
     rows.push_back(std::move(r));
   }
@@ -609,7 +754,10 @@ bool triggerScan() {
             } else if (!result->ok) {
               status = L"扫描失败：" + w(result->error);
             } else {
-              status = L"扫描完成：读取 " + std::to_wstring(result->row_count) +
+              status = result->dictionary_warning.empty()
+                           ? L"扫描完成："
+                           : L"项目字典加载失败，英文名可能缺失。扫描完成：";
+              status += L"读取 " + std::to_wstring(result->row_count) +
                        L" 行，命中 " + std::to_wstring(result->match_count) +
                        L" 条，新增 " + std::to_wstring(result->fresh.size()) +
                        L" 条，跳过非数值 " + std::to_wstring(result->skipped) +
@@ -909,6 +1057,9 @@ void openAlert(State *st, int row) {
                                   a.mach_code, a.mach_name, a.room_code,
                                   highlightCodes};
   HWND report = create_regular_report_module(st->ctx);
+  if (report)
+    SendMessageW(st->ctx.mdiClient, WM_MDIMAXIMIZE,
+                 reinterpret_cast<WPARAM>(report), 0);
   if (!report || !PostMessageW(report, WM_REGULAR_OPEN_REPORT, 0,
                                reinterpret_cast<LPARAM>(target))) {
     delete target;
@@ -1181,6 +1332,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           return 0;
         }
         refresh(st);
+        updateReminder();
         run_scheduled_result_check_now();
       }
       return 0;
@@ -1291,6 +1443,7 @@ void start_scheduled_result_check_monitor(HWND main_window,
 void stop_scheduled_result_check_monitor() {
   g_monitor.task.cancel();
   g_monitor.rescan_requested = false;
+  g_monitor.reminder_pressed_alert_id = 0;
   if (g_monitor.notification_icon_added) {
     NOTIFYICONDATAW data{};
     data.cbSize = sizeof(data);

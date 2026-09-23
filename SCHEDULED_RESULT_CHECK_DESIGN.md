@@ -228,15 +228,13 @@ SELECT
     r.CHK_DATE,
     m.MACH_NAME,
     e.ITEM_CODE,
-    ISNULL(i.ITEM_NAME, e.ITEM_NAME) AS ITEM_NAME,
+    e.ITEM_NAME,
+    e.ITEM_ENG,
     e.RESULT
 FROM LS_AS_REPORT r WITH (NOLOCK)
 INNER JOIN LS_AS_REPENTRY e WITH (NOLOCK)
     ON e.REP_NO = r.REP_NO
    AND ISNULL(e.DELETE_BIT, 0) = 0
-LEFT JOIN LS_AS_ITEM i WITH (NOLOCK)
-    ON i.ITEM_CODE = e.ITEM_CODE
-   AND ISNULL(i.DELETE_BIT, 0) = 0
 LEFT JOIN LS_AS_MACHINE m WITH (NOLOCK)
     ON m.MACH_CODE = r.MACH_CODE
    AND ISNULL(m.DELETE_BIT, 0) = 0
@@ -246,6 +244,8 @@ WHERE ISNULL(r.DELETE_BIT, 0) = 0
   AND e.ITEM_CODE IN (...)
 ORDER BY r.REP_NO, e.ITEM_CODE, e.ID;
 ```
+
+项目字典 `LS_AS_ITEM` 按数据库连接在进程内缓存 30 分钟；扫描时对项目代码统一去除首尾空格，再用缓存补全项目中文名和 `ENG_NAME`，字典不可用时回退明细中的 `ITEM_NAME / ITEM_ENG`，不影响数值核查。大结果查询不再每分钟关联项目字典。字典加载失败时在页面状态开头提示，不静默忽略。
 
 所有文本条件必须使用项目现有 SQL 转义方式，数据库连接、超时、日志脱敏和后台任务生命周期沿用现有公共实现。
 
@@ -278,7 +278,7 @@ right_entry_id
 
 同一指纹只提醒一次。若任一项目结果发生变化，则生成新指纹并重新判断；变化后仍命中时可以再次提醒。
 
-规则内容修改并保存时，必须在同一 SQLite 事务中清除该规则此前产生的全部命中记录和观察指纹，然后按修改后的规则重新扫描，避免新旧规则结果混杂。删除规则时也必须同时清除其全部命中记录和观察指纹。保存扫描结果前还要复核规则内容仍与本轮扫描快照一致，防止更新或删除前已经启动的后台扫描重新写入旧规则结果。单纯启用或停用规则不视为规则内容修改，保留已有记录。
+规则内容修改并保存时，必须在同一 SQLite 事务中清除该规则此前产生的全部命中记录和观察指纹，然后按修改后的规则重新扫描，避免新旧规则结果混杂。删除规则时也必须同时清除其全部命中记录和观察指纹。停用规则时同样清除该规则的命中记录和观察指纹，并立即刷新悬浮提醒；再次启用后重新扫描当日结果。保存扫描结果前还要复核规则内容及启用状态仍与本轮扫描快照一致，防止更新、停用或删除前已经启动的后台扫描重新写入旧规则结果。
 
 ### 10.2 首次扫描
 
@@ -308,8 +308,9 @@ right_entry_id
 
 - 不抢占当前输入焦点；
 - 跨日期累计全部未处理记录；
-- 展开时显示最近 3 条，收起时保留待处理数量；
-- 点击悬浮窗记录行时，将 LIS 工作台最大化并打开对应常规报告，同时在结果 ListView 中把该记录涉及的项目代码所在行以橙色背景标记；
+- 展开时显示最近 3 条，每条以 `LS_AS_REPORT.OPER_NO` 样本号开头（为空时显示“样本号未记录”），核查关系优先显示项目英文名、缺失时回退中文名、两者均缺失时才显示项目代码，右侧提供“标记已处理”；悬浮窗宽度为 390 逻辑像素，长文本省略显示；收起时保留待处理数量；
+- 点击每条的“标记已处理”仅更新本机待处理状态并刷新悬浮窗及已打开的列表，不唤起工作台；
+- 点击悬浮窗记录的其他区域时，将 LIS 工作台最大化并打开对应常规报告，同时在结果 ListView 中把该记录涉及的项目代码所在行以橙色背景标记；
 - 点击悬浮窗内容区其他位置（含“点击打开待处理列表”页脚）时，将 LIS 工作台最大化并打开待处理列表；
 - 拖动悬浮窗标题区域可调整摆放位置，位置保存到本机配置并在重启后恢复，拖动范围限制在当前显示器工作区内；
 - 展开/收起切换保持窗口底边固定，避免因内容高度变化导致位置漂移；
@@ -335,6 +336,8 @@ CREATE TABLE IF NOT EXISTS scheduled_result_rule (
     right_item_code TEXT NOT NULL,
     right_item_name TEXT NOT NULL DEFAULT '',
     right_item_unit TEXT NOT NULL DEFAULT '',
+    compare_with_value INTEGER NOT NULL DEFAULT 0,
+    right_value_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -356,14 +359,17 @@ CREATE TABLE IF NOT EXISTS scheduled_result_alert (
     left_entry_id TEXT NOT NULL DEFAULT '',
     left_item_code TEXT NOT NULL,
     left_item_name TEXT NOT NULL DEFAULT '',
+    left_item_eng TEXT NOT NULL DEFAULT '',
     left_result_text TEXT NOT NULL,
     left_result_value REAL,
     operator TEXT NOT NULL,
     right_entry_id TEXT NOT NULL DEFAULT '',
     right_item_code TEXT NOT NULL,
     right_item_name TEXT NOT NULL DEFAULT '',
+    right_item_eng TEXT NOT NULL DEFAULT '',
     right_result_text TEXT NOT NULL,
     right_result_value REAL,
+    compare_with_value INTEGER NOT NULL DEFAULT 0,
     fingerprint TEXT NOT NULL,
     handled INTEGER NOT NULL DEFAULT 0,
     handled_at TEXT,
@@ -398,7 +404,7 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_alert_pending
 ON scheduled_result_alert(handled, id DESC);
 ```
 
-本地库保存项目名称和单位快照，以免字典后续改名导致历史提醒无法还原。早期数据库中可能仍存在 `baseline_ready` 兼容列；当前代码不再读取或写入该列，新建数据库不再创建它。
+本地库保存项目名称、英文名和单位快照，以免字典后续改名导致历史提醒无法还原。旧命中记录通过新增列的空默认值兼容；旧记录不会因重复扫描而重建，若英文名为空，悬浮窗回退显示中文名。更新规则会清除旧命中，重新扫描得到的新提醒才会保存英文名。早期数据库中可能仍存在 `baseline_ready` 兼容列；当前代码不再读取或写入该列，新建数据库不再创建它。
 
 ## 12. 项目选择器
 
@@ -418,7 +424,7 @@ ON scheduled_result_alert(handled, id DESC);
 7. 对同名不同代码项目分别展示，禁止按名称自动合并；同一 `ITEM_CODE` 的重复字典行在加载时合并为一个选项。
 8. 数据库未配置或加载失败时给出明确错误，不允许保存缺少项目代码的规则。
 
-可以在当前窗口生命周期内缓存项目字典；数据库连接配置变化后必须使缓存失效并重新加载。
+项目字典在进程内按数据库连接隔离缓存，30 分钟后重新加载；数据库连接配置变化时使用新连接对应的缓存，不混用旧连接项目。
 
 ## 13. 页面设计
 

@@ -181,6 +181,7 @@ struct ScheduledCheckResultRow {
     std::string inspect_date;
     std::string item_code;
     std::string item_name;
+    std::string item_eng;
     std::string result;
 };
 

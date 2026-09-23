@@ -2158,6 +2158,12 @@ int findReportIndexByRepNo(const RegularReportState* st, const std::string& repN
 // ============================================================================
 
 void querySelectedResults(RegularReportState* st, int sel) {
+    if (st && (sel < 0 || sel >= static_cast<int>(st->reportRows.size()) ||
+               search::trim(st->reportRows[static_cast<size_t>(sel)].rep_no) !=
+                   st->highlightReportRepNo)) {
+        st->highlightItemCodes.clear();
+        st->highlightReportRepNo.clear();
+    }
     if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) {
         if (st) finishResultEdit(st, false);
         if (st && st->resultList) ListView_DeleteAllItems(st->resultList);
@@ -2409,6 +2415,7 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     st->pendingOpenRepNo = repNo;
     st->pendingOpenOperNo = search::trim(target.oper_no);
     st->highlightItemCodes = target.highlight_item_codes;
+    st->highlightReportRepNo = repNo;
 
     const std::wstring machineText = search::utf8_to_wide(
         search::trim(target.mach_name).empty() ? machCode : search::trim(target.mach_name));

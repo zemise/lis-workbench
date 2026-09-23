@@ -104,8 +104,14 @@ bool ensure_rule_columns(sqlite3 *db, std::string &error) {
 }
 bool ensure_alert_columns(sqlite3 *db, std::string &error) {
   return add_column_if_missing(
-      db, "scheduled_result_alert", "compare_with_value",
-      "compare_with_value INTEGER NOT NULL DEFAULT 0", error);
+             db, "scheduled_result_alert", "compare_with_value",
+             "compare_with_value INTEGER NOT NULL DEFAULT 0", error) &&
+         add_column_if_missing(
+             db, "scheduled_result_alert", "left_item_eng",
+             "left_item_eng TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(
+             db, "scheduled_result_alert", "right_item_eng",
+             "right_item_eng TEXT NOT NULL DEFAULT ''", error);
 }
 int user_version(sqlite3 *db) {
   Stmt statement;
@@ -133,8 +139,10 @@ CREATE TABLE IF NOT EXISTS scheduled_result_alert(
  rep_no TEXT NOT NULL,oper_no TEXT NOT NULL DEFAULT '',room_code TEXT NOT NULL DEFAULT '',
  mach_code TEXT NOT NULL DEFAULT '',mach_name TEXT NOT NULL DEFAULT '',inspect_date TEXT NOT NULL DEFAULT '',
  left_entry_id TEXT NOT NULL DEFAULT '',left_item_code TEXT NOT NULL,left_item_name TEXT NOT NULL DEFAULT '',
+ left_item_eng TEXT NOT NULL DEFAULT '',
  left_result_text TEXT NOT NULL,left_result_value REAL,operator TEXT NOT NULL,
  right_entry_id TEXT NOT NULL DEFAULT '',right_item_code TEXT NOT NULL,right_item_name TEXT NOT NULL DEFAULT '',
+ right_item_eng TEXT NOT NULL DEFAULT '',
  right_result_text TEXT NOT NULL,right_result_value REAL,
  compare_with_value INTEGER NOT NULL DEFAULT 0,fingerprint TEXT NOT NULL,
  handled INTEGER NOT NULL DEFAULT 0,handled_at TEXT,discovered_at TEXT NOT NULL,
@@ -190,12 +198,14 @@ Alert read_alert(sqlite3_stmt *s) {
   a.left_entry_id = text(s, c++);
   a.left_item_code = text(s, c++);
   a.left_item_name = text(s, c++);
+  a.left_item_eng = text(s, c++);
   a.left_result_text = text(s, c++);
   a.left_value = sqlite3_column_double(s, c++);
   a.op = text(s, c++);
   a.right_entry_id = text(s, c++);
   a.right_item_code = text(s, c++);
   a.right_item_name = text(s, c++);
+  a.right_item_eng = text(s, c++);
   a.right_result_text = text(s, c++);
   a.right_value = sqlite3_column_double(s, c++);
   a.compare_with_value = sqlite3_column_int(s, c++) != 0;
@@ -209,9 +219,10 @@ bool load_alerts(sqlite3 *db, const char *where_clause,
                  std::vector<Alert> &rows, std::string &error) {
   constexpr const char *columns =
       "id,rule_id,rule_name,rep_no,oper_no,room_code,mach_code,mach_name,"
-      "inspect_date,left_entry_id,left_item_code,left_item_name,"
+      "inspect_date,left_entry_id,left_item_code,left_item_name,left_item_eng,"
       "left_result_text,left_result_value,operator,right_entry_id,"
-      "right_item_code,right_item_name,right_result_text,right_result_value,"
+      "right_item_code,right_item_name,right_item_eng,right_result_text,"
+      "right_result_value,"
       "compare_with_value,fingerprint,handled,discovered_at";
   const std::string sql = std::string("SELECT ") + columns +
                           " FROM scheduled_result_alert " + where_clause +
@@ -463,21 +474,37 @@ bool set_rule_enabled(int id, bool enabled, std::string &error) {
   Db db;
   if (!ready(db, error))
     return false;
-  Stmt st;
-  if (!prepare(db.p,
-               "UPDATE scheduled_result_rule SET enabled=?,updated_at=? WHERE "
-               "id=?",
-               st, error))
+  if (!exec(db.p, "BEGIN IMMEDIATE", error))
     return false;
-  sqlite3_bind_int(st.p, 1, enabled ? 1 : 0);
-  bind(st.p, 2, now_text());
-  sqlite3_bind_int(st.p, 3, id);
-  if (sqlite3_step(st.p) != SQLITE_DONE) {
-    error = sqlite3_errmsg(db.p);
+  {
+    Stmt st;
+    if (!prepare(db.p,
+                 "UPDATE scheduled_result_rule SET enabled=?,updated_at=? WHERE "
+                 "id=?",
+                 st, error)) {
+      rollback(db.p);
+      return false;
+    }
+    sqlite3_bind_int(st.p, 1, enabled ? 1 : 0);
+    bind(st.p, 2, now_text());
+    sqlite3_bind_int(st.p, 3, id);
+    if (sqlite3_step(st.p) != SQLITE_DONE) {
+      error = sqlite3_errmsg(db.p);
+      rollback(db.p);
+      return false;
+    }
+    if (sqlite3_changes(db.p) != 1) {
+      error = "规则已不存在，请刷新后重试";
+      rollback(db.p);
+      return false;
+    }
+  }
+  if (!enabled && !delete_rule_records(db.p, id, error)) {
+    rollback(db.p);
     return false;
   }
-  if (sqlite3_changes(db.p) != 1) {
-    error = "规则已不存在，请刷新后重试";
+  if (!exec(db.p, "COMMIT", error)) {
+    rollback(db.p);
     return false;
   }
   error.clear();
@@ -539,11 +566,12 @@ bool record_matches(const std::vector<Rule> &rules,
                  "INSERT INTO "
                  "scheduled_result_alert(rule_id,rule_name,rep_no,oper_no,room_"
                  "code,mach_code,mach_name,inspect_date,left_entry_id,left_"
-                 "item_code,left_item_name,left_result_text,left_result_value,"
-                 "operator,right_entry_id,right_item_code,right_item_name,"
+                 "item_code,left_item_name,left_item_eng,left_result_text,"
+                 "left_result_value,operator,right_entry_id,right_item_code,"
+                 "right_item_name,right_item_eng,"
                  "right_result_text,right_result_value,compare_with_value,"
                  "fingerprint,discovered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,"
-                 "?,?,?,?,?,?,?,?,?,?)",
+                 "?,?,?,?,?,?,?,?,?,?,?,?)",
                  st, error)) {
       ok = false;
       break;
@@ -560,12 +588,14 @@ bool record_matches(const std::vector<Rule> &rules,
     bind(st.p, c++, m.left_entry_id);
     bind(st.p, c++, m.left_item_code);
     bind(st.p, c++, m.left_item_name);
+    bind(st.p, c++, m.left_item_eng);
     bind(st.p, c++, m.left_result_text);
     sqlite3_bind_double(st.p, c++, m.left_value);
     bind(st.p, c++, m.op);
     bind(st.p, c++, m.right_entry_id);
     bind(st.p, c++, m.right_item_code);
     bind(st.p, c++, m.right_item_name);
+    bind(st.p, c++, m.right_item_eng);
     bind(st.p, c++, m.right_result_text);
     sqlite3_bind_double(st.p, c++, m.right_value);
     sqlite3_bind_int(st.p, c++, m.compare_with_value ? 1 : 0);

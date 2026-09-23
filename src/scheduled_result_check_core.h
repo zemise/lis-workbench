@@ -34,6 +34,7 @@ struct ResultRow {
   std::string inspect_date;
   std::string item_code;
   std::string item_name;
+  std::string item_eng;
   std::string result;
 };
 
@@ -49,12 +50,14 @@ struct Match {
   std::string left_entry_id;
   std::string left_item_code;
   std::string left_item_name;
+  std::string left_item_eng;
   std::string left_result_text;
   double left_value = 0.0;
   std::string op;
   std::string right_entry_id;
   std::string right_item_code;
   std::string right_item_name;
+  std::string right_item_eng;
   std::string right_result_text;
   double right_value = 0.0;
   // Mirrors Rule::compare_with_value so UI/notification rendering can show a
@@ -65,6 +68,9 @@ struct Match {
 
 bool parse_number(const std::string &text, double &value);
 bool compare_numbers(double left, const std::string &op, double right);
+std::string item_display_name(const std::string &english,
+                              const std::string &chinese,
+                              const std::string &code);
 std::vector<Match> evaluate(const std::vector<Rule> &rules,
                             const std::vector<ResultRow> &rows,
                             int *skipped_non_numeric = nullptr);

@@ -26,6 +26,9 @@ int main() {
   CHECK(scheduled_check::compare_numbers(1.0, "=", 1.0 + 1e-12));
   CHECK(scheduled_check::compare_numbers(1.0, "!=", 1.1));
   CHECK(!scheduled_check::compare_numbers(1.0, "unknown", 1.0));
+  CHECK(scheduled_check::item_display_name(" CK ", "肌酸激酶", "201924") == "CK");
+  CHECK(scheduled_check::item_display_name(" ", "肌酸激酶", "201924") == "肌酸激酶");
+  CHECK(scheduled_check::item_display_name("", "", "201924") == "201924");
 
   scheduled_check::Rule rule;
   rule.id = 7;
@@ -39,10 +42,12 @@ int main() {
   rows[0].entry_id = "1";
   rows[0].rep_no = "R1";
   rows[0].item_code = "A";
+  rows[0].item_eng = "ALT";
   rows[0].result = "2.5";
   rows[1].entry_id = "2";
   rows[1].rep_no = "R1";
   rows[1].item_code = "B";
+  rows[1].item_eng = "AST";
   rows[1].result = "1.5";
   rows[2].entry_id = "3";
   rows[2].rep_no = "R2";
@@ -51,6 +56,8 @@ int main() {
   int skipped = 0;
   auto matches = scheduled_check::evaluate({rule}, rows, &skipped);
   CHECK(matches.size() == 1 && matches[0].rep_no == "R1" && skipped == 0);
+  CHECK(matches[0].left_item_eng == "ALT" &&
+        matches[0].right_item_eng == "AST");
   scheduled_check::ResultRow olderNonEmpty = rows[0];
   olderNonEmpty.entry_id = "9";
   olderNonEmpty.result = "3.5";

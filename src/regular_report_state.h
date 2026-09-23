@@ -360,6 +360,7 @@ struct RegularReportState {
     std::vector<search::ReportRow> reportRows;
     std::vector<search::ResultRow> resultRows;
     std::vector<std::string> highlightItemCodes;
+    std::string highlightReportRepNo;
     std::wstring pictureStatus;
     std::string pictureRepNo;
     IStream* pictureStream = nullptr;

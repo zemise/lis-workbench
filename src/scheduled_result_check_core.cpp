@@ -68,6 +68,16 @@ bool compare_numbers(double left, const std::string &op, double right) {
   return false;
 }
 
+std::string item_display_name(const std::string &english,
+                              const std::string &chinese,
+                              const std::string &code) {
+  const auto eng = trim(english);
+  if (!eng.empty())
+    return eng;
+  const auto name = trim(chinese);
+  return name.empty() ? trim(code) : name;
+}
+
 std::vector<Match> evaluate(const std::vector<Rule> &rules,
                             const std::vector<ResultRow> &rows,
                             int *skipped_non_numeric) {
@@ -135,6 +145,7 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
       match.left_item_name = rule.left_item_name.empty()
                                  ? leftIt->second.item_name
                                  : rule.left_item_name;
+      match.left_item_eng = leftIt->second.item_eng;
       match.left_result_text = trim(leftIt->second.result);
       match.left_value = leftValue;
       match.op = rule.op;
@@ -148,6 +159,7 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
         match.right_item_name = rule.right_item_name.empty()
                                     ? rightIt->second.item_name
                                     : rule.right_item_name;
+        match.right_item_eng = rightIt->second.item_eng;
         match.right_result_text = trim(rightIt->second.result);
         match.right_value = rightValue;
       }
