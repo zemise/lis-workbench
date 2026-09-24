@@ -49,7 +49,9 @@ constexpr int REGULAR_IDC_REPORT_AUTO_REFRESH_CHECK = 5217;
 constexpr int REGULAR_IDC_REPORT_AUTO_REFRESH_SECONDS = 5218;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_1 = 5401;
 constexpr int REGULAR_IDC_BOTTOM_REFRESH = 5402;
+constexpr int REGULAR_IDC_BOTTOM_PRINT_BARCODE = 5406;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_2 = 5411;
+constexpr int REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE = 5416;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_3 = 5420;
 constexpr int REGULAR_IDC_BOTTOM_GRAPH = 5424;
 constexpr int REGULAR_IDC_BOTTOM_PREV_REPORT = 5408;
@@ -329,6 +331,7 @@ struct RegularReportState {
     app::WindowTask reportQueryTask;
     app::WindowTask resultQueryTask;
     app::WindowTask pictureQueryTask;
+    app::WindowTask barcodePrintTask;
     bool autoRefreshTimerActive = false;
     bool initialQuickMachineTimerActive = false;
     bool skipInitialQuickMachineLoad = false;
@@ -468,6 +471,7 @@ const search::ReportRow* regularContextReportRow(const RegularReportState* st);
 // barcode
 std::wstring regularPrintBarcodeForContext(RegularReportState* st);
 std::wstring regularPrintCheckedBarcodes(RegularReportState* st);
+void regularShowBatchBarcodeDialog(RegularReportState* st);
 void regularShowTrendForContext(RegularReportState* st);
 
 // queries

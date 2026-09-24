@@ -7,6 +7,7 @@
 #include "barcode_label_printing.h"
 #include "main_app.h"
 #include "log.h"
+#include "regular_report_barcode_range.h"
 #include "resource.h"
 #include "search_controller.h"
 #include "search_splitter.h"
@@ -988,6 +989,27 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     runReportQuery(st, true);
                 return 0;
             }
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_PRINT_BARCODE) {
+                if (st->barcodePrintTask.active()) {
+                    MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
+                                L"常规报告", MB_ICONINFORMATION);
+                    return 0;
+                }
+                const int index = currentReportIndex(st);
+                if (index < 0) {
+                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"常规报告",
+                                MB_ICONINFORMATION);
+                } else {
+                    st->contextReportIndex = index;
+                    MessageBoxW(st->hwnd, regularPrintBarcodeForContext(st).c_str(),
+                                L"常规报告", MB_ICONINFORMATION);
+                }
+                return 0;
+            }
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE) {
+                regularShowBatchBarcodeDialog(st);
+                return 0;
+            }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_PREV_REPORT) {
                 selectAdjacentReportRow(st, -1); return 0;
             }
@@ -1422,13 +1444,15 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
     HWND p = st->bottomPanel;
     const ButtonDef row1[] = {
         {REGULAR_IDC_BOTTOM_MACHINE_1, L"1"}, {REGULAR_IDC_BOTTOM_REFRESH, L"⟳ 刷新(F5)"},
-        {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"}, {5405, L"预览(V)"}, {5406, L"打印(F4)"},
+        {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"}, {5405, L"预览(V)"},
+        {REGULAR_IDC_BOTTOM_PRINT_BARCODE, L"打印条码"},
         {5407, L"✕ 删除(D)"}, {REGULAR_IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"},
         {REGULAR_IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印"},
     };
     const ButtonDef row2[] = {
         {REGULAR_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"},
-        {5414, L"批录入"}, {5415, L"批调整"}, {5416, L"批打印"}, {5417, L"批删除"},
+        {5414, L"批录入"}, {5415, L"批调整"},
+        {REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码"}, {5417, L"批删除"},
         {5418, L"医嘱"}, {5419, L"汇总(F6)"},
     };
     const ButtonDef row3[] = {
@@ -1809,6 +1833,10 @@ bool parseSortNumber(const std::string& v, double& out) {
 int compareReportSortValue(const search::ReportRow& a, const search::ReportRow& b, int col) {
     const std::string lv = search::trim(reportSortValue(a, col));
     const std::string rv = search::trim(reportSortValue(b, col));
+    if (col == 1) {
+        const int compared = regular_barcode::compare_sample_numbers(lv, rv);
+        if (compared != 0) return compared;
+    }
     double ln = 0, rn = 0;
     if (parseSortNumber(lv, ln) && parseSortNumber(rv, rn) && ln != rn)
         return ln < rn ? -1 : 1;
@@ -1819,12 +1847,8 @@ int compareReportSortValue(const search::ReportRow& a, const search::ReportRow& 
 
 bool reportSampleLess(const search::ReportRow& a, const search::ReportRow& b) {
     const std::string l = search::trim(a.oper_no), r = search::trim(b.oper_no);
-    char *le = nullptr, *re = nullptr;
-    const long lval = std::strtol(l.c_str(), &le, 10);
-    const long rval = std::strtol(r.c_str(), &re, 10);
-    if (le && *le == '\0' && !l.empty() && re && *re == '\0' && !r.empty() && lval != rval)
-        return lval < rval;
-    if (l != r) return l < r;
+    const int compared = regular_barcode::compare_sample_numbers(l, r);
+    if (compared != 0) return compared < 0;
     return search::trim(a.id) < search::trim(b.id);
 }
 
@@ -2442,9 +2466,12 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
 
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_PRINT_BARCODE, L"打印条码");
+    const bool printing = st->barcodePrintTask.active();
+    AppendMenuW(menu, printing ? (MF_STRING | MF_GRAYED) : MF_STRING,
+                REGULAR_IDM_REPORT_PRINT_BARCODE, L"打印条码");
     AppendMenuW(menu,
-                regularCheckedReportIndexes(st).empty() ? (MF_STRING | MF_GRAYED) : MF_STRING,
+                (printing || regularCheckedReportIndexes(st).empty())
+                    ? (MF_STRING | MF_GRAYED) : MF_STRING,
                 REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_TREND, L"趋势图");
@@ -2470,6 +2497,8 @@ void regularClearReportChecks(RegularReportState* st) {
 }
 
 std::wstring regularPrintBarcodeForContext(RegularReportState* st) {
+    if (st && st->barcodePrintTask.active())
+        return L"已有批量条码正在提交到打印队列。";
     const search::ReportRow* row = contextReportRow(st);
     if (!row) return L"请先右键选择一条报告记录。";
 
@@ -2504,38 +2533,582 @@ std::wstring regularPrintBarcodeForContext(RegularReportState* st) {
     }
 }
 
+namespace {
+
+struct BarcodeBatchResult {
+    int sent = 0;
+    int total = 0;
+    std::string failed_sample;
+    std::string error;
+};
+
+void setBarcodePrintControlsEnabled(RegularReportState* st, bool enabled) {
+    if (!st || !st->bottomPanel) return;
+    EnableWindow(GetDlgItem(st->bottomPanel, REGULAR_IDC_BOTTOM_PRINT_BARCODE), enabled);
+    EnableWindow(GetDlgItem(st->bottomPanel, REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE), enabled);
+}
+
+std::wstring startBarcodeBatch(RegularReportState* st,
+                               std::vector<search::BarcodeLabelPayload> payloads) {
+    if (!st || payloads.empty()) return L"没有可打印的条码记录。";
+    if (st->barcodePrintTask.active()) return L"已有批量条码正在提交到打印队列。";
+    if (!search::barcode_label_printing_available())
+        return L"打印条码功能不可用：构建时未找到 LabelPrint 项目。";
+
+    const std::wstring printer = search::configured_barcode_printer_name();
+    const int total = static_cast<int>(payloads.size());
+    const HWND hwnd = st->hwnd;
+    setBarcodePrintControlsEnabled(st, false);
+    SetWindowTextW(st->status,
+                   (L"正在提交条码到打印队列：0 / " +
+                    std::to_wstring(total)).c_str());
+    const bool started = st->barcodePrintTask.start<BarcodeBatchResult>(
+        [payloads = std::move(payloads), printer, hwnd](app::WindowTaskContext task) {
+            BarcodeBatchResult result;
+            result.total = static_cast<int>(payloads.size());
+            for (const auto& payload : payloads) {
+                if (task.cancelled()) break;
+                try {
+                    search::print_barcode_label(payload, printer);
+                    ++result.sent;
+                    const int sent = result.sent;
+                    const int count = result.total;
+                    task.post([hwnd, sent, count] {
+                        auto* state = reinterpret_cast<RegularReportState*>(
+                            GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+                        if (state && state->status)
+                            SetWindowTextW(state->status,
+                                (L"正在提交条码到打印队列：" +
+                                 std::to_wstring(sent) + L" / " +
+                                 std::to_wstring(count)).c_str());
+                    });
+                } catch (const std::exception& ex) {
+                    result.failed_sample = payload.sample_no;
+                    result.error = ex.what();
+                    break;
+                }
+            }
+            return result;
+        },
+        [hwnd, printer](std::optional<BarcodeBatchResult> result,
+                        std::exception_ptr error) {
+            auto* state = reinterpret_cast<RegularReportState*>(
+                GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+            if (!state) return;
+            setBarcodePrintControlsEnabled(state, true);
+            if (error || !result) {
+                SetWindowTextW(state->status, L"批量条码打印任务异常终止。");
+                MessageBoxW(hwnd, L"批量条码打印任务异常终止。", L"常规报告",
+                            MB_ICONERROR);
+                return;
+            }
+            std::wstring message = L"已提交到打印队列：" +
+                                   std::to_wstring(result->sent) + L" / " +
+                                   std::to_wstring(result->total) +
+                                   L"\n打印机：" + printer;
+            if (!result->error.empty()) {
+                message += L"\n\n停止于样本号：" +
+                           search::utf8_to_wide(result->failed_sample);
+                message += L"\n失败原因：" + search::utf8_to_wide(result->error);
+                message += L"\n未尝试：" +
+                           std::to_wstring(result->total - result->sent - 1);
+                message += L"\n已入队的条码不会自动重试。";
+            }
+            SetWindowTextW(state->status,
+                           result->error.empty() ? L"批量条码已全部提交到打印队列。"
+                                                 : L"批量条码在中途停止。");
+            MessageBoxW(hwnd, message.c_str(), L"常规报告",
+                        result->error.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
+        });
+    if (!started) {
+        setBarcodePrintControlsEnabled(st, true);
+        return L"无法启动批量条码打印任务。";
+    }
+    return L"";
+}
+
+}  // namespace
+
 std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
     const std::vector<int> indexes = regularCheckedReportIndexes(st);
     if (indexes.empty()) return L"请先勾选需要打印条码的报告记录。";
-    if (!search::barcode_label_printing_available()) {
-        regularClearReportChecks(st);
-        return L"打印条码功能不可用：构建时未找到 LabelPrint 项目。";
+    if (indexes.size() > 50) {
+        const std::wstring warning = L"即将向打印队列提交 " +
+            std::to_wstring(indexes.size()) +
+            L" 张勾选条码。\n\n提交后无法在本页面撤销，确定继续吗？";
+        if (MessageBoxW(st->hwnd, warning.c_str(), L"确认大批量打印",
+                        MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+            return L"";
     }
-    const std::wstring printerName = search::configured_barcode_printer_name();
-    int sent = 0;
-    try {
-        for (int idx : indexes) {
-            std::string groupError;
-            const std::string gn = barcodeGroupNameForReport(st, idx, groupError);
-            if (!groupError.empty())
-                throw std::runtime_error("组合项目查询失败: " + groupError);
-            search::print_barcode_label(
-                barcodePayloadForReport(st->reportRows[static_cast<size_t>(idx)], gn),
-                printerName);
-            ++sent;
+    std::vector<search::BarcodeLabelPayload> payloads;
+    payloads.reserve(indexes.size());
+    for (int idx : indexes) {
+        const auto& report = st->reportRows[static_cast<std::size_t>(idx)];
+        if (search::trim(report.txm_no).empty()) {
+            return L"勾选记录中存在条码号为空的报告，请取消勾选后重试。\n样本号：" +
+                   search::utf8_to_wide(report.oper_no);
         }
-        regularClearReportChecks(st);
-        return L"勾选条码已发送。\n打印机：" + printerName +
-               L"\n数量：" + std::to_wstring(sent);
-    } catch (const std::exception& ex) {
-        std::wstring msg = L"批量打印条码失败：";
-        msg += search::utf8_to_wide(ex.what());
-        msg += L"\n打印机：" + printerName;
-        msg += L"\n已发送：" + std::to_wstring(sent) + L" / " +
-               std::to_wstring(indexes.size());
-        regularClearReportChecks(st);
-        return msg;
+        std::string groupError;
+        const std::string gn = barcodeGroupNameForReport(st, idx, groupError);
+        if (!groupError.empty()) {
+            return L"批量打印条码失败：组合项目查询失败。\n" +
+                   search::utf8_to_wide(groupError);
+        }
+        payloads.push_back(barcodePayloadForReport(report, gn));
     }
+    std::wstring error = startBarcodeBatch(st, std::move(payloads));
+    if (error.empty()) regularClearReportChecks(st);
+    return error;
+}
+
+namespace {
+
+constexpr const wchar_t* BATCH_BARCODE_DIALOG_CLASS = L"RegularReportBatchBarcodeDialog";
+constexpr int IDC_BATCH_RANGE_START = 5460;
+constexpr int IDC_BATCH_RANGE_END = 5461;
+constexpr int IDC_BATCH_LIST = 5463;
+constexpr int IDC_BATCH_SELECT_ALL = 5464;
+constexpr int IDC_BATCH_CLEAR = 5465;
+
+struct BatchBarcodeDialogState {
+    HFONT font = nullptr;
+    std::vector<search::ReportRow> rows;
+    regular_barcode::RangeSelection selection;
+    std::vector<search::BarcodeLabelPayload> payloads;
+    std::wstring context_text;
+    std::wstring printer_text;
+    std::wstring initial_sample;
+    std::string preview_first;
+    std::string preview_last;
+    HWND context_label = nullptr;
+    HWND printer_label = nullptr;
+    HWND start_label = nullptr;
+    HWND start = nullptr;
+    HWND end_label = nullptr;
+    HWND end = nullptr;
+    HWND list = nullptr;
+    HWND summary = nullptr;
+    HWND select_all = nullptr;
+    HWND clear = nullptr;
+    HWND print = nullptr;
+    HWND cancel = nullptr;
+    bool syncing = false;
+    bool input_ready = false;
+    bool accepted = false;
+    bool done = false;
+};
+
+int batchCheckedCount(const BatchBarcodeDialogState* state) {
+    if (!state || !state->list) return 0;
+    int count = 0;
+    for (int row = 0; row < ListView_GetItemCount(state->list); ++row)
+        if (ListView_GetCheckState(state->list, row)) ++count;
+    return count;
+}
+
+void updateBatchSummary(BatchBarcodeDialogState* state) {
+    if (!state) return;
+    const int selected = batchCheckedCount(state);
+    std::wstring text = L"范围内 " + std::to_wstring(state->selection.candidates.size()) +
+                        L" 条，已选 " + std::to_wstring(selected) +
+                        L" 条，不可打印 " +
+                        std::to_wstring(state->selection.invalid_count) +
+                        L" 条，疑似重复 " +
+                        std::to_wstring(state->selection.duplicate_count) + L" 条。";
+    SetWindowTextW(state->summary, text.c_str());
+    SetWindowTextW(state->print,
+                   (L"打印 " + std::to_wstring(selected) + L" 张").c_str());
+    EnableWindow(state->print, selected > 0);
+}
+
+void populateBatchPreview(BatchBarcodeDialogState* state) {
+    if (!state) return;
+    state->preview_first = search::trim(
+        search::wide_to_utf8(regularWindowText(state->start)));
+    state->preview_last = search::trim(
+        search::wide_to_utf8(regularWindowText(state->end)));
+    state->selection = regular_barcode::select_range(
+        state->rows, state->preview_first, state->preview_last);
+    state->syncing = true;
+    ListView_DeleteAllItems(state->list);
+    if (!state->selection.error.empty()) {
+        const wchar_t* message = state->preview_first.empty() || state->preview_last.empty()
+            ? L"请输入起始和结束样本号。"
+            : L"起始样本号不能大于结束样本号。";
+        SetWindowTextW(state->summary, message);
+        SetWindowTextW(state->print, L"打印 0 张");
+        EnableWindow(state->print, FALSE);
+        state->syncing = false;
+        return;
+    }
+
+    for (std::size_t i = 0; i < state->selection.candidates.size(); ++i) {
+        const auto& candidate = state->selection.candidates[i];
+        const auto& report = state->rows[candidate.source_index];
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(i);
+        const std::wstring sample = search::utf8_to_wide(report.oper_no);
+        item.pszText = const_cast<wchar_t*>(sample.c_str());
+        ListView_InsertItem(state->list, &item);
+        setCell(state->list, static_cast<int>(i), 1, report.name);
+        setCell(state->list, static_cast<int>(i), 2, report.txm_no);
+        setCell(state->list, static_cast<int>(i), 3, report.group_name);
+        const wchar_t* status = !candidate.printable
+            ? L"不可打印：条码号为空"
+            : candidate.duplicate ? L"疑似重复（默认不选）" : L"可打印";
+        setCell(state->list, static_cast<int>(i), 4, status);
+        ListView_SetCheckState(state->list, static_cast<int>(i),
+                               candidate.default_selected ? TRUE : FALSE);
+    }
+    state->syncing = false;
+    updateBatchSummary(state);
+}
+
+void setBatchChecks(BatchBarcodeDialogState* state, bool checked) {
+    if (!state) return;
+    state->syncing = true;
+    for (int row = 0; row < static_cast<int>(state->selection.candidates.size()); ++row) {
+        const bool allowed = state->selection.candidates[static_cast<std::size_t>(row)].printable;
+        ListView_SetCheckState(state->list, row, checked && allowed ? TRUE : FALSE);
+    }
+    state->syncing = false;
+    updateBatchSummary(state);
+}
+
+void layoutBatchBarcodeDialog(HWND hwnd, BatchBarcodeDialogState* state) {
+    if (!hwnd || !state) return;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int clientW = client.right - client.left;
+    const int clientH = client.bottom - client.top;
+    const int pad = S(hwnd, 18);
+    const int gap = S(hwnd, 10);
+    const int textH = S(hwnd, 24);
+    const int editH = S(hwnd, 28);
+    const int buttonH = S(hwnd, 30);
+    const int contentW = std::max(0, clientW - pad * 2);
+
+    int y = S(hwnd, 10);
+    MoveWindow(state->context_label, pad, y, contentW, textH, TRUE);
+    y += textH + S(hwnd, 2);
+    MoveWindow(state->printer_label, pad, y, contentW, textH, TRUE);
+    y += textH + gap;
+
+    const int inputGap = S(hwnd, 20);
+    const int inputGroupW = std::max(0, (contentW - inputGap) / 2);
+    const int labelW = std::min(S(hwnd, 96), inputGroupW);
+    MoveWindow(state->start_label, pad, y, labelW, editH, TRUE);
+    MoveWindow(state->start, pad + labelW, y,
+               std::max(0, inputGroupW - labelW), editH, TRUE);
+    const int secondX = pad + inputGroupW + inputGap;
+    MoveWindow(state->end_label, secondX, y, labelW, editH, TRUE);
+    MoveWindow(state->end, secondX + labelW, y,
+               std::max(0, inputGroupW - labelW), editH, TRUE);
+
+    const int buttonY = std::max(y + editH + gap,
+                                 clientH - pad - buttonH);
+    const int selectW = S(hwnd, 108);
+    const int clearW = S(hwnd, 94);
+    const int printW = S(hwnd, 106);
+    const int cancelW = S(hwnd, 88);
+    MoveWindow(state->select_all, pad, buttonY, selectW, buttonH, TRUE);
+    MoveWindow(state->clear, pad + selectW + S(hwnd, 8), buttonY,
+               clearW, buttonH, TRUE);
+    MoveWindow(state->cancel, clientW - pad - cancelW, buttonY,
+               cancelW, buttonH, TRUE);
+    MoveWindow(state->print, clientW - pad - cancelW - S(hwnd, 8) - printW,
+               buttonY, printW, buttonH, TRUE);
+
+    const int summaryH = textH;
+    const int summaryY = buttonY - gap - summaryH;
+    MoveWindow(state->summary, pad, summaryY, contentW, summaryH, TRUE);
+    const int listY = y + editH + S(hwnd, 12);
+    const int listH = std::max(0, summaryY - gap - listY);
+    MoveWindow(state->list, pad, listY, contentW, listH, TRUE);
+
+    RECT listClient{};
+    GetClientRect(state->list, &listClient);
+    const int listW = std::max(
+        0, static_cast<int>(listClient.right - listClient.left));
+    const int sampleW = listW * 15 / 100;
+    const int nameW = listW * 15 / 100;
+    const int barcodeW = listW * 22 / 100;
+    const int groupW = listW * 22 / 100;
+    ListView_SetColumnWidth(state->list, 0, sampleW);
+    ListView_SetColumnWidth(state->list, 1, nameW);
+    ListView_SetColumnWidth(state->list, 2, barcodeW);
+    ListView_SetColumnWidth(state->list, 3, groupW);
+    ListView_SetColumnWidth(state->list, 4,
+                            std::max(0, listW - sampleW - nameW - barcodeW - groupW));
+}
+
+LRESULT CALLBACK batchBarcodeDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<BatchBarcodeDialogState*>(
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+            state = reinterpret_cast<BatchBarcodeDialogState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+            auto label = [hwnd](const wchar_t* text) {
+                return CreateWindowExW(0, L"STATIC", text,
+                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                    0, 0, 0, 0, hwnd, nullptr,
+                    GetModuleHandleW(nullptr), nullptr);
+            };
+            auto edit = [hwnd](int id) {
+                return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                    0, 0, 0, 0, hwnd,
+                    win32_control_id(id), GetModuleHandleW(nullptr), nullptr);
+            };
+            state->context_label = label(state->context_text.c_str());
+            state->printer_label = label(state->printer_text.c_str());
+            state->start_label = label(L"起始样本号：");
+            state->start = edit(IDC_BATCH_RANGE_START);
+            state->end_label = label(L"结束样本号：");
+            state->end = edit(IDC_BATCH_RANGE_END);
+            SendMessageW(state->start, EM_SETLIMITTEXT, 64, 0);
+            SendMessageW(state->end, EM_SETLIMITTEXT, 64, 0);
+
+            state->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS,
+                0, 0, 0, 0, hwnd,
+                win32_control_id(IDC_BATCH_LIST), GetModuleHandleW(nullptr), nullptr);
+            ListView_SetExtendedListViewStyle(state->list,
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER |
+                LVS_EX_CHECKBOXES);
+            const wchar_t* columns[] = {L"样本号", L"姓名", L"条码号", L"组合项目", L"状态"};
+            for (int i = 0; i < 5; ++i)
+                search::add_list_column(state->list, i, columns[i], 0);
+
+            state->summary = label(L"");
+            state->select_all = search::create_button(
+                hwnd, IDC_BATCH_SELECT_ALL, L"全选可打印", 0, 0, 0, 0);
+            state->clear = search::create_button(
+                hwnd, IDC_BATCH_CLEAR, L"全部取消", 0, 0, 0, 0);
+            state->print = search::create_button(
+                hwnd, IDOK, L"打印 0 张", 0, 0, 0, 0);
+            state->cancel = search::create_button(
+                hwnd, IDCANCEL, L"取消", 0, 0, 0, 0);
+            search::apply_font_to_children(hwnd, state->font ? state->font :
+                static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+            layoutBatchBarcodeDialog(hwnd, state);
+            state->syncing = true;
+            SetWindowTextW(state->start, state->initial_sample.c_str());
+            SetWindowTextW(state->end, state->initial_sample.c_str());
+            state->syncing = false;
+            state->input_ready = true;
+            populateBatchPreview(state);
+            SetFocus(state->start);
+            SendMessageW(state->start, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        case WM_SIZE:
+            if (state) layoutBatchBarcodeDialog(hwnd, state);
+            return 0;
+        case WM_COMMAND:
+            if (!state) break;
+            if ((LOWORD(wp) == IDC_BATCH_RANGE_START ||
+                 LOWORD(wp) == IDC_BATCH_RANGE_END) &&
+                HIWORD(wp) == EN_CHANGE && state->input_ready && !state->syncing) {
+                populateBatchPreview(state);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_BATCH_SELECT_ALL) {
+                setBatchChecks(state, true);
+                return 0;
+            }
+            if (LOWORD(wp) == IDC_BATCH_CLEAR) {
+                setBatchChecks(state, false);
+                return 0;
+            }
+            if (LOWORD(wp) == IDOK) {
+                const std::string first = search::trim(
+                    search::wide_to_utf8(regularWindowText(state->start)));
+                const std::string last = search::trim(
+                    search::wide_to_utf8(regularWindowText(state->end)));
+                if (first != state->preview_first || last != state->preview_last) {
+                    populateBatchPreview(state);
+                }
+                if (!state->selection.error.empty()) return 0;
+                state->payloads.clear();
+                for (int row = 0; row < ListView_GetItemCount(state->list); ++row) {
+                    if (!ListView_GetCheckState(state->list, row)) continue;
+                    const auto& candidate = state->selection.candidates[static_cast<std::size_t>(row)];
+                    if (!candidate.printable) continue;
+                    const auto& report = state->rows[candidate.source_index];
+                    state->payloads.push_back(
+                        barcodePayloadForReport(report, search::trim(report.group_name)));
+                }
+                if (state->payloads.empty()) {
+                    MessageBoxW(hwnd, L"请至少选择一条可打印记录。",
+                                L"批量打印条码", MB_ICONINFORMATION);
+                    return 0;
+                }
+                if (state->payloads.size() > 50) {
+                    const std::wstring warning = L"即将向打印队列提交 " +
+                        std::to_wstring(state->payloads.size()) +
+                        L" 张条码。\n\n提交后无法在本页面撤销，确定继续吗？";
+                    if (MessageBoxW(hwnd, warning.c_str(), L"确认大批量打印",
+                                    MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+                        return 0;
+                }
+                state->accepted = true;
+                state->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (LOWORD(wp) == IDCANCEL) {
+                state->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_NOTIFY:
+            if (state) {
+                auto* header = reinterpret_cast<NMHDR*>(lp);
+                if (header && header->idFrom == IDC_BATCH_LIST &&
+                    header->code == LVN_ITEMCHANGED && !state->syncing) {
+                    auto* changed = reinterpret_cast<NMLISTVIEW*>(lp);
+                    if ((changed->uChanged & LVIF_STATE) &&
+                        ((changed->uOldState ^ changed->uNewState) & LVIS_STATEIMAGEMASK)) {
+                        const int row = changed->iItem;
+                        if (row >= 0 && row < static_cast<int>(state->selection.candidates.size()) &&
+                            !state->selection.candidates[static_cast<std::size_t>(row)].printable &&
+                            ListView_GetCheckState(state->list, row)) {
+                            state->syncing = true;
+                            ListView_SetCheckState(state->list, row, FALSE);
+                            state->syncing = false;
+                        }
+                        updateBatchSummary(state);
+                    }
+                }
+            }
+            break;
+        case WM_CLOSE:
+            if (state) state->done = true;
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_NCDESTROY:
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ensureBatchBarcodeDialogClass() {
+    static bool registered = false;
+    if (registered) return;
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = batchBarcodeDialogProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.lpszClassName = BATCH_BARCODE_DIALOG_CLASS;
+    RegisterClassW(&wc);
+    registered = true;
+}
+
+bool showBatchBarcodeDialog(RegularReportState* st,
+                            std::vector<search::BarcodeLabelPayload>& payloads) {
+    ensureBatchBarcodeDialogClass();
+    const HWND ownerHwnd = st->hwnd;
+    BatchBarcodeDialogState state;
+    state.font = st->ctx.uiFont;
+    state.rows = st->reportRows;
+    const int current = currentReportIndex(st);
+    if (current >= 0 && current < static_cast<int>(state.rows.size()))
+        state.initial_sample = search::utf8_to_wide(
+            state.rows[static_cast<std::size_t>(current)].oper_no);
+    const std::wstring date = search::utf8_to_wide(st->reportQueryDate);
+    const std::wstring machine = regularWindowText(st->machineEdit);
+    state.context_text = L"当前范围：检验日期 " +
+                         (date.empty() ? L"-" : date) + L"    检验仪器 " +
+                         (machine.empty() ? L"-" : machine);
+    state.printer_text = L"打印机：" + search::configured_barcode_printer_name();
+
+    RECT owner{};
+    GetWindowRect(ownerHwnd, &owner);
+    const DWORD dialogStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;
+    RECT dialogRect{0, 0, S(ownerHwnd, 740), S(ownerHwnd, 540)};
+    AdjustWindowRectEx(&dialogRect, dialogStyle, FALSE, dialogExStyle);
+    const int width = dialogRect.right - dialogRect.left;
+    const int height = dialogRect.bottom - dialogRect.top;
+    int x = owner.left + ((owner.right - owner.left) - width) / 2;
+    int y = owner.top + ((owner.bottom - owner.top) - height) / 2;
+    RECT work{};
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    const HMONITOR monitor = MonitorFromRect(&owner, MONITOR_DEFAULTTONEAREST);
+    if (monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+        work = monitorInfo.rcWork;
+        x = std::max(static_cast<int>(work.left),
+                     std::min(x, static_cast<int>(work.right) - width));
+        y = std::max(static_cast<int>(work.top),
+                     std::min(y, static_cast<int>(work.bottom) - height));
+    }
+    HWND dialog = CreateWindowExW(dialogExStyle, BATCH_BARCODE_DIALOG_CLASS,
+        L"批量打印条码", dialogStyle,
+        x, y, width, height, ownerHwnd, nullptr, GetModuleHandleW(nullptr), &state);
+    if (!dialog) return false;
+    EnableWindow(ownerHwnd, FALSE);
+    ShowWindow(dialog, SW_SHOW);
+    UpdateWindow(dialog);
+    MSG message{};
+    bool quit = false;
+    while (!state.done) {
+        const BOOL received = GetMessageW(&message, nullptr, 0, 0);
+        if (received <= 0) {
+            quit = received == 0;
+            break;
+        }
+        if (!IsDialogMessageW(dialog, &message)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    if (IsWindow(ownerHwnd)) {
+        EnableWindow(ownerHwnd, TRUE);
+        SetForegroundWindow(ownerHwnd);
+    }
+    if (quit) PostQuitMessage(static_cast<int>(message.wParam));
+    if (quit || !state.accepted || !IsWindow(ownerHwnd)) return false;
+    payloads = std::move(state.payloads);
+    return true;
+}
+
+}  // namespace
+
+void regularShowBatchBarcodeDialog(RegularReportState* st) {
+    if (!st) return;
+    if (st->barcodePrintTask.active()) {
+        MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
+                    L"常规报告", MB_ICONINFORMATION);
+        return;
+    }
+    if (st->reportQueryLoading) {
+        MessageBoxW(st->hwnd, L"报告列表正在刷新，请等待查询完成后再批量打印。",
+                    L"常规报告", MB_ICONINFORMATION);
+        return;
+    }
+    if (st->reportRows.empty()) {
+        MessageBoxW(st->hwnd, L"当前页面没有可用的报告记录。", L"常规报告",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    if (!search::barcode_label_printing_available()) {
+        MessageBoxW(st->hwnd, L"打印条码功能不可用：构建时未找到 LabelPrint 项目。",
+                    L"常规报告", MB_ICONWARNING);
+        return;
+    }
+    std::vector<search::BarcodeLabelPayload> payloads;
+    if (!showBatchBarcodeDialog(st, payloads)) return;
+    const std::wstring error = startBarcodeBatch(st, std::move(payloads));
+    if (!error.empty())
+        MessageBoxW(st->hwnd, error.c_str(), L"常规报告", MB_ICONWARNING);
 }
 
 void regularShowTrendForContext(RegularReportState* st) {
@@ -2684,8 +3257,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES) {
-                MessageBoxW(hwnd, regularPrintCheckedBarcodes(st).c_str(),
-                            L"常规报告", MB_ICONINFORMATION);
+                const std::wstring message = regularPrintCheckedBarcodes(st);
+                if (!message.empty())
+                    MessageBoxW(hwnd, message.c_str(), L"常规报告",
+                                MB_ICONINFORMATION);
                 return 0;
             }
             if (LOWORD(wp) == REGULAR_IDM_REPORT_TREND) {
@@ -2733,6 +3308,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->reportQueryTask.cancel();
                 st->resultQueryTask.cancel();
                 st->pictureQueryTask.cancel();
+                st->barcodePrintTask.cancel();
                 if (st->initialQuickMachineTimerActive) {
                     KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
                     st->initialQuickMachineTimerActive = false;

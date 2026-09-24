@@ -175,6 +175,7 @@ add_executable(main_app WIN32
     src/quality_control_settings_dialog.cpp
     src/quality_control_store.cpp
     src/query_module.cpp
+    src/regular_report_barcode_range.cpp
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
@@ -233,6 +234,13 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(regular_report_barcode_range_tests
+        tests/regular_report_barcode_range_test.cpp
+        src/regular_report_barcode_range.cpp
+    )
+    target_include_directories(regular_report_barcode_range_tests PRIVATE src)
+    add_test(NAME regular_report_barcode_range_tests COMMAND regular_report_barcode_range_tests)
+
     add_executable(scheduled_result_check_tests
         tests/scheduled_result_check_test.cpp
         src/scheduled_result_check_core.cpp
