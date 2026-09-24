@@ -178,6 +178,9 @@ add_executable(main_app WIN32
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
+    src/scheduled_result_check_core.cpp
+    src/scheduled_result_check_module.cpp
+    src/scheduled_result_check_store.cpp
     src/specimen_sign_module.cpp
     src/settings_module.cpp
     src/tat_statistics_module.cpp
@@ -191,6 +194,9 @@ set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
 target_link_libraries(main_app PRIVATE search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
+if(WIN32)
+    target_link_libraries(main_app PRIVATE dwmapi)
+endif()
 if(LIS_HAS_LABELPRINT)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)
@@ -227,6 +233,13 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(scheduled_result_check_tests
+        tests/scheduled_result_check_test.cpp
+        src/scheduled_result_check_core.cpp
+    )
+    target_include_directories(scheduled_result_check_tests PRIVATE src)
+    add_test(NAME scheduled_result_check_tests COMMAND scheduled_result_check_tests)
+
     add_executable(transfusion_order_core_tests
         tests/transfusion_order_statistics_test.cpp
         src/search_core.cpp

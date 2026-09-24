@@ -79,6 +79,7 @@ jobs:
           cmake --build build\main-app `
             --config Release `
             --target `
+              scheduled_result_check_tests `
               transfusion_order_core_tests `
               search_datetime_tests `
               tat_statistics_tests `
