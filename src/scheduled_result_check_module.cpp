@@ -2015,7 +2015,15 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
               return 0;
             }
             st->rules[row].enabled = checked;
-            setItem(st->rulesList, row, 0, checked ? L"启用" : L"停用");
+            // The row already exists here. setItem() inserts a new row for
+            // column 0 and is only intended for list population; using it in
+            // LVN_ITEMCHANGED re-enters this notification and shifts the UI
+            // rows away from st->rules.
+            st->syncingRules = true;
+            ListView_SetItemText(st->rulesList, row, 0,
+                                 const_cast<wchar_t *>(checked ? L"启用"
+                                                               : L"停用"));
+            st->syncingRules = false;
             updateReminder();
             run_scheduled_result_check_now();
             return 0;
