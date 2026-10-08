@@ -74,6 +74,7 @@ struct ReportRow {
     std::string mach_code;
     std::string mach_name;
     std::string room_code;
+    std::string group_code;           // LS_AS_REPORT.GROUP_CODE，报告项目代码
 };
 
 struct RoomOption {

@@ -38,10 +38,22 @@ std::string duplicate_key(const search::ReportRow& row) {
     return trim(row.oper_no) + sep + trim(row.txm_no) + sep +
            trim(row.group_name) + sep + trim(row.name) + sep +
            trim(row.sample_name) + sep + trim(row.dept_name) + sep +
-           trim(row.reg_no) + sep + date;
+           trim(row.reg_no) + sep + date + sep + trim(row.order_text) + sep +
+           trim(row.sex) + sep + trim(row.age) + sep + trim(row.group_code);
 }
 
 }  // namespace
+
+std::string label_group_name(const std::string& name, const std::string& group_code) {
+    std::string result = trim(name);
+    const std::string code = trim(group_code);
+    const std::string suffix = code == "301" ? "（岳麓）" :
+                               code == "702" ? "（滨水）" : "";
+    if (!suffix.empty() && (result.size() < suffix.size() ||
+        result.compare(result.size() - suffix.size(), suffix.size(), suffix) != 0))
+        result += suffix;
+    return result;
+}
 
 int compare_sample_numbers(const std::string& leftValue,
                            const std::string& rightValue) {

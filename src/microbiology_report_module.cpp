@@ -2396,10 +2396,16 @@ std::string barcodeGroupNameForReport(MicrobiologyReportState* st, int idx, std:
 search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
                                                     const std::string& gn) {
     search::BarcodeLabelPayload p;
-    p.sample_no = r.oper_no; p.test_item = gn; p.barcode_value = r.txm_no;
+    p.sample_no = r.oper_no;
+    p.test_item = microbiology_barcode::label_group_name(gn, r.group_code);
+    p.barcode_value = r.txm_no;
     p.patient_name = r.name; p.specimen_type = r.sample_name;
     p.department = r.dept_name; p.patient_id = r.reg_no;
     p.timestamp = microbiologySlashDate(r.chk_date);
+    p.label_template = search::BarcodeLabelTemplate::Microbiology;
+    p.order_text = r.order_text;
+    p.sex = r.sex;
+    p.age = r.age;
     return p;
 }
 
@@ -2575,7 +2581,7 @@ std::wstring microbiologyPrintBarcodeForContext(MicrobiologyReportState* st) {
         std::wstring msg = L"打印条码失败：";
         msg += search::utf8_to_wide(ex.what());
         msg += L"\n打印机：" + search::configured_barcode_printer_name();
-        msg += L"\n请在系统设置页重新选择条码打印机。\n\n" + details;
+        msg += L"\n请检查标签内容和系统设置中的条码打印机。\n\n" + details;
         return msg;
     }
 }
@@ -2800,7 +2806,8 @@ void populateBatchPreview(BatchBarcodeDialogState* state) {
         ListView_InsertItem(state->list, &item);
         setCell(state->list, static_cast<int>(i), 1, report.name);
         setCell(state->list, static_cast<int>(i), 2, report.txm_no);
-        setCell(state->list, static_cast<int>(i), 3, report.group_name);
+        setCell(state->list, static_cast<int>(i), 3,
+                microbiology_barcode::label_group_name(report.group_name, report.group_code));
         const wchar_t* status = !candidate.printable
             ? L"不可打印：条码号为空"
             : candidate.duplicate ? L"疑似重复（默认不选）" : L"可打印";

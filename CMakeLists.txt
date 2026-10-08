@@ -203,6 +203,7 @@ if(WIN32)
     target_link_libraries(main_app PRIVATE dwmapi)
 endif()
 if(LIS_HAS_LABELPRINT)
+    target_sources(main_app PRIVATE src/microbiology_label_template.cpp src/microbiology_label_render.cpp)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)
         target_compile_definitions(labelprint PRIVATE ${LIS_WIN7_COMPAT_DEFINITIONS})
@@ -238,6 +239,17 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    if(LIS_HAS_LABELPRINT AND WIN32)
+        add_executable(microbiology_label_tests
+            tests/microbiology_label_test.cpp
+            src/microbiology_label_template.cpp
+            src/microbiology_label_render.cpp
+            src/microbiology_report_barcode_range.cpp
+        )
+        target_include_directories(microbiology_label_tests PRIVATE src)
+        target_link_libraries(microbiology_label_tests PRIVATE ${LIS_LABELPRINT_TARGET})
+        add_test(NAME microbiology_label_tests COMMAND microbiology_label_tests)
+    endif()
     add_executable(regular_report_barcode_range_tests
         tests/regular_report_barcode_range_test.cpp
         src/regular_report_barcode_range.cpp

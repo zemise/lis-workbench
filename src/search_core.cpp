@@ -1370,7 +1370,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(cast(bar.JZ_FLAG as varchar(20)),'') ,"
         << " isnull(cast(r.MACH_CODE as varchar(20)),''),"
         << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(cast(r.MACH_CODE as varchar(20)),'')),"
-        << " isnull(cast(r.ROOM_CODE as varchar(20)),'')"
+        << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
+        << " isnull(LTRIM(RTRIM(cast(r.GROUP_CODE as varchar(20)))), '')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -1468,6 +1469,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.mach_code = fetch_column(stmt, 35);
         row.mach_name = fetch_column(stmt, 36);
         row.room_code = fetch_column(stmt, 37);
+        row.group_code = fetch_column(stmt, 38);
         rows.push_back(row);
     }
 

@@ -83,7 +83,11 @@ Win32 后台操作统一使用现有 `window_task.h/.cpp`：页面或主框架�
 | `main_app.h` | 主程序全局上下文 |
 | `module_registry.h` | ModuleContext + ModuleDef 统一模块接口；MDI 子窗口按标题激活的单实例 helper |
 | `menu_toolbar.cpp/h` | 原生 Win32 自定义工具栏组件；GDI 双缓冲绘制浅色 command bar，支持 hover/pressed/active/disabled、右侧文字型关闭按钮和拉伸占位 |
-| `barcode_label_printing.cpp/h` | Win32 主程序条码标签打印共享 helper，统一读取 `[RegularReport] BarcodePrinterName`，封装 LabelPrint 打印调用；常规报告和标本签收中心共用；检测到 Zebra/ZD888t 时复用 LabelPrint Zebra 测试打印的默认布局，并读取 `[RegularReport] ZebraChineseFont` 在 `E:SIMSUN.TTF` 和 `E:CSONG.TTF` 间选择单一中文字体，避免 fallback 叠印，且 Zebra 路径下 `组合项目` 按条码水平区域居中显示 |
+| `barcode_label_printing.cpp/h` | Win32 主程序条码标签打印共享 helper，统一读取 `[RegularReport] BarcodePrinterName`，封装 LabelPrint 打印调用；常规报告、标本签收中心和微生物报告共用；微生物载荷按模板类型分派至专用文字标签；检测到 Zebra/ZD888t 时复用 LabelPrint Zebra 测试打印的默认布局，并读取 `[RegularReport] ZebraChineseFont` 在 `E:SIMSUN.TTF` 和 `E:CSONG.TTF` 间选择单一中文字体，避免 fallback 叠印，且 Zebra 路径下 `组合项目` 按条码水平区域居中显示 |
+| `microbiology_label_template.cpp/h` | 微生物 50×30 mm 文字标签的数据排版，保留原字段字号，仅医嘱换行并按需缩小；组合项目右移 16 点，标本不带前缀，原标本位置显示性别年龄 |
+| `microbiology_label_render.cpp` | 微生物标签打印指令生成：Zebra 使用 ZPL 中文字体，XP-360B / Godex 保留原内置文字，只将缩小后的医嘱栅格化并插入 TSPL BITMAP / EZPL Q 指令 |
+| `microbiology_report_module.cpp/h`、`microbiology_report_state.h`、`microbiology_report_utils.cpp`、`microbiology_report_picture.cpp` | 微生物报告独立 MDI 工作台及状态、布局辅助和图片实现，检验仪器限定 3001 / 7002，最近七天送检时间与审核状态筛选，单条、勾选和范围打印共用微生物标签载荷 |
+| `microbiology_report_barcode_range.cpp/h` | 微生物打印的样本号自然排序、范围筛选、重复识别，以及按报告 GROUP_CODE 追加岳麓 / 滨水后缀；重复识别包含医嘱、性别、年龄和项目代码 |
 | `query_module.cpp/h` | 检验结果查询单实例 MDI 子窗口；第一张报告列表支持点击任意列名本地排序，双击可跳转到常规报告并按 `REP_NO` 精确定位对应报告；报告列表不展示医嘱内容，查询时通过 `skip_order_text` 跳过 `ORDER_TEXT` 聚合，列表批量填充时由共享 presenter 暂停重绘后统一刷新 |
 | `barcode_module.cpp/h` | 已签收条码查询单实例 MDI 子窗口，按 `LS_AS_BARCODE` 只读检索；日期类型默认 `签收日期`，起止控件支持小时分钟并默认当天 `00:00` 至 `23:59`；第一行依次显示日期范围、条形码、姓名、病人号、院区、专业组和上机状态，文本框支持回车查询；院区按申请科室是否包含“滨水”派生，专业组仅加载 `LS_AS_ROOM.Dept_Code IN (102,401)` 的有效记录并随院区联动；查询状态位于按钮行下方、列表上方，ListView 占满剩余客户区；结果列表不保留空白占位列，显示签收时间、最近有效报告的审核时间及后台 C++ 通过无时区公历算术计算到秒并缓存复用的签收-审核时间差；主 SQL 仅返回检验者/审核者代码，人员字典按数据库连接独立加载并在进程内缓存后由 C++ 映射，缺失时回退代码，避免人员表参与大结果集关联；“上机状态”位于时间差之后，同一非空条形码的多条医嘱连续成组，仅首行显示样本号至申请科室等公共字段；结果使用 `LVS_OWNERDATA` 虚拟 ListView 按需展示全部内存结果，以轻量索引完成排序和重新归组，保留右键复制、双击跳转常规报告；OOXML `.xlsx` 导出按当前索引顺序在线程中逐行写临时文件，完成后原子替换目标，确保全量导出且不一次性构造整份文件；查询在中央加载卡片显示不确定进度，导出复用卡片显示确定进度，成功信息保留在状态行，普通错误使用可点击的内联 Alert，严重前置错误保留 Modal，并为主要控件提供 Tooltip |
 | `xlsx_writer.cpp/h` | 不依赖 Office 的流式 OOXML `.xlsx` 写入器；使用 Unicode 内联字符串避免 CSV 编码猜测并保留标识符前导零，生成冻结表头和自动筛选，超过 Excel 单表行数上限时自动拆分工作表；ZIP 包和工作表均按流式方式写出，不一次性持有整份文件内容 |

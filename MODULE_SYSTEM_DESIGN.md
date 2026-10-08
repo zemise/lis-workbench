@@ -400,3 +400,11 @@ case WM_COMMAND: {
 
 **Q：独立调试模块？**
 在模块 `.cpp` 底部加 `#ifdef STANDALONE` 块，提供 `WinMain` 注册顶层窗口直接调用 `create_xxx_module`，调试完切回主程序编译。
+
+## 微生物标签打印分层（v2026.10.09）
+
+`barcode_label_printing` 保留统一打印机配置与发送入口，`BarcodeLabelPayload.label_template` 默认是标准模板；仅微生物报告显式选择 `Microbiology`，并传递医嘱、性别、年龄。模板构建位于 `microbiology_label_template`，打印指令构建位于 `microbiology_label_render`，常规报告和标本签收仍走标准 LabelPrint 路径。
+
+微生物标签使用 50×30 mm 布局，组合项目右移约 2 mm，原条形码区域替换为不带字段名前缀的医嘱和标本，原标本位置显示性别年龄。只有医嘱允许换行和按需缩小；其他字段保持原字号与单行。缩小后的 TSPL / EZPL 医嘱使用 Windows 文字位图，位图指令在同一打印作业的最终打印命令前插入，不改变其他字段的内置字体输出。标签源和新增测试仅在找到 LabelPrint 时加入构建，未接入 LabelPrint 的构建保留原有功能不可用提示。
+
+当前已验证跨平台排版逻辑及 Windows 交叉编译；真实打印机字体、位图极性及实际纸张排版仍以现场试打为准。
