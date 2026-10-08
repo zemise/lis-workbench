@@ -84,6 +84,7 @@ Win32 后台操作统一使用现有 `window_task.h/.cpp`：页面或主框架�
 | `module_registry.h` | ModuleContext + ModuleDef 统一模块接口；MDI 子窗口按标题激活的单实例 helper |
 | `menu_toolbar.cpp/h` | 原生 Win32 自定义工具栏组件；GDI 双缓冲绘制浅色 command bar，支持 hover/pressed/active/disabled、右侧文字型关闭按钮和拉伸占位 |
 | `barcode_label_printing.cpp/h` | Win32 主程序条码标签打印共享 helper，统一读取 `[RegularReport] BarcodePrinterName`，封装 LabelPrint 打印调用；常规报告、标本签收中心和微生物报告共用；微生物载荷按模板类型分派至专用文字标签；检测到 Zebra/ZD888t 时复用 LabelPrint Zebra 测试打印的默认布局，并读取 `[RegularReport] ZebraChineseFont` 在 `E:SIMSUN.TTF` 和 `E:CSONG.TTF` 间选择单一中文字体，避免 fallback 叠印，且 Zebra 路径下 `组合项目` 按条码水平区域居中显示 |
+| `microbiology_quick_machine.h` | 微生物快捷仪器独立配置读取、3001 / 7002 默认值及代码/科室匹配，供系统设置和报告模块共用；默认代码不继承常规报告配置或旧名称、科室 |
 | `microbiology_label_template.cpp/h` | 微生物 50×30 mm 文字标签的数据排版，保留原字段字号，仅医嘱换行并按需缩小；组合项目右移 16 点，标本不带前缀，原标本位置显示性别年龄 |
 | `microbiology_label_render.cpp` | 微生物标签打印指令生成：Zebra 使用 ZPL 中文字体，XP-360B / Godex 保留原内置文字，只将缩小后的医嘱栅格化并插入 TSPL BITMAP / EZPL Q 指令 |
 | `microbiology_report_module.cpp/h`、`microbiology_report_state.h`、`microbiology_report_utils.cpp`、`microbiology_report_picture.cpp` | 微生物报告独立 MDI 工作台及状态、布局辅助和图片实现，检验仪器限定 3001 / 7002，最近七天送检时间与审核状态筛选，单条、勾选和范围打印共用微生物标签载荷 |

@@ -4,6 +4,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "microbiology_quick_machine.h"
 #include "barcode_label_printing.h"
 #include "main_app.h"
 #include "log.h"
@@ -2417,15 +2418,8 @@ search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
 
 bool applyQuickMachineSlot(MicrobiologyReportState* st, int slot, bool showMissingMessage) {
     if (!st || slot < 0 || slot >= MICROBIOLOGY_QUICK_MACHINE_COUNT) return false;
-    const auto loadSetting = [](const wchar_t* key) {
-        const std::wstring fallback =
-            search::load_module_str(L"RegularReport", key, L"");
-        return search::load_module_str(
-            L"MicrobiologyReport", key, fallback.c_str());
-    };
-    const std::wstring name = loadSetting(microbiologyQuickMachineNameKey(slot));
-    const std::wstring code = loadSetting(microbiologyQuickMachineCodeKey(slot));
-    const std::wstring room = loadSetting(microbiologyQuickMachineRoomKey(slot));
+    const auto configured = search::load_microbiology_quick_machine(slot);
+    const std::wstring code = search::utf8_to_wide(configured.code);
     if (search::trim(search::wide_to_utf8(code)).empty()) {
         if (showMissingMessage)
             MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"微生物报告", MB_ICONINFORMATION);
@@ -2439,7 +2433,26 @@ bool applyQuickMachineSlot(MicrobiologyReportState* st, int slot, bool showMissi
                         L"微生物报告", MB_ICONINFORMATION);
         return false;
     }
-    const std::string nextRoom = search::wide_to_utf8(room);
+    std::vector<search::MachineOption> machines;
+    std::string error;
+    if (!search::load_microbiology_report_machine_picker_machine_options(
+            st->ctx.dbSettings, "", machines, error)) {
+        const std::wstring message = L"快捷检验仪器加载失败：" + search::utf8_to_wide(error);
+        SetWindowTextW(st->status, message.c_str());
+        if (showMissingMessage) MessageBoxW(st->hwnd, message.c_str(), L"微生物报告", MB_ICONERROR);
+        return false;
+    }
+    const auto* found = search::find_microbiology_quick_machine(
+        machines, nextCode, configured.room_code);
+    if (!found) {
+        const std::wstring message = L"未找到有效的微生物快捷检验仪器 " + code +
+            L"，请检查数据库仪器配置和系统设置。";
+        SetWindowTextW(st->status, message.c_str());
+        if (showMissingMessage) MessageBoxW(st->hwnd, message.c_str(), L"微生物报告", MB_ICONWARNING);
+        return false;
+    }
+    const std::wstring name = search::utf8_to_wide(found->mach_name);
+    const std::string nextRoom = search::trim(found->room_code);
     const bool sameMachine = search::trim(st->selectedMachineCode) == search::trim(nextCode) &&
                              search::trim(st->selectedRoomCode) == search::trim(nextRoom);
     SetWindowTextW(st->machineEdit, name.empty() ? code.c_str() : name.c_str());

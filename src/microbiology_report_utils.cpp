@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "microbiology_quick_machine.h"
 #include "quick_machine_keys.h"
 #include "search_text.h"
 #include "search_ui_layout.h"
@@ -82,34 +83,15 @@ std::wstring microbiologyRightSummaryLine2(const MicrobiologyReportState* st) {
 // Quick machine helpers
 // ============================================================================
 
-const wchar_t* microbiologyQuickMachineCodeKey(int slot) {
-    return quick_machine_code_key(slot);
-}
-
-const wchar_t* microbiologyQuickMachineNameKey(int slot) {
-    return quick_machine_name_key(slot);
-}
-
-const wchar_t* microbiologyQuickMachineRoomKey(int slot) {
-    return quick_machine_room_key(slot);
-}
-
 bool microbiologyQuickMachineMatchesCurrent(const MicrobiologyReportState* st, int slot) {
     if (!st || slot < 0 || slot >= MICROBIOLOGY_QUICK_MACHINE_COUNT) return false;
-    const auto loadSetting = [](const wchar_t* key) {
-        const std::wstring fallback =
-            search::load_module_str(L"RegularReport", key, L"");
-        return search::load_module_str(
-            L"MicrobiologyReport", key, fallback.c_str());
-    };
-    const std::string code = search::wide_to_utf8(
-        loadSetting(microbiologyQuickMachineCodeKey(slot)));
-    const std::string room = search::wide_to_utf8(
-        loadSetting(microbiologyQuickMachineRoomKey(slot)));
+    const auto configured = search::load_microbiology_quick_machine(slot);
+    const std::string& code = configured.code;
+    const std::string& room = configured.room_code;
     const std::string currentCode = search::trim(st->selectedMachineCode);
     const std::string currentRoom = search::trim(st->selectedRoomCode);
     return !currentCode.empty() && currentCode == search::trim(code) &&
-           currentRoom == search::trim(room);
+           (room.empty() || currentRoom == search::trim(room));
 }
 
 void microbiologyUpdateQuickMachineButtonLabels(MicrobiologyReportState* st) {

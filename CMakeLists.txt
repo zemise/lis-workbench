@@ -239,6 +239,12 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(microbiology_quick_machine_tests
+        tests/microbiology_quick_machine_test.cpp
+        src/search_text.cpp
+    )
+    target_include_directories(microbiology_quick_machine_tests PRIVATE src)
+    add_test(NAME microbiology_quick_machine_tests COMMAND microbiology_quick_machine_tests)
     if(LIS_HAS_LABELPRINT AND WIN32)
         add_executable(microbiology_label_tests
             tests/microbiology_label_test.cpp

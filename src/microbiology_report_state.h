@@ -418,9 +418,6 @@ void microbiologyComboSelectFirst(HWND combo);
 std::wstring microbiologyRightSummaryLine1(const MicrobiologyReportState* st);
 std::wstring microbiologyRightSummaryLine2(const MicrobiologyReportState* st);
 
-const wchar_t* microbiologyQuickMachineCodeKey(int slot);
-const wchar_t* microbiologyQuickMachineNameKey(int slot);
-const wchar_t* microbiologyQuickMachineRoomKey(int slot);
 bool microbiologyQuickMachineMatchesCurrent(const MicrobiologyReportState* st, int slot);
 void microbiologyUpdateQuickMachineButtonLabels(MicrobiologyReportState* st);
 bool microbiologyIsAllowedMachineCode(const std::string& machineCode);
