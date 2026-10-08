@@ -30,6 +30,9 @@ SplitterX=300
 
 [RegularReport]     ← 常规报告模块私有
 SplitterX=900
+
+[MicrobiologyReport] ← 微生物报告模块私有
+SplitterX=900
 ```
 
 每个模块的 `ModuleDef.name` 即 section 名，私有 key 只在对应 section 下读写。
@@ -350,6 +353,7 @@ case WM_COMMAND: {
 - `Blood`：输血结果查询
 - `Barcode`：已签收条码查询
 - `RegularReport`：常规报告
+- `MicrobiologyReport`：微生物报告（独立复制常规报告作为后续开发基线）
 - `Settings`：系统设置
 
 ### Win32 长表单滚动绘制经验

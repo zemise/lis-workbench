@@ -76,6 +76,19 @@ bool load_report_machine_picker_machine_options(const DbSettings& settings, cons
     return query_report_machine_picker_machines(connection_string, room_code, rows, error, make_log_fn());
 }
 
+bool load_microbiology_report_machine_picker_machine_options(
+    const DbSettings& settings, const std::string& room_code,
+    std::vector<MachineOption>& rows, std::string& error) {
+    const auto connection_string = make_connection_string_utf8(settings);
+    if (connection_string.empty()) {
+        error.clear();
+        rows.clear();
+        return true;
+    }
+    return query_microbiology_report_machine_picker_machines(
+        connection_string, room_code, rows, error, make_log_fn());
+}
+
 bool run_report_query(const DbSettings& settings, const QueryInput& input, std::vector<ReportRow>& rows, std::string& connection_string, std::string& error) {
     const auto filters = make_query_filters(settings, input);
     connection_string = filters.connection_string;

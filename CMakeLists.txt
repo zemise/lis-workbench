@@ -169,6 +169,10 @@ add_executable(main_app WIN32
     src/massive_transfusion_statistics_module.cpp
     src/machine_picker_popup.cpp
     src/mchc_correction_module.cpp
+    src/microbiology_report_barcode_range.cpp
+    src/microbiology_report_module.cpp
+    src/microbiology_report_utils.cpp
+    src/microbiology_report_picture.cpp
     src/outpatient_query_module.cpp
     src/phone_directory_module.cpp
     src/quality_control_module.cpp
