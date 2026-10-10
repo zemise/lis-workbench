@@ -52,12 +52,31 @@ constexpr int REMINDER_COLLAPSED_HEIGHT = 62;
 constexpr size_t REMINDER_VISIBLE_ROWS = 3;
 constexpr int IDC_NAME = 8101, IDC_LEFT = 8102, IDC_OP = 8103, IDC_RIGHT = 8104,
               IDC_SAVE = 8105;
-constexpr int IDC_DELETE = 8106, IDC_TOGGLE = 8107, IDC_SCAN = 8108,
+constexpr int IDC_DELETE = 8106, IDC_SCAN = 8108,
               IDC_RULES = 8109, IDC_ALERTS = 8110;
 constexpr int IDC_HANDLED = 8111, IDC_STATUS = 8112;
 constexpr int IDC_NEW = 8113, IDC_RULE_SETTINGS = 8114, IDC_VALUE_MODE = 8115,
               IDC_VALUE = 8116, IDC_MACHINE = 8117, IDC_ALERT_SEARCH = 8118,
-              IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121;
+              IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121,
+              IDC_MULTIPLIER = 8122, IDC_TOLERANCE = 8123;
+
+// The UI, preview, editor, and persisted operator use the same stable order.
+struct ComparisonOption {
+  const char *op;
+  const wchar_t *label;
+  const wchar_t *range_label;
+  const wchar_t *description;
+  const wchar_t *range_description;
+};
+constexpr ComparisonOption COMPARISONS[] = {
+    {">", L"大于 >", L"高于上限 >", L"大于", L"高于上限"},
+    {">=", L"大于等于 >=", L"不低于下限 >=", L"大于等于", L"不低于下限"},
+    {"<", L"小于 <", L"低于下限 <", L"小于", L"低于下限"},
+    {"<=", L"小于等于 <=", L"不高于上限 <=", L"小于等于", L"不高于上限"},
+    {"=", L"等于 =", L"范围内 =", L"等于", L"范围内"},
+    {"!=", L"不等于 !=", L"范围外 !=", L"不等于", L"范围外"},
+};
+constexpr int COMPARISON_COUNT = static_cast<int>(std::size(COMPARISONS));
 
 struct ScanResult {
   bool ok = false;
@@ -97,9 +116,14 @@ struct State {
        rightLabel = nullptr, machineLabel = nullptr, rulesTitle = nullptr,
        alertsTitle = nullptr;
   HWND name = nullptr, left = nullptr, op = nullptr, right = nullptr,
-       newRule = nullptr, save = nullptr, del = nullptr, toggle = nullptr,
+       newRule = nullptr, save = nullptr, del = nullptr,
        scan = nullptr, ruleSettings = nullptr, valueMode = nullptr,
-       value = nullptr, machine = nullptr, machineButton = nullptr;
+       value = nullptr, machine = nullptr, machineButton = nullptr,
+       multiplier = nullptr, multiplierLabel = nullptr,
+       tolerance = nullptr, toleranceLabel = nullptr;
+  HWND editorPane = nullptr, preview = nullptr, modeLabel = nullptr;
+  bool rangeRelations = false;
+  int editorScroll = 0;
   HWND rulesList = nullptr, alertsList = nullptr, handled = nullptr,
        handledAll = nullptr, status = nullptr, tabs = nullptr,
        alertSearch = nullptr, progress = nullptr;
@@ -127,6 +151,8 @@ void refresh(State *st);
 void loadAlerts(State *st);
 void updateReminder(bool emphasize = false);
 void applyRuleEditorVisibility(State *st);
+void layout(HWND hwnd, State *st);
+void updateRulePreview(State *st);
 
 COLORREF mixColor(COLORREF a, COLORREF b, int aWeight, int bWeight) {
   return RGB((GetRValue(a) * aWeight + GetRValue(b) * bWeight) /
@@ -156,13 +182,23 @@ bool reminderAccentIsLight(COLORREF accent) {
 }
 
 std::wstring w(const std::string &s) { return search::utf8_to_wide(s); }
+std::wstring multiplierSuffix(const std::string &text) {
+  return text == "1" ? L"" : L" × " + w(text);
+}
+std::wstring toleranceSuffix(const std::string &text) {
+  double percent = 0.0;
+  if (!scheduled_check::parse_number(text, percent) || percent == 0.0)
+    return L"";
+  return L"（±" + w(text) + L"%）";
+}
 std::wstring alertLine(const scheduled_check::Alert &a) {
   const std::wstring right = a.compare_with_value
                                  ? w(a.right_result_text)
                                  : w(a.right_item_name) + L" " +
-                                       w(a.right_result_text);
+                                       w(a.right_result_text) +
+                                       multiplierSuffix(a.right_multiplier_text);
   return w(a.left_item_name) + L" " + w(a.left_result_text) + L" " + w(a.op) +
-         L" " + right;
+         L" " + right + toleranceSuffix(a.tolerance_percent_text);
 }
 std::wstring reminderItemName(const std::string &english,
                               const std::string &chinese,
@@ -175,10 +211,12 @@ std::wstring reminderAlertLine(const scheduled_check::Alert &a) {
           ? w(a.right_result_text)
           : reminderItemName(a.right_item_eng, a.right_item_name,
                              a.right_item_code) +
-                L" " + w(a.right_result_text);
+                L" " + w(a.right_result_text) +
+                multiplierSuffix(a.right_multiplier_text);
   return reminderItemName(a.left_item_eng, a.left_item_name,
                           a.left_item_code) +
-         L" " + w(a.left_result_text) + L" " + w(a.op) + L" " + right;
+         L" " + w(a.left_result_text) + L" " + w(a.op) + L" " + right +
+         toleranceSuffix(a.tolerance_percent_text);
 }
 std::string windowText(HWND h) {
   int n = GetWindowTextLengthW(h);
@@ -766,6 +804,8 @@ std::string ruleSignature(const std::vector<scheduled_check::Rule> &rules) {
     field(rule.right_item_name);
     field(rule.right_item_unit);
     field(rule.right_value_text);
+    field(rule.right_multiplier_text);
+    field(rule.tolerance_percent_text);
     field(rule.room_code);
     field(rule.mach_code);
   }
@@ -1107,11 +1147,12 @@ void loadRules(State *st) {
     setItem(st->rulesList, i, 1, w(r.name));
     setItem(st->rulesList, i, 2,
             w(r.left_item_name + " (" + r.left_item_code + ")"));
-    setItem(st->rulesList, i, 3, w(r.op));
+    setItem(st->rulesList, i, 3, w(r.op) + toleranceSuffix(r.tolerance_percent_text));
     setItem(st->rulesList, i, 4,
             r.compare_with_value
                 ? L"固定值 " + w(r.right_value_text)
-                : w(r.right_item_name + " (" + r.right_item_code + ")"));
+                : w(r.right_item_name + " (" + r.right_item_code + ")") +
+                      multiplierSuffix(r.right_multiplier_text));
     setItem(st->rulesList, i, 5,
             r.mach_code.empty() ? L"未限定（旧规则）"
                                 : w(r.mach_name + " [" + r.room_code + "/" +
@@ -1129,8 +1170,11 @@ std::string alertSortValue(const scheduled_check::Alert &a, int column) {
   case 4: return a.oper_no;
   case 5: return a.left_item_name;
   case 6: return a.left_result_text;
-  case 7: return a.op;
-  case 8: return a.compare_with_value ? "固定值" : a.right_item_name;
+  case 7: return a.op + " " + a.tolerance_percent_text;
+  case 8:
+    return a.compare_with_value
+               ? "固定值"
+               : a.right_item_name + " × " + a.right_multiplier_text;
   default: return a.right_result_text;
   }
 }
@@ -1168,9 +1212,10 @@ void applyAlertFilter(State *st) {
     setItem(st->alertsList, i, 4, w(a.oper_no));
     setItem(st->alertsList, i, 5, w(a.left_item_name));
     setItem(st->alertsList, i, 6, w(a.left_result_text));
-    setItem(st->alertsList, i, 7, w(a.op));
+    setItem(st->alertsList, i, 7, w(a.op) + toleranceSuffix(a.tolerance_percent_text));
     setItem(st->alertsList, i, 8,
-            a.compare_with_value ? L"固定值" : w(a.right_item_name));
+            a.compare_with_value ? L"固定值" : w(a.right_item_name) +
+                multiplierSuffix(a.right_multiplier_text));
     setItem(st->alertsList, i, 9, w(a.right_result_text));
   }
   const std::wstring title =
@@ -1263,6 +1308,57 @@ int resolveItem(State *st, HWND combo) {
   }
   return match;
 }
+void updateRulePreview(State *st) {
+  if (!st->preview) return;
+  const int left = resolveItem(st, st->left), right = resolveItem(st, st->right);
+  const int op = comboSelection(st->op);
+  double percent = 0.0;
+  const auto percentText = search::trim(windowText(st->tolerance));
+  const bool range = !st->valueModeChecked &&
+                     scheduled_check::parse_number(percentText, percent) && percent > 0.0 && percent <= 100.0;
+  if (range != st->rangeRelations) {
+    st->rangeRelations = range;
+    SendMessageW(st->op, CB_RESETCONTENT, 0, 0);
+    for (const auto &option : COMPARISONS)
+      SendMessageW(st->op, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(range ? option.range_label : option.label));
+    SendMessageW(st->op, CB_SETCURSEL, op, 0);
+  }
+  std::wstring text;
+  if (!st->machineItemsLoaded || left < 0 || (!st->valueModeChecked && right < 0)) {
+    text = L"请选择仪器和项目";
+  } else if (!st->valueModeChecked && left == right) {
+    text = L"请选择两个不同的项目";
+  } else if (op < 0 || op >= COMPARISON_COUNT) {
+    text = L"请选择提醒条件";
+  } else {
+    const auto leftName = w(st->items[left].item_name);
+    std::wstring target;
+    double value = 0.0;
+    bool valid = true;
+    if (st->valueModeChecked) {
+      const auto valueText = search::trim(windowText(st->value));
+      valid = scheduled_check::parse_number(valueText, value);
+      target = w(valueText);
+      if (!valid) text = L"请输入有效的固定值";
+    } else {
+      const auto multipleText = search::trim(windowText(st->multiplier));
+      valid = scheduled_check::parse_number(multipleText, value) && value > 0.0 &&
+              scheduled_check::parse_number(percentText, percent) && percent >= 0.0 && percent <= 100.0;
+      target = w(st->items[right].item_name) + multiplierSuffix(multipleText);
+      if (!valid) text = L"倍数须大于 0，允许误差填 0～100";
+    }
+    if (valid) {
+      if (range) {
+        text = std::wstring(COMPARISONS[op].range_description) + L"提醒：" + leftName + L" 与 " + target + toleranceSuffix(percentText);
+      } else {
+        text = leftName + L" " + COMPARISONS[op].description + L" " + target + L" 时提醒";
+      }
+    }
+  }
+  SetWindowTextW(st->preview, text.c_str());
+}
+
 void fillItems(State *st) {
   const int oldLeft = resolveItem(st, st->left);
   const int oldRight = resolveItem(st, st->right);
@@ -1313,6 +1409,8 @@ void fillItems(State *st) {
         L" 个项目；可输入项目代码精确匹配。";
     SetWindowTextW(st->status, message.c_str());
   }
+  updateRulePreview(st);
+  if (st->editorPane && st->rulesExpanded) layout(g_page, st);
 }
 void loadMachineItems(HWND hwnd, State *st) {
   st->machineItemCodes.clear();
@@ -1399,7 +1497,7 @@ void saveRule(HWND hwnd, State *st) {
   }
   const int l = resolveItem(st, st->left);
   const int o = comboSelection(st->op);
-  if (l < 0 || o < 0 || l >= static_cast<int>(st->items.size())) {
+  if (l < 0 || o < 0 || o >= COMPARISON_COUNT || l >= static_cast<int>(st->items.size())) {
     MessageBoxW(hwnd, L"请选择该仪器的项目 A 和比较关系；项目代码须属于所选仪器。",
                 TITLE, MB_ICONINFORMATION);
     return;
@@ -1413,8 +1511,7 @@ void saveRule(HWND hwnd, State *st) {
   rule.mach_name = st->machName;
   const auto &li = st->items[l];
   rule.name = search::trim(windowText(st->name));
-  static const char *ops[] = {">", ">=", "<", "<=", "=", "!="};
-  rule.op = ops[o];
+  rule.op = COMPARISONS[o].op;
   rule.left_item_code = li.item_code;
   rule.left_item_name = li.item_name;
   rule.left_item_unit = li.unit;
@@ -1428,6 +1525,8 @@ void saveRule(HWND hwnd, State *st) {
       return;
     }
     rule.right_value_text = valueText;
+    rule.right_multiplier_text = "1";
+    rule.tolerance_percent_text = "0";
     rule.right_item_code.clear();
     rule.right_item_name.clear();
     rule.right_item_unit.clear();
@@ -1445,13 +1544,33 @@ void saveRule(HWND hwnd, State *st) {
                   MB_ICONINFORMATION);
       return;
     }
+    const std::string multiplierText = search::trim(windowText(st->multiplier));
+    double multiplier = 1.0;
+    if (!scheduled_check::parse_number(multiplierText, multiplier) ||
+        multiplier <= 0.0) {
+      MessageBoxW(hwnd, L"项目 B 倍数必须是大于 0 的有效数字，例如 4、0.5；直接比较请填 1。",
+                  TITLE, MB_ICONINFORMATION);
+      return;
+    }
+    const std::string percentText = search::trim(windowText(st->tolerance));
+    double percent = 0.0;
+    if (!scheduled_check::parse_number(percentText, percent) ||
+        percent < 0.0 || percent > 100.0) {
+      MessageBoxW(hwnd, L"允许误差必须是 0 至 100 的数字；填写 3 表示目标值的 ±3%，填写 0 不放宽误差。",
+                  TITLE, MB_ICONINFORMATION);
+      return;
+    }
+    rule.right_multiplier_text = multiplierText;
+    rule.tolerance_percent_text = percentText;
     const auto &ri = st->items[r];
     rule.right_item_code = ri.item_code;
     rule.right_item_name = ri.item_name;
     rule.right_item_unit = ri.unit;
     rule.right_value_text.clear();
     if (rule.name.empty())
-      rule.name = li.item_name + " " + rule.op + " " + ri.item_name;
+      rule.name = li.item_name + " " + rule.op + " " + ri.item_name +
+                  (multiplier == 1.0 ? "" : " × " + multiplierText) +
+                  (percent == 0.0 ? "" : "（±" + percentText + "%）");
   }
   if (rule.id <= 0)
     rule.enabled = true;
@@ -1492,31 +1611,36 @@ void selectRule(State *st) {
   };
   pick(st->left, r.left_item_code);
   pick(st->right, r.right_item_code);
-  static const char *ops[] = {">", ">=", "<", "<=", "=", "!="};
-  for (int i = 0; i < 6; ++i)
-    if (r.op == ops[i])
+  for (int i = 0; i < COMPARISON_COUNT; ++i)
+    if (r.op == COMPARISONS[i].op)
       SendMessageW(st->op, CB_SETCURSEL, i, 0);
   st->valueModeChecked = r.compare_with_value;
-  SendMessageW(st->valueMode, BM_SETCHECK,
-               st->valueModeChecked ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(st->valueMode, CB_SETCURSEL, st->valueModeChecked ? 1 : 0, 0);
   SetWindowTextW(st->value, w(r.right_value_text).c_str());
+  SetWindowTextW(st->multiplier, w(r.right_multiplier_text).c_str());
+  SetWindowTextW(st->tolerance, w(r.tolerance_percent_text).c_str());
   applyRuleEditorVisibility(st);
+  layout(g_page, st);
   SetWindowTextW(st->save, L"更新规则");
 }
 void clearEditor(State *st) {
+  st->editorScroll = 0;
   ListView_SetItemState(st->rulesList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
   SetWindowTextW(st->name, L"");
   st->roomCode.clear(); st->machCode.clear(); st->machName.clear();
   st->pendingLeftCode.clear(); st->pendingRightCode.clear();
-  SetWindowTextW(st->machine, L"尚未选择检验仪器");
+  SetWindowTextW(st->machine, L"未选择");
   loadMachineItems(g_page, st);
   SendMessageW(st->left, CB_SETCURSEL, -1, 0);
   SendMessageW(st->right, CB_SETCURSEL, -1, 0);
   SendMessageW(st->op, CB_SETCURSEL, 0, 0);
   st->valueModeChecked = false;
-  SendMessageW(st->valueMode, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(st->valueMode, CB_SETCURSEL, 0, 0);
   SetWindowTextW(st->value, L"");
+  SetWindowTextW(st->multiplier, L"1");
+  SetWindowTextW(st->tolerance, L"0");
   applyRuleEditorVisibility(st);
+  layout(g_page, st);
   SetWindowTextW(st->save, L"保存规则");
 }
 void openAlert(State *st, int row) {
@@ -1548,20 +1672,26 @@ void applyRuleEditorVisibility(State *st) {
        {st->nameLabel, st->leftLabel, st->opLabel, st->rightLabel,
         st->machineLabel, st->machine, st->machineButton, st->name,
         st->left, st->op, st->valueMode, st->newRule, st->save, st->del,
-        st->toggle, st->rulesTitle, st->rulesList})
+        st->rulesTitle, st->rulesList, st->preview, st->modeLabel})
     ShowWindow(control, rulesShow);
   ShowWindow(st->right,
              rulesShow && !st->valueModeChecked ? SW_SHOW : SW_HIDE);
   ShowWindow(st->value,
              rulesShow && st->valueModeChecked ? SW_SHOW : SW_HIDE);
+  for (HWND control : {st->multiplierLabel, st->multiplier, st->toleranceLabel, st->tolerance})
+    ShowWindow(control,
+               rulesShow && !st->valueModeChecked ? SW_SHOW : SW_HIDE);
   for (HWND control :
        {st->alertSearch, st->handled, st->handledAll, st->alertsTitle,
         st->alertsList})
     ShowWindow(control, alertsShow);
+  ShowWindow(st->editorPane, rulesShow);
+  SetParent(st->scan, st->rulesExpanded ? st->editorPane : g_page);
   // The legacy expand/collapse button is replaced by the tab control.
   ShowWindow(st->ruleSettings, SW_HIDE);
   SetWindowTextW(st->rightLabel,
-                 st->valueModeChecked ? L"固定值：" : L"项目 B：");
+                 st->valueModeChecked ? L"固定值" : L"项目 B");
+  updateRulePreview(st);
 }
 
 void layout(HWND hwnd, State *st) {
@@ -1576,15 +1706,16 @@ void layout(HWND hwnd, State *st) {
 
   const int pad = S(12);
   const int gap = S(8);
-  const int labelW = (std::max)(
-      {search::measure_control_text_width(hwnd, st->nameLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->machineLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->leftLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->opLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->rightLabel, 72, 6)});
-  const int controlH = S(26);
-  const int titleH = S(22);
-  const int statusH = S(22);
+  HDC fontDc = GetDC(hwnd);
+  HGDIOBJ oldFont = st->ctx.uiFont ? SelectObject(fontDc, st->ctx.uiFont) : nullptr;
+  TEXTMETRICW metrics{};
+  GetTextMetricsW(fontDc, &metrics);
+  if (oldFont) SelectObject(fontDc, oldFont);
+  ReleaseDC(hwnd, fontDc);
+  const int textH = static_cast<int>(metrics.tmHeight);
+  const int controlH = (std::max)(S(26), textH + S(8));
+  const int titleH = (std::max)(S(22), textH + S(4));
+  const int statusH = titleH;
   const int contentW = (std::max)(S(300), w - pad * 2);
   int y = pad;
 
@@ -1615,89 +1746,138 @@ void layout(HWND hwnd, State *st) {
     return;
   }
 
-  // Wide pages use two columns; narrow pages keep one task per row so labels
-  // and editable project fields never compete for the same horizontal space.
-  const int pickerW = search::measure_control_text_width(
-      hwnd, st->machineButton, 96, 18);
-  const int valueModeW =
-      search::measure_control_text_width(hwnd, st->valueMode, 96, 18);
-  if (contentW >= S(900)) {
-    const int half = (contentW - gap) / 2;
-    const int rightX = pad + half + gap;
-    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->machine, pad + labelW, y,
-               half - labelW - pickerW - gap, controlH, TRUE);
-    MoveWindow(st->machineButton, pad + half - pickerW, y,
-               pickerW, controlH, TRUE);
-    MoveWindow(st->nameLabel, rightX, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->name, rightX + labelW, y,
-               contentW - half - gap - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->left, pad + labelW, y, half - labelW, S(320), TRUE);
-    MoveWindow(st->rightLabel, rightX, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->right, rightX + labelW, y,
-               contentW - half - gap - labelW, S(320), TRUE);
-    MoveWindow(st->value, rightX + labelW, y,
-               contentW - half - gap - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
-    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
-               valueModeW, controlH, TRUE);
-    y += controlH + gap;
-  } else {
-    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->machine, pad + labelW, y,
-               (std::max)(S(80), contentW - labelW - pickerW - gap), controlH,
-               TRUE);
-    MoveWindow(st->machineButton, w - pad - pickerW, y,
-               pickerW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->nameLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->name, pad + labelW, y, contentW - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->left, pad + labelW, y, contentW - labelW, S(320), TRUE);
-    y += controlH + gap;
-    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
-    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
-               valueModeW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->rightLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->right, pad + labelW, y, contentW - labelW, S(320), TRUE);
-    MoveWindow(st->value, pad + labelW, y, contentW - labelW, controlH, TRUE);
-    y += controlH + gap;
-  }
-  int buttonX = pad;
-  struct ButtonLayout {
-    HWND hwnd;
-    int width;
-  } buttons[] = {
-      {st->newRule,
-       search::measure_control_text_width(hwnd, st->newRule, 70, 18)},
-      {st->save, search::measure_control_text_width(hwnd, st->save, 86, 18)},
-      {st->del, search::measure_control_text_width(hwnd, st->del, 70, 18)},
-      {st->toggle,
-       search::measure_control_text_width(hwnd, st->toggle, 92, 18)},
-      {st->scan, search::measure_control_text_width(hwnd, st->scan, 86, 18)}};
-  for (const auto &button : buttons) {
-    if (buttonX > pad && buttonX + button.width > w - pad) {
-      buttonX = pad;
-      y += controlH + gap;
-    }
-    MoveWindow(button.hwnd, buttonX, y, button.width, controlH, TRUE);
-    buttonX += button.width + gap;
-  }
+  // All editor controls live inside a clipped, scrollable pane. The tabs and
+  // scan status stay visible even at small window sizes or larger font scales.
+  const int paneH = (std::max)(S(80), statusY - y - S(36));
+  MoveWindow(st->editorPane, pad, y, contentW, paneH, TRUE);
+  RECT paneRc{};
+  GetClientRect(st->editorPane, &paneRc);
+  const int formW = (std::max)(S(180), static_cast<int>(paneRc.right) - S(12));
+  const bool wide = formW >= S(740);
+  const int half = (formW - S(20)) / 2;
+  const int rightX = half + S(20);
+  const auto place = [&](HWND control, int x, int top, int width, int height) {
+    MoveWindow(control, x, top - st->editorScroll,
+               (std::max)(1, width), (std::max)(1, height), TRUE);
+  };
+  const auto textHeight = [&](HWND control, int width) {
+    HDC dc = GetDC(control);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    HGDIOBJ old = font ? SelectObject(dc, font) : nullptr;
+    const auto text = search::utf8_to_wide(windowText(control));
+    RECT bounds{0, 0, (std::max)(1, width), 0};
+    DrawTextW(dc, text.c_str(), -1, &bounds, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    if (old) SelectObject(dc, old);
+    ReleaseDC(control, dc);
+    return (std::max)(titleH, static_cast<int>(bounds.bottom) + S(4));
+  };
+  const int pickerW = search::measure_control_text_width(hwnd, st->machineButton, 96, 18);
+  const int labelColumnW = wide ? half : formW;
+  int fieldLabelH = titleH;
+  for (HWND label : {st->machineLabel, st->nameLabel, st->modeLabel, st->opLabel,
+                    st->leftLabel, st->rightLabel, st->multiplierLabel, st->toleranceLabel})
+    fieldLabelH = (std::max)(fieldLabelH, textHeight(label, labelColumnW));
+  fieldLabelH = (std::max)(fieldLabelH, textHeight(st->machineLabel, labelColumnW - pickerW - gap));
+  const auto field = [&](HWND label, HWND control, int x, int top, int width,
+                         bool combo = false) {
+    place(label, x, top, width, fieldLabelH);
+    place(control, x, top + fieldLabelH + S(4), width, combo ? S(260) : controlH);
+  };
+  int top = S(6);
+  const int fieldH = fieldLabelH + S(4) + controlH;
+  const int scopeW = wide ? half : formW;
+  field(st->machineLabel, st->machine, 0, top, scopeW - pickerW - gap);
+  place(st->machineButton, scopeW - pickerW, top + fieldLabelH + S(4), pickerW, controlH);
+  if (!wide) top += fieldH + gap;
+  field(st->nameLabel, st->name, wide ? rightX : 0, top, wide ? half : formW);
+  top += fieldH + gap;
 
-  y += controlH + S(10);
-  MoveWindow(st->rulesTitle, pad, y, contentW, titleH, TRUE);
-  y += titleH;
+  field(st->modeLabel, st->valueMode, 0, top, wide ? half : formW, true);
+  if (!wide) top += fieldH + gap;
+  field(st->opLabel, st->op, wide ? rightX : 0, top, wide ? half : formW, true);
+  top += fieldH + gap;
 
-  const int rulesH = (std::max)(S(110), statusY - y - S(5));
-  MoveWindow(st->rulesList, pad, y, contentW, rulesH, TRUE);
+  field(st->leftLabel, st->left, 0, top, wide ? half : formW, true);
+  if (!wide) top += fieldH + gap;
+  field(st->rightLabel, st->right, wide ? rightX : 0, top, wide ? half : formW, true);
+  field(st->rightLabel, st->value, wide ? rightX : 0, top, wide ? half : formW);
+  top += fieldH + gap;
+
+  if (!st->valueModeChecked) {
+    // Related numeric options stay together in one compact row at all widths.
+    field(st->multiplierLabel, st->multiplier, 0, top, half);
+    field(st->toleranceLabel, st->tolerance, rightX, top, half);
+    top += fieldH + gap;
+  }
+  const int previewH = textHeight(st->preview, formW);
+  place(st->preview, 0, top, formW, previewH);
+  top += previewH + gap;
+
+  int buttonX = 0;
+  for (HWND button : {st->save, st->newRule}) {
+    const int width = search::measure_control_text_width(hwnd, button, 86, 22);
+    if (buttonX && buttonX + width > formW) { buttonX = 0; top += controlH + gap; }
+    place(button, buttonX, top, width, controlH);
+    buttonX += width + gap;
+  }
+  top += controlH + S(14);
+  place(st->rulesTitle, 0, top + S(3), S(100), titleH);
+  buttonX = formW >= S(500) ? S(110) : 0;
+  if (!buttonX) top += titleH + gap;
+  for (HWND button : {st->del, st->scan}) {
+    const int width = search::measure_control_text_width(hwnd, button, 86, 18);
+    if (buttonX && buttonX + width > formW) { buttonX = 0; top += controlH + gap; }
+    place(button, buttonX, top, width, controlH);
+    buttonX += width + gap;
+  }
+  top += controlH + gap;
+  const int rulesH = (std::max)(S(150), paneH - top - S(8));
+  place(st->rulesList, 0, top, formW, rulesH);
+  const int totalH = top + rulesH + S(8);
+  SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL};
+  scroll.nMin = 0; scroll.nMax = totalH - 1;
+  scroll.nPage = paneH; scroll.nPos = st->editorScroll;
+  SetScrollInfo(st->editorPane, SB_VERT, &scroll, TRUE);
+  const int clamped = GetScrollPos(st->editorPane, SB_VERT);
   MoveWindow(st->status, pad, statusY, contentW, statusH, TRUE);
+  if (clamped != st->editorScroll) {
+    st->editorScroll = clamped;
+    layout(hwnd, st);
+  }
+
+}
+
+LRESULT CALLBACK editorPaneProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                UINT_PTR id, DWORD_PTR data) {
+  auto *st = reinterpret_cast<State *>(data);
+  if (msg == WM_COMMAND || msg == WM_NOTIFY)
+    return SendMessageW(GetParent(hwnd), msg, wp, lp);
+  if (msg == WM_VSCROLL || msg == WM_MOUSEWHEEL) {
+    SCROLLINFO info{sizeof(info), SIF_ALL};
+    GetScrollInfo(hwnd, SB_VERT, &info);
+    int position = info.nPos;
+    const int step = static_cast<int>(48 * search::dpi_scale_factor(hwnd));
+    if (msg == WM_MOUSEWHEEL) {
+      position -= MulDiv(GET_WHEEL_DELTA_WPARAM(wp), step, WHEEL_DELTA);
+    } else {
+      switch (LOWORD(wp)) {
+      case SB_LINEUP: position -= step; break;
+      case SB_LINEDOWN: position += step; break;
+      case SB_PAGEUP: position -= info.nPage; break;
+      case SB_PAGEDOWN: position += info.nPage; break;
+      case SB_THUMBTRACK: case SB_THUMBPOSITION: position = info.nTrackPos; break;
+      case SB_TOP: position = info.nMin; break;
+      case SB_BOTTOM: position = info.nMax; break;
+      default: return 0;
+      }
+    }
+    st->editorScroll = (std::max)(0, (std::min)(position, info.nMax - static_cast<int>(info.nPage) + 1));
+    layout(GetParent(hwnd), st);
+    return 0;
+  }
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, editorPaneProc, id);
+  return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
 LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1709,39 +1889,43 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     st = reinterpret_cast<State *>(mcs->lParam);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
     g_page = hwnd;
-    st->nameLabel = search::create_label(hwnd, L"规则名称：", 0, 0, 0, 0);
-    st->machineLabel = search::create_label(hwnd, L"检验仪器：", 0, 0, 0, 0);
-    st->machine = search::create_label(hwnd, L"尚未选择检验仪器", 0, 0, 0, 0);
+    st->nameLabel = search::create_label(hwnd, L"名称", 0, 0, 0, 0);
+    st->machineLabel = search::create_label(hwnd, L"仪器", 0, 0, 0, 0);
+    st->machine = search::create_label(hwnd, L"未选择", 0, 0, 0, 0);
     st->machineButton = search::create_button(
         hwnd, IDC_MACHINE, L"选择仪器", 0, 0, 0, 0);
-    st->leftLabel = search::create_label(hwnd, L"项目 A：", 0, 0, 0, 0);
-    st->opLabel = search::create_label(hwnd, L"比较关系：", 0, 0, 0, 0);
-    st->rightLabel = search::create_label(hwnd, L"项目 B：", 0, 0, 0, 0);
+    st->leftLabel = search::create_label(hwnd, L"项目 A", 0, 0, 0, 0);
+    st->opLabel = search::create_label(hwnd, L"提醒条件", 0, 0, 0, 0);
+    st->rightLabel = search::create_label(hwnd, L"项目 B", 0, 0, 0, 0);
     st->name = search::create_edit(hwnd, IDC_NAME, 0, 0, 0, 0);
     SendMessageW(st->name, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"规则名称（可选）"));
+                 reinterpret_cast<LPARAM>(L"选填，自动命名"));
     st->left = search::create_combo(hwnd, IDC_LEFT, 0, 0, 0, 0, true);
     st->op = search::create_combo(hwnd, IDC_OP, 0, 0, 0, 0, false);
-    for (const wchar_t *x : {L">", L">=", L"<", L"<=", L"=", L"!="})
-      SendMessageW(st->op, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(x));
+    for (const auto &option : COMPARISONS)
+      SendMessageW(st->op, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(option.label));
     SendMessageW(st->op, CB_SETCURSEL, 0, 0);
     st->right = search::create_combo(hwnd, IDC_RIGHT, 0, 0, 0, 0, true);
-    st->valueMode = CreateWindowExW(
-        0, L"BUTTON", L"与固定值比较",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, hwnd,
-        win32_control_id(IDC_VALUE_MODE), st->ctx.instance, nullptr);
+    st->valueMode = search::create_combo(hwnd, IDC_VALUE_MODE, 0, 0, 0, 0, false);
+    for (const wchar_t *mode : {L"项目比较", L"固定值比较"})
+      SendMessageW(st->valueMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mode));
+    SendMessageW(st->valueMode, CB_SETCURSEL, 0, 0);
     st->value = search::create_edit(hwnd, IDC_VALUE, 0, 0, 0, 0);
     SendMessageW(st->value, EM_SETCUEBANNER, TRUE,
                  reinterpret_cast<LPARAM>(L"如 5.0"));
+    st->multiplierLabel = search::create_label(hwnd, L"B 的倍数", 0, 0, 0, 0);
+    st->multiplier = search::create_edit(hwnd, IDC_MULTIPLIER, 0, 0, 0, 0);
+    SetWindowTextW(st->multiplier, L"1");
+    st->toleranceLabel = search::create_label(hwnd, L"允许误差 ±%", 0, 0, 0, 0);
+    st->tolerance = search::create_edit(hwnd, IDC_TOLERANCE, 0, 0, 0, 0);
+    SetWindowTextW(st->tolerance, L"0");
     st->ruleSettings =
         search::create_button(hwnd, IDC_RULE_SETTINGS, L"规则设置", 0, 0, 0, 0);
     st->newRule = search::create_button(hwnd, IDC_NEW, L"新建", 0, 0, 0, 0);
     st->save = search::create_button(hwnd, IDC_SAVE, L"保存规则", 0, 0, 0, 0);
-    st->del = search::create_button(hwnd, IDC_DELETE, L"删除", 0, 0, 0, 0);
-    st->toggle =
-        search::create_button(hwnd, IDC_TOGGLE, L"启用/停用", 0, 0, 0, 0);
+    st->del = search::create_button(hwnd, IDC_DELETE, L"删除规则", 0, 0, 0, 0);
     st->scan = search::create_button(hwnd, IDC_SCAN, L"立即扫描", 0, 0, 0, 0);
-    st->rulesTitle = search::create_label(hwnd, L"核查规则", 0, 0, 0, 0);
+    st->rulesTitle = search::create_label(hwnd, L"规则列表", 0, 0, 0, 0);
     st->rulesList = CreateWindowExW(
         WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL, 0, 0, 0, 0, hwnd,
@@ -1751,7 +1935,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                                          LVS_EX_DOUBLEBUFFER |
                                                          LVS_EX_CHECKBOXES);
     const wchar_t *rh[] = {L"状态", L"规则名称", L"项目 A", L"关系", L"项目 B", L"检验仪器"};
-    int rw[] = {70, 180, 250, 60, 250, 180};
+    int rw[] = {70, 180, 250, 130, 250, 180};
     for (int i = 0; i < 6; ++i)
       search::add_list_column(st->rulesList, i, rh[i], rw[i]);
     st->handled =
@@ -1767,7 +1951,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     const wchar_t *ah[] = {L"发现时间", L"状态",   L"规则",   L"报告号",
                            L"样本号",   L"项目 A", L"A 结果", L"关系",
                            L"项目 B",   L"B 结果"};
-    int aw[] = {145, 70, 160, 95, 95, 180, 80, 55, 180, 80};
+    int aw[] = {145, 70, 160, 95, 95, 180, 80, 130, 180, 80};
     for (int i = 0; i < 10; ++i)
       search::add_list_column(st->alertsList, i, ah[i], aw[i]);
     st->status = search::create_label(hwnd, L"正在加载项目字典...", 0, 0, 0, 0);
@@ -1790,6 +1974,32 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_MARQUEE, 0, 0, 0, 0, hwnd,
         win32_control_id(IDC_PROGRESS), st->ctx.instance, nullptr);
     SendMessageW(st->progress, PBM_SETMARQUEE, TRUE, 30);
+    st->modeLabel = search::create_label(hwnd, L"比较方式", 0, 0, 0, 0);
+    st->preview = search::create_label(hwnd, L"请选择仪器和项目", 0, 0, 0, 0);
+    st->editorPane = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"",
+        WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 0, 0, hwnd,
+        nullptr, st->ctx.instance, nullptr);
+    SetWindowSubclass(st->editorPane, editorPaneProc, 1, reinterpret_cast<DWORD_PTR>(st));
+    for (HWND label : {st->nameLabel, st->machineLabel, st->machine, st->leftLabel,
+                      st->rightLabel, st->opLabel, st->multiplierLabel, st->toleranceLabel,
+                      st->modeLabel, st->preview,
+                      st->rulesTitle})
+      SetWindowLongPtrW(label, GWL_STYLE,
+                       (GetWindowLongPtrW(label, GWL_STYLE) & ~SS_TYPEMASK) | SS_LEFT | SS_NOPREFIX);
+    SetWindowLongPtrW(st->machine, GWL_STYLE,
+                     GetWindowLongPtrW(st->machine, GWL_STYLE) | SS_ENDELLIPSIS);
+    for (HWND control : {st->nameLabel, st->machineLabel, st->machine, st->machineButton,
+                         st->leftLabel, st->rightLabel, st->opLabel, st->name, st->left,
+                         st->right, st->op, st->valueMode, st->value, st->multiplierLabel,
+                         st->multiplier, st->toleranceLabel, st->tolerance,
+                         st->modeLabel, st->preview, st->newRule,
+                         st->save, st->del, st->rulesTitle, st->rulesList})
+      SetParent(control, st->editorPane);
+    for (HWND control : {st->machineButton, st->name, st->valueMode, st->left,
+                         st->right, st->value, st->multiplier, st->tolerance, st->op,
+                         st->save, st->newRule, st->del, st->rulesList})
+      SetWindowPos(control, HWND_BOTTOM, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     search::apply_font_to_children(hwnd, st->ctx.uiFont);
     fillItems(st);
     applyRuleEditorVisibility(st);
@@ -1823,14 +2033,51 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       layout(hwnd, st);
     }
     return 0;
-  case WM_COMMAND:
+  case WM_COMMAND: {
     if (!st)
       break;
+    wchar_t controlClass[32]{};
+    if (lp) GetClassNameW(reinterpret_cast<HWND>(lp), controlClass, 32);
+    const bool comboFocused = _wcsicmp(controlClass, L"ComboBox") == 0 && HIWORD(wp) == CBN_SETFOCUS;
+    const bool editFocused = _wcsicmp(controlClass, L"Edit") == 0 && HIWORD(wp) == EN_SETFOCUS;
+    // Focus notifications are not button actions. Opening the picker transfers
+    // focus and must not recursively open it again on BN_KILLFOCUS.
+    if (_wcsicmp(controlClass, L"Button") == 0 && HIWORD(wp) != BN_CLICKED)
+      return 0;
+    if (lp && st->rulesExpanded && GetParent(reinterpret_cast<HWND>(lp)) == st->editorPane &&
+        (comboFocused || editFocused)) {
+      RECT fieldRect{}, paneRect{};
+      GetWindowRect(reinterpret_cast<HWND>(lp), &fieldRect);
+      MapWindowPoints(nullptr, st->editorPane, reinterpret_cast<POINT *>(&fieldRect), 2);
+      GetClientRect(st->editorPane, &paneRect);
+      // Combo window bounds include the dropdown; scroll only its edit/header.
+      const int visibleH = comboFocused
+                               ? static_cast<int>(SendMessageW(reinterpret_cast<HWND>(lp), CB_GETITEMHEIGHT, static_cast<WPARAM>(-1), 0)) +
+                                     static_cast<int>(8 * search::dpi_scale_factor(hwnd))
+                               : static_cast<int>(fieldRect.bottom - fieldRect.top);
+      if (fieldRect.top < 0)
+        st->editorScroll = (std::max)(0, st->editorScroll + static_cast<int>(fieldRect.top));
+      else if (fieldRect.top + visibleH > paneRect.bottom)
+        st->editorScroll += fieldRect.top + visibleH - paneRect.bottom;
+      if (GetScrollPos(st->editorPane, SB_VERT) != st->editorScroll)
+        layout(hwnd, st);
+      return 0;
+    }
     if ((LOWORD(wp) == IDC_LEFT || LOWORD(wp) == IDC_RIGHT) &&
         (HIWORD(wp) == CBN_EDITCHANGE || HIWORD(wp) == CBN_KILLFOCUS)) {
       autoMatchItemCode(st, reinterpret_cast<HWND>(lp),
                         LOWORD(wp) == IDC_LEFT ? L"项目 A" : L"项目 B",
                         HIWORD(wp) == CBN_KILLFOCUS);
+      updateRulePreview(st);
+      layout(hwnd, st);
+      return 0;
+    }
+    if (((LOWORD(wp) == IDC_LEFT || LOWORD(wp) == IDC_RIGHT || LOWORD(wp) == IDC_OP) &&
+         HIWORD(wp) == CBN_SELCHANGE) ||
+        ((LOWORD(wp) == IDC_VALUE || LOWORD(wp) == IDC_MULTIPLIER || LOWORD(wp) == IDC_TOLERANCE) &&
+         HIWORD(wp) == EN_CHANGE)) {
+      updateRulePreview(st);
+      if (st->editorPane) layout(hwnd, st);
       return 0;
     }
     if (LOWORD(wp) == IDC_ALERT_SEARCH && HIWORD(wp) == EN_CHANGE) {
@@ -1849,8 +2096,8 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       layout(hwnd, st);
       return 0;
     case IDC_VALUE_MODE:
-      st->valueModeChecked =
-          SendMessageW(st->valueMode, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      if (HIWORD(wp) != CBN_SELCHANGE) return 0;
+      st->valueModeChecked = comboSelection(st->valueMode) == 1;
       applyRuleEditorVisibility(st);
       layout(hwnd, st);
       return 0;
@@ -1858,6 +2105,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       clearEditor(st);
       return 0;
     case IDC_MACHINE: {
+      if (HIWORD(wp) != BN_CLICKED) return 0;
       search::MachinePickerPopupOptions options;
       options.owner = hwnd;
       options.anchor = st->machineButton;
@@ -1908,21 +2156,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     }
-    case IDC_TOGGLE: {
-      int x = selected(st->rulesList);
-      if (x >= 0 && x < static_cast<int>(st->rules.size())) {
-        std::string e;
-        if (!scheduled_check::set_rule_enabled(st->rules[x].id,
-                                               !st->rules[x].enabled, e)) {
-          MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
-          return 0;
-        }
-        refresh(st);
-        updateReminder();
-        run_scheduled_result_check_now();
-      }
-      return 0;
-    }
     case IDC_SCAN:
       if (st->progress)
         ShowWindow(st->progress, SW_SHOW);
@@ -1966,6 +2199,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     }
     break;
+  }
   case WM_NOTIFY:
     if (st) {
       auto *n = reinterpret_cast<NMHDR *>(lp);

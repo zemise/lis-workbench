@@ -68,6 +68,34 @@ bool compare_numbers(double left, const std::string &op, double right) {
   return false;
 }
 
+bool compare_with_tolerance(double left, const std::string &op, double target,
+                            double percent) {
+  if (!std::isfinite(left) || !std::isfinite(target) ||
+      !std::isfinite(percent) || percent < 0.0 || percent > 100.0)
+    return false;
+  if (percent == 0.0)
+    return compare_numbers(left, op, target);
+  const double delta = std::fabs(target) * (percent / 100.0);
+  const double lower = target - delta, upper = target + delta;
+  if (!std::isfinite(lower) || !std::isfinite(upper))
+    return false;
+  const bool below = compare_numbers(left, "<", lower);
+  const bool above = compare_numbers(left, ">", upper);
+  if (op == "=")
+    return !below && !above;
+  if (op == "!=")
+    return below || above;
+  if (op == ">")
+    return above;
+  if (op == "<")
+    return below;
+  if (op == ">=")
+    return !below;
+  if (op == "<=")
+    return !above;
+  return false;
+}
+
 std::string item_display_name(const std::string &english,
                               const std::string &chinese,
                               const std::string &code) {
@@ -100,11 +128,15 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
   for (const auto &rule : rules) {
     if (!rule.enabled || rule.left_item_code.empty())
       continue;
-    double threshold = 0.0;
+    double threshold = 0.0, multiplier = 1.0, percent = 0.0;
     if (rule.compare_with_value) {
       if (!parse_number(rule.right_value_text, threshold))
         continue;
-    } else if (rule.right_item_code.empty()) {
+    } else if (rule.right_item_code.empty() ||
+               !parse_number(rule.right_multiplier_text, multiplier) ||
+               multiplier <= 0.0 ||
+               !parse_number(rule.tolerance_percent_text, percent) ||
+               percent < 0.0 || percent > 100.0) {
       continue;
     }
     for (const auto &report : reports) {
@@ -137,7 +169,11 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
           continue;
         }
       }
-      if (!compare_numbers(leftValue, rule.op, rightValue))
+      const double comparisonValue = rule.compare_with_value
+                                         ? rightValue
+                                         : rightValue * multiplier;
+      if (!std::isfinite(comparisonValue) ||
+          !compare_with_tolerance(leftValue, rule.op, comparisonValue, percent))
         continue;
       Match match;
       match.rule_id = rule.id;
@@ -158,6 +194,10 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
       match.left_value = leftValue;
       match.op = rule.op;
       match.compare_with_value = rule.compare_with_value;
+      if (!rule.compare_with_value) {
+        match.right_multiplier_text = trim(rule.right_multiplier_text);
+        match.tolerance_percent_text = trim(rule.tolerance_percent_text);
+      }
       if (rule.compare_with_value) {
         match.right_result_text = trim(rule.right_value_text);
         match.right_value = threshold;

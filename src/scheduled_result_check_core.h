@@ -24,6 +24,10 @@ struct Rule {
   // right_item_* fields are ignored.
   bool compare_with_value = false;
   std::string right_value_text;
+  // Compare A with B * multiplier; ignored for literal thresholds.
+  std::string right_multiplier_text = "1";
+  // Relative percent of |B * multiplier|; literal mode ignores this field.
+  std::string tolerance_percent_text = "0";
   std::string created_at;
   std::string updated_at;
 };
@@ -67,11 +71,20 @@ struct Match {
   // Mirrors Rule::compare_with_value so UI/notification rendering can show a
   // threshold as "项目A 结果 > 5.0" instead of "项目A 结果 >  5.0".
   bool compare_with_value = false;
+  // Preserve the rule multiplier and raw B result for historical rendering.
+  std::string right_multiplier_text = "1";
+  // Relative percent of |B * multiplier|; literal mode ignores this field.
+  std::string tolerance_percent_text = "0";
   std::string fingerprint;
 };
 
 bool parse_number(const std::string &text, double &value);
 bool compare_numbers(double left, const std::string &op, double right);
+// Inclusive band [target - |target| * percent / 100, target + ...].
+// = inside, != outside, > above upper, < below lower, >= at/above lower,
+// <= at/below upper. Zero percent preserves the original comparison.
+bool compare_with_tolerance(double left, const std::string &op, double target,
+                            double percent);
 std::string item_display_name(const std::string &english,
                               const std::string &chinese,
                               const std::string &code);

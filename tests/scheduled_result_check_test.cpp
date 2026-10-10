@@ -1,6 +1,7 @@
 #include "scheduled_result_check_core.h"
 
 #include <iostream>
+#include <limits>
 
 #define CHECK(x)                                                               \
   do {                                                                         \
@@ -104,6 +105,115 @@ int main() {
   matches = scheduled_check::evaluate({rule}, rows, &skipped);
   CHECK(matches.empty() && skipped == 1);
 
+  // A op (B * multiplier): boundaries, raw result snapshots, and all operators.
+  auto scaledRows = std::vector<scheduled_check::ResultRow>{rows[0], rows[1]};
+  scaledRows[0].result = "20";
+  scaledRows[1].result = "5";
+  rule.right_multiplier_text = "4";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  rule.op = ">=";
+  matches = scheduled_check::evaluate({rule}, scaledRows);
+  CHECK(matches.size() == 1 && matches[0].right_multiplier_text == "4" &&
+        matches[0].right_result_text == "5" && matches[0].right_value == 5.0);
+  rule.op = "=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  rule.op = "<=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  rule.op = "!=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  scaledRows[0].result = "20.1";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  rule.op = ">";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  scaledRows[0].result = "19.9";
+  rule.op = "<";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  rule.right_multiplier_text = "0.5";
+  scaledRows[0].result = "2.5";
+  rule.op = "=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  CHECK(!scheduled_check::needs_result_followup({rule}, scaledRows));
+  CHECK(scheduled_check::needs_result_followup({rule}, {scaledRows[0]}));
+  scaledRows[1].rep_no = "R2";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  scaledRows[1].rep_no = "R1";
+  scaledRows[1].result = "<5";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows, &skipped).empty() && skipped == 1);
+  scaledRows[1].result = "5";
+  for (const char *invalid : {"", "0", "-4", "nan", "inf", "4倍", "1e999"}) {
+    rule.right_multiplier_text = invalid;
+    CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  }
+  rule.right_multiplier_text = "1e308"; // Overflow must never produce a match.
+  rule.op = "!=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  rule.right_multiplier_text = "4";
+  scaledRows[0].result = "0";
+  scaledRows[1].result = "0";
+  rule.op = "=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  scaledRows[0].result = "-8";
+  scaledRows[1].result = "-2";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+
+  // Relative error uses the target, not the left result; edges are inclusive.
+  rule.op = "!=";
+  rule.right_multiplier_text = "3";
+  rule.tolerance_percent_text = "3";
+  scaledRows[1].result = "5"; // target 15, inclusive range 14.55..15.45
+  scaledRows[0].result = "15";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  scaledRows[0].result = "14.55";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  scaledRows[0].result = "15.45";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  scaledRows[0].result = "15.451";
+  matches = scheduled_check::evaluate({rule}, scaledRows);
+  CHECK(matches.size() == 1 && matches[0].tolerance_percent_text == "3" &&
+        matches[0].right_result_text == "5" && matches[0].right_value == 5.0);
+  scaledRows[0].result = "14.549";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  for (const char *invalid : {"", "-3", "100.1", "nan", "inf", "3%"}) {
+    rule.tolerance_percent_text = invalid;
+    CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  }
+  rule.tolerance_percent_text = "0";
+  scaledRows[0].result = "15.1";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+  rule.tolerance_percent_text = "3";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).empty());
+  rule.op = "=";
+  CHECK(scheduled_check::evaluate({rule}, scaledRows).size() == 1);
+
+  using scheduled_check::compare_with_tolerance;
+  CHECK(compare_with_tolerance(103.0, "=", 100.0, 3.0));
+  CHECK(compare_with_tolerance(97.0, "=", 100.0, 3.0));
+  CHECK(!compare_with_tolerance(103.0, ">", 100.0, 3.0));
+  CHECK(compare_with_tolerance(103.001, ">", 100.0, 3.0));
+  CHECK(!compare_with_tolerance(97.0, "<", 100.0, 3.0));
+  CHECK(compare_with_tolerance(96.999, "<", 100.0, 3.0));
+  CHECK(compare_with_tolerance(97.0, ">=", 100.0, 3.0));
+  CHECK(!compare_with_tolerance(96.999, ">=", 100.0, 3.0));
+  CHECK(compare_with_tolerance(103.0, "<=", 100.0, 3.0));
+  CHECK(!compare_with_tolerance(103.001, "<=", 100.0, 3.0));
+  CHECK(compare_with_tolerance(-103.0, "=", -100.0, 3.0));
+  CHECK(compare_with_tolerance(-97.0, "=", -100.0, 3.0));
+  CHECK(compare_with_tolerance(-96.999, ">", -100.0, 3.0));
+  CHECK(compare_with_tolerance(0.0, "=", 0.0, 3.0));
+  CHECK(compare_with_tolerance(0.001, "!=", 0.0, 3.0));
+  CHECK(compare_with_tolerance(100.5, "=", 100.0, 0.5));
+  CHECK(!compare_with_tolerance(100.501, "=", 100.0, 0.5));
+  CHECK(compare_with_tolerance(200.0, "=", 100.0, 100.0));
+  CHECK(!compare_with_tolerance(1.0, "unknown", 1.0, 3.0));
+  CHECK(!compare_with_tolerance(1.0, "!=", 1.0, -1.0));
+  CHECK(!compare_with_tolerance(1.0, "!=", 1.0, 101.0));
+  CHECK(!compare_with_tolerance(1.0, "!=", std::numeric_limits<double>::infinity(), 3.0));
+  CHECK(!compare_with_tolerance(1.0, "!=", 1.0, std::numeric_limits<double>::quiet_NaN()));
+  CHECK(!compare_with_tolerance(1.0, "!=", std::numeric_limits<double>::max(), 100.0));
+  for (const char *op : {">", ">=", "<", "<=", "=", "!="})
+    CHECK(compare_with_tolerance(2.0, op, 1.0, 0.0) ==
+          scheduled_check::compare_numbers(2.0, op, 1.0));
+
   scheduled_check::Rule thresholdRule;
   thresholdRule.id = 8;
   thresholdRule.name = "A大于5";
@@ -112,6 +222,8 @@ int main() {
   thresholdRule.op = ">";
   thresholdRule.compare_with_value = true;
   thresholdRule.right_value_text = "5.0";
+  thresholdRule.tolerance_percent_text = "invalid"; // Literal mode ignores error band.
+  thresholdRule.right_multiplier_text = "invalid"; // Literal mode ignores multiplier.
   std::vector<scheduled_check::ResultRow> valueRows(2);
   valueRows[0].entry_id = "1";
   valueRows[0].rep_no = "R1";
