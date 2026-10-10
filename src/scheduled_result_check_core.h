@@ -5,6 +5,8 @@
 
 namespace scheduled_check {
 
+enum class ConditionJoin { legacy = 0, all = 1, any = 2 };
+
 struct Condition {
   std::string left_item_code;
   std::string left_item_name;
@@ -22,6 +24,8 @@ struct Condition {
   // Relative percent of |B * multiplier|; literal mode ignores this field.
   std::string tolerance_percent_text = "0";
   bool negate = false;
+  // Connector before this row; first row ignores it. Legacy uses Rule::match_any.
+  ConditionJoin join = ConditionJoin::legacy;
 };
 
 // The inherited condition is the first row, preserving legacy rule fields.
@@ -98,6 +102,8 @@ bool compare_with_tolerance(double left, const std::string &op, double target,
                             double percent);
 bool validate_condition(const Condition &condition, std::string &error);
 std::string condition_description(const Condition &condition);
+bool joins_with_or(const Rule &rule, const Condition &condition);
+std::string rule_description(const Rule &rule);
 std::vector<Condition> rule_conditions(const Rule &rule);
 std::vector<std::string> rule_item_codes(const Rule &rule);
 // Versioned length-prefixed persistence; empty data means a legacy rule.

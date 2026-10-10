@@ -320,6 +320,9 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
     error = sqlite3_errmsg(db);
     return false;
   }
+  Rule persisted = rule;
+  const bool groupCurrent = deserialize_condition_group(text(statement.p, 16), persisted) &&
+                            serialize_condition_group(persisted) == serialize_condition_group(rule);
   current = sqlite3_column_int(statement.p, 0) != 0 &&
             text(statement.p, 1) == rule.name &&
             text(statement.p, 2) == rule.left_item_code &&
@@ -337,7 +340,7 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
             text(statement.p, 13) == rule.mach_name &&
             text(statement.p, 14) == rule.right_multiplier_text &&
             text(statement.p, 15) == rule.tolerance_percent_text &&
-            text(statement.p, 16) == serialize_condition_group(rule);
+            groupCurrent;
   return true;
 }
 

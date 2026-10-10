@@ -273,7 +273,7 @@ int main() {
   }
   matches = scheduled_check::evaluate({group}, groupRows);
   CHECK(matches.size() == 1);
-  CHECK(matches[0].condition_summary.find("满足全部") != std::string::npos);
+  CHECK(matches[0].condition_summary.find("；并 ") != std::string::npos);
   CHECK(matches[0].condition_item_codes == "Hb\nMCV\nRBC");
   CHECK(matches[0].left_item_code == "Hb" && matches[0].right_result_text == "5");
   const std::string firstGroupFingerprint = matches[0].fingerprint;
@@ -303,7 +303,7 @@ int main() {
   group.match_any = true;
   matches = scheduled_check::evaluate({group}, groupRows);
   CHECK(matches.size() == 1 && matches[0].condition_summary.find("无法判断") != std::string::npos);
-  CHECK(matches[0].condition_summary.find("满足任一") != std::string::npos);
+  CHECK(matches[0].condition_summary.find("；或 ") != std::string::npos);
   CHECK(scheduled_check::evaluate({group}, {groupRows[0], groupRows[1]}).size() == 1);
   groupRows[0].result = "15"; // First condition false; later condition decides OR.
   groupRows[2].result = "90";
@@ -343,7 +343,7 @@ int main() {
   CHECK(scheduled_check::rule_item_codes(decoded) == scheduled_check::rule_item_codes(group));
   CHECK(!scheduled_check::deserialize_condition_group(encoded + "x", decoded));
   CHECK(!scheduled_check::deserialize_condition_group(encoded.substr(0, encoded.size() - 1), decoded));
-  CHECK(!scheduled_check::deserialize_condition_group("2:0:0:0:", decoded));
+  CHECK(!scheduled_check::deserialize_condition_group("3:0:0:0:", decoded));
   CHECK(!scheduled_check::deserialize_condition_group("1:2:0:0:", decoded));
   CHECK(!scheduled_check::deserialize_condition_group("1:0:0:64:", decoded));
   CHECK(!scheduled_check::deserialize_condition_group("1:0:0:1:99999999999999999:x", decoded));
@@ -355,6 +355,78 @@ int main() {
   group.negate = true; group.right_multiplier_text = "1e308";
   groupRows[0].result = "1"; groupRows[1].result = "2";
   CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+
+  // Mixed connectors: AND / AND NOT bind more tightly than OR.
+  scheduled_check::Rule mixed;
+  mixed.id = 9;
+  mixed.left_item_code = "A"; mixed.op = ">";
+  mixed.compare_with_value = true; mixed.right_value_text = "0";
+  scheduled_check::Condition b = mixed, c = mixed;
+  b.left_item_code = "B"; b.join = scheduled_check::ConditionJoin::any;
+  c.left_item_code = "C"; c.join = scheduled_check::ConditionJoin::all;
+  mixed.extra_conditions = {b, c};
+  std::vector<scheduled_check::ResultRow> mixedRows(3);
+  for (int i = 0; i < 3; ++i) {
+    mixedRows[i].rep_no = "M1"; mixedRows[i].item_code = std::string(1, 'A' + i);
+    mixedRows[i].entry_id = std::to_string(i + 1); mixedRows[i].result = "1";
+  }
+  mixedRows[0].result = "0"; mixedRows[2].result = "0";
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).empty()); // A OR (B AND C).
+  mixedRows[0].result = "1";
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).size() == 1); // A wins independently.
+  mixedRows[0].result = "0";
+  mixed.extra_conditions[1].negate = true;
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).size() == 1); // A OR (B AND NOT C).
+  mixedRows[2].result = "阴性";
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).empty()); // NOT unknown remains unknown.
+  mixedRows[0].result = "1";
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).size() == 1);
+  mixed.extra_conditions[0].join = scheduled_check::ConditionJoin::all;
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).empty());
+  mixed.extra_conditions[1].join = scheduled_check::ConditionJoin::any;
+  mixed.extra_conditions[1].negate = false;
+  mixedRows[0].result = "0"; mixedRows[2].result = "1";
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).size() == 1); // (A AND B) OR C.
+  for (int mask = 0; mask < 8; ++mask) {
+    const bool av = (mask & 1) != 0, bv = (mask & 2) != 0, cv = (mask & 4) != 0;
+    mixedRows[0].result = av ? "1" : "0";
+    mixedRows[1].result = bv ? "1" : "0";
+    mixedRows[2].result = cv ? "1" : "0";
+    mixed.extra_conditions[0].join = scheduled_check::ConditionJoin::any;
+    mixed.extra_conditions[1].join = scheduled_check::ConditionJoin::all;
+    mixed.extra_conditions[1].negate = false;
+    CHECK(!scheduled_check::evaluate({mixed}, mixedRows).empty() == (av || (bv && cv)));
+    mixed.extra_conditions[1].negate = true;
+    CHECK(!scheduled_check::evaluate({mixed}, mixedRows).empty() == (av || (bv && !cv)));
+    mixed.extra_conditions[0].join = scheduled_check::ConditionJoin::all;
+    mixed.extra_conditions[1].join = scheduled_check::ConditionJoin::any;
+    mixed.extra_conditions[1].negate = false;
+    const auto combinedMatches = scheduled_check::evaluate({mixed}, mixedRows);
+    CHECK(!combinedMatches.empty() == ((av && bv) || cv));
+    if (av && !bv && cv) CHECK(combinedMatches[0].left_item_code == "C");
+  }
+  const auto mixedEncoded = scheduled_check::serialize_condition_group(mixed);
+  scheduled_check::Rule mixedDecoded = mixed;
+  CHECK(scheduled_check::deserialize_condition_group(mixedEncoded, mixedDecoded));
+  CHECK(scheduled_check::serialize_condition_group(mixedDecoded) == mixedEncoded);
+  CHECK(mixedDecoded.extra_conditions[0].join == scheduled_check::ConditionJoin::all);
+  CHECK(mixedDecoded.extra_conditions[1].join == scheduled_check::ConditionJoin::any);
+  CHECK(scheduled_check::rule_description(mixedDecoded).find(" 或 ") != std::string::npos);
+  auto invalidJoin = mixedEncoded;
+  invalidJoin.back() = '9';
+  CHECK(!scheduled_check::deserialize_condition_group(invalidJoin, mixedDecoded));
+  // Version 1 omitted per-row connectors: retain the old group mode and NOT.
+  auto legacyEncoded = encoded;
+  legacyEncoded[0] = '1';
+  legacyEncoded.resize(legacyEncoded.size() - 3); // Last field: 1:0 (legacy connector).
+  CHECK(scheduled_check::deserialize_condition_group(legacyEncoded, decoded));
+  CHECK(decoded.match_any && decoded.negate && decoded.extra_conditions[0].negate);
+  CHECK(decoded.extra_conditions[0].join == scheduled_check::ConditionJoin::legacy);
+  CHECK(scheduled_check::joins_with_or(decoded, decoded.extra_conditions[0]));
+  mixed.extra_conditions[0].join = static_cast<scheduled_check::ConditionJoin>(9);
+  std::string joinError;
+  CHECK(!scheduled_check::validate_condition(mixed.extra_conditions[0], joinError));
+  CHECK(scheduled_check::evaluate({mixed}, mixedRows).empty());
 
   std::cout << "scheduled result check tests passed\n";
   return 0;

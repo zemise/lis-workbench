@@ -108,6 +108,10 @@ std::string item_display_name(const std::string &english,
 
 bool validate_condition(const Condition &c, std::string &error) {
   double value = 0.0;
+  if (c.join != ConditionJoin::legacy && c.join != ConditionJoin::all && c.join != ConditionJoin::any) {
+    error = "无效的条件连接关系";
+    return false;
+  }
   if (c.left_item_code.empty() ||
       (c.op != ">" && c.op != ">=" && c.op != "<" && c.op != "<=" &&
        c.op != "=" && c.op != "!=")) {
@@ -168,10 +172,25 @@ std::vector<std::string> rule_item_codes(const Rule &rule) {
   return result;
 }
 
+bool joins_with_or(const Rule &rule, const Condition &condition) {
+  return condition.join == ConditionJoin::any ||
+         (condition.join == ConditionJoin::legacy && rule.match_any);
+}
+
+std::string rule_description(const Rule &rule) {
+  std::string result;
+  const auto conditions = rule_conditions(rule);
+  for (size_t i = 0; i < conditions.size(); ++i) {
+    if (i) result += joins_with_or(rule, conditions[i]) ? " 或 " : " 并 ";
+    result += condition_description(conditions[i]);
+  }
+  return result;
+}
+
 std::string serialize_condition_group(const Rule &rule) {
   if (!rule.negate && !rule.match_any && rule.extra_conditions.empty()) return {};
   std::ostringstream out;
-  out << "1:" << rule.match_any << ':' << rule.negate << ':' << rule.extra_conditions.size() << ':';
+  out << "2:" << rule.match_any << ':' << rule.negate << ':' << rule.extra_conditions.size() << ':';
   const auto field = [&out](const std::string &value) {
     out << value.size() << ':' << value;
   };
@@ -180,13 +199,17 @@ std::string serialize_condition_group(const Rule &rule) {
     field(c.op); field(c.right_item_code); field(c.right_item_name); field(c.right_item_unit);
     field(c.compare_with_value ? "1" : "0"); field(c.right_value_text);
     field(c.right_multiplier_text); field(c.tolerance_percent_text); field(c.negate ? "1" : "0");
+    field(std::to_string(static_cast<int>(c.join)));
   }
   return out.str();
 }
 
 bool deserialize_condition_group(const std::string &data, Rule &rule) {
   Rule decoded = rule;
-  decoded.match_any = false; decoded.negate = false; decoded.extra_conditions.clear();
+  decoded.match_any = false;
+  decoded.negate = false;
+  decoded.join = ConditionJoin::legacy;
+  decoded.extra_conditions.clear();
   if (data.empty()) { rule = std::move(decoded); return true; }
   size_t pos = 0;
   const auto number = [&data, &pos](size_t &n) {
@@ -205,7 +228,7 @@ bool deserialize_condition_group(const std::string &data, Rule &rule) {
     value = data.substr(pos, n); pos += n; return true;
   };
   size_t version = 0, any = 0, negate = 0, count = 0;
-  if (!number(version) || version != 1 || !number(any) || any > 1 ||
+  if (!number(version) || (version != 1 && version != 2) || !number(any) || any > 1 ||
       !number(negate) || negate > 1 || !number(count) || count > 63) return false;
   decoded.match_any = any != 0; decoded.negate = negate != 0;
   for (size_t i = 0; i < count; ++i) {
@@ -216,6 +239,11 @@ bool deserialize_condition_group(const std::string &data, Rule &rule) {
         !field(c.right_item_unit) || !field(literal) || !field(c.right_value_text) ||
         !field(c.right_multiplier_text) || !field(c.tolerance_percent_text) || !field(inverted) ||
         (literal != "0" && literal != "1") || (inverted != "0" && inverted != "1")) return false;
+    if (version == 2) {
+      std::string join;
+      if (!field(join) || (join != "0" && join != "1" && join != "2")) return false;
+      c.join = static_cast<ConditionJoin>(join[0] - '0');
+    }
     c.compare_with_value = literal == "1"; c.negate = inverted == "1";
     decoded.extra_conditions.push_back(std::move(c));
   }
@@ -227,6 +255,14 @@ bool deserialize_condition_group(const std::string &data, Rule &rule) {
 namespace {
 using Results = std::map<std::string, ResultRow>;
 enum class Truth { unknown, no, yes };
+Truth conjunction(Truth a, Truth b) {
+  if (a == Truth::no || b == Truth::no) return Truth::no;
+  return a == Truth::yes && b == Truth::yes ? Truth::yes : Truth::unknown;
+}
+Truth disjunction(Truth a, Truth b) {
+  if (a == Truth::yes || b == Truth::yes) return Truth::yes;
+  return a == Truth::no && b == Truth::no ? Truth::no : Truth::unknown;
+}
 
 void select_result(Results &results, const ResultRow &row) {
   auto &selected = results[row.item_code];
@@ -297,17 +333,29 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
     if (conditions.size() > 64 || std::any_of(conditions.begin(), conditions.end(),
         [&error](const Condition &c) { return !validate_condition(c, error); })) continue;
     for (const auto &report : reports) {
-      bool any = false, all = true;
+      bool hasRepresentative = false;
+      Truth completed = Truth::no, term = Truth::unknown;
       Match representative;
       std::ostringstream summary, groupFingerprint;
-      summary << (rule.match_any ? "满足任一：" : "满足全部：");
+      summary << "条件：";
       for (size_t i = 0; i < conditions.size(); ++i) {
         Match m;
         const auto state = evaluate_condition(conditions[i], rule, report.second, m, skipped_non_numeric);
-        if (state == Truth::yes && !any) representative = m;
-        any = any || state == Truth::yes;
-        all = all && state == Truth::yes;
-        if (i) summary << "；";
+        // AND (including AND NOT) binds more tightly than OR.
+        if (!i) {
+          term = state;
+        } else if (joins_with_or(rule, conditions[i])) {
+          completed = disjunction(completed, term);
+          term = state;
+          if (completed != Truth::yes) hasRepresentative = false;
+        } else {
+          term = conjunction(term, state);
+        }
+        if (state == Truth::yes && !hasRepresentative) {
+          representative = m;
+          hasRepresentative = true;
+        }
+        if (i) summary << (joins_with_or(rule, conditions[i]) ? "；或 " : "；并 ");
         summary << condition_description(conditions[i]) << " ["
                 << (state == Truth::unknown ? "无法判断" : state == Truth::yes ? "满足" : "不满足");
         const auto raw = [&report](const std::string &code) {
@@ -327,7 +375,7 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
           groupFingerprint << value.size() << ':' << value;
         }
       }
-      if (!(rule.match_any ? any : all)) continue;
+      if (disjunction(completed, term) != Truth::yes) continue;
       representative.fingerprint = fingerprint(representative);
       if (conditions.size() > 1 || rule.negate || rule.match_any) {
         representative.condition_summary = summary.str();

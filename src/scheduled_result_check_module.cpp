@@ -60,9 +60,9 @@ constexpr int IDC_NEW = 8113, IDC_VALUE_MODE = 8115,
               IDC_VALUE = 8116, IDC_MACHINE = 8117, IDC_ALERT_SEARCH = 8118,
               IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121,
               IDC_MULTIPLIER = 8122, IDC_TOLERANCE = 8123,
-              IDC_GROUP_MODE = 8124, IDC_ADD_CONDITION = 8126,
+              IDC_ADD_CONDITION = 8126,
               IDC_REMOVE_CONDITION = 8127,
-              IDC_ROW_OPTIONS = 8129, IDC_ROW_MORE = 8130, IDC_EDIT_RULE = 8131, IDC_BACK = 8132;
+              IDC_ROW_OPTIONS = 8129, IDC_ROW_JOIN = 8130, IDC_EDIT_RULE = 8131, IDC_BACK = 8132;
 
 // Each condition row and the persisted operator use the same stable order.
 struct ComparisonOption {
@@ -110,7 +110,7 @@ HWND g_page = nullptr;
 struct ConditionRow {
   scheduled_check::Condition data;
   HWND number = nullptr, left = nullptr, op = nullptr, kind = nullptr,
-       right = nullptr, value = nullptr, options = nullptr, more = nullptr,
+       right = nullptr, value = nullptr, options = nullptr, joiner = nullptr,
        remove = nullptr, multiplierLabel = nullptr, multiplier = nullptr,
        toleranceLabel = nullptr, tolerance = nullptr, separator = nullptr;
   std::string leftDraft, rightDraft;
@@ -125,8 +125,8 @@ struct State {
        editRule = nullptr, back = nullptr, scan = nullptr,
        machine = nullptr, machineButton = nullptr;
   HWND ruleDialog = nullptr, formPane = nullptr, dialogStatus = nullptr;
-  HWND rulesPane = nullptr, groupPrefix = nullptr, groupSuffix = nullptr;
-  HWND groupMode = nullptr, addCondition = nullptr;
+  HWND rulesPane = nullptr;
+  HWND addCondition = nullptr;
   std::vector<ConditionRow> conditionRows;
   int editingRuleId = 0;
   bool editing = false;
@@ -1165,13 +1165,8 @@ void loadRules(State *st) {
     setItem(st->rulesList, i, 0, r.enabled ? L"启用" : L"停用");
     setItem(st->rulesList, i, 1, w(r.name));
     setItem(st->rulesList, i, 2, r.mach_code.empty() ? L"未限定（旧规则）" : w(r.mach_name));
-    std::string summary = std::string(r.match_any ? "任一 · " : "全部 · ") +
-                          std::to_string(r.extra_conditions.size() + 1) + " 条：";
-    const auto conditions = scheduled_check::rule_conditions(r);
-    for (size_t index = 0; index < conditions.size(); ++index) {
-      if (index) summary += "；";
-      summary += scheduled_check::condition_description(conditions[index]);
-    }
+    const std::string summary = std::to_string(r.extra_conditions.size() + 1) +
+                                " 条：" + scheduled_check::rule_description(r);
     setItem(st->rulesList, i, 3, w(summary));
     ListView_SetCheckState(st->rulesList, static_cast<int>(i), r.enabled);
   }
@@ -1328,7 +1323,7 @@ int resolveItem(State *st, HWND combo) {
 }
 std::array<HWND, 14> rowControls(const ConditionRow &row) {
   return {row.number, row.left, row.op, row.kind, row.right, row.value,
-          row.options, row.more, row.remove, row.multiplierLabel, row.multiplier,
+          row.options, row.joiner, row.remove, row.multiplierLabel, row.multiplier,
           row.toleranceLabel, row.tolerance, row.separator};
 }
 
@@ -1343,6 +1338,13 @@ void rememberRow(State *st, ConditionRow &row) {
   row.rightDraft = draft(row.right, row.rightDraft);
   const int op = comboSelection(row.op);
   row.data.op = op >= 0 && op < COMPARISON_COUNT ? COMPARISONS[op].op : "";
+  if (!st->conditionRows.empty() && &row != &st->conditionRows.front()) {
+    const int connection = comboSelection(row.joiner);
+    row.data.join = connection == 1 || connection == 3
+                        ? scheduled_check::ConditionJoin::any
+                        : scheduled_check::ConditionJoin::all;
+    row.data.negate = connection == 2 || connection == 3;
+  }
   row.data.compare_with_value = comboSelection(row.kind) == 1;
   row.data.right_value_text = search::trim(windowText(row.value));
   row.data.right_multiplier_text = search::trim(windowText(row.multiplier));
@@ -1383,10 +1385,10 @@ void orderEditorControls(State *st) {
     SetWindowPos(control, HWND_BOTTOM, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   };
-  for (HWND control : {st->machineButton, st->name, st->groupMode}) last(control);
+  for (HWND control : {st->machineButton, st->name}) last(control);
   for (const auto &row : st->conditionRows)
-    for (HWND control : {row.left, row.op, row.kind, row.right, row.value,
-                        row.options, row.multiplier, row.tolerance, row.more, row.remove}) last(control);
+    for (HWND control : {row.joiner, row.left, row.op, row.kind, row.right, row.value,
+                        row.options, row.multiplier, row.tolerance, row.remove}) last(control);
   for (HWND control : {st->addCondition, st->save, st->back}) last(control);
 }
 
@@ -1505,7 +1507,14 @@ void appendConditionRow(State *st, const scheduled_check::Condition &condition =
   row.value = search::create_edit(parent, IDC_VALUE, 0, 0, 0, 0);
   SendMessageW(row.value, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"输入数值"));
   row.options = search::create_button(parent, IDC_ROW_OPTIONS, L"倍数 / 误差", 0, 0, 0, 0);
-  row.more = search::create_button(parent, IDC_ROW_MORE, L"更多", 0, 0, 0, 0);
+  row.joiner = search::create_combo(parent, IDC_ROW_JOIN, 0, 0, 0, 0, false);
+  for (const wchar_t *connection : {L"并", L"或", L"非"})
+    SendMessageW(row.joiner, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(connection));
+  // Only legacy OR + NOT needs the extra compatibility entry.
+  if (condition.join == scheduled_check::ConditionJoin::any && condition.negate)
+    SendMessageW(row.joiner, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"或非"));
+  const int connection = condition.join == scheduled_check::ConditionJoin::any ? (condition.negate ? 3 : 1) : (condition.negate ? 2 : 0);
+  SendMessageW(row.joiner, CB_SETCURSEL, connection, 0);
   row.remove = search::create_button(parent, IDC_REMOVE_CONDITION, L"删除", 0, 0, 0, 0);
   row.multiplierLabel = search::create_label(parent, L"倍数 ×", 0, 0, 0, 0);
   row.multiplier = search::create_edit(parent, IDC_MULTIPLIER, 0, 0, 0, 0);
@@ -1649,7 +1658,8 @@ void saveRule(HWND hwnd, State *st) {
   if (existing != st->rules.end()) rule = *existing;
   static_cast<scheduled_check::Condition &>(rule) = conditions.front();
   rule.extra_conditions.assign(conditions.begin() + 1, conditions.end());
-  rule.match_any = comboSelection(st->groupMode) == 1;
+  rule.match_any = false;
+  rule.join = scheduled_check::ConditionJoin::legacy;
   rule.room_code = st->roomCode;
   rule.mach_code = st->machCode;
   rule.mach_name = st->machName;
@@ -1657,7 +1667,7 @@ void saveRule(HWND hwnd, State *st) {
   if (rule.name.empty()) {
     rule.name = scheduled_check::condition_description(rule);
     if (!rule.extra_conditions.empty())
-      rule.name += std::string(rule.match_any ? " 等任一 " : " 等全部 ") +
+      rule.name += " 等 " +
                    std::to_string(conditions.size()) + " 条条件";
   }
   if (rule.id <= 0)
@@ -1687,9 +1697,11 @@ void selectRule(State *st) {
   SetWindowTextW(st->name, w(rule.name).c_str());
   st->roomCode = rule.room_code; st->machCode = rule.mach_code; st->machName = rule.mach_name;
   SetWindowTextW(st->machine, rule.mach_code.empty() ? L"未选择（旧规则）" : w(rule.mach_name).c_str());
-  SendMessageW(st->groupMode, CB_SETCURSEL, rule.match_any ? 1 : 0, 0);
   destroyConditionRows(st);
-  for (const auto &condition : scheduled_check::rule_conditions(rule)) appendConditionRow(st, condition);
+  for (auto condition : scheduled_check::rule_conditions(rule)) {
+    condition.join = scheduled_check::joins_with_or(rule, condition) ? scheduled_check::ConditionJoin::any : scheduled_check::ConditionJoin::all;
+    appendConditionRow(st, condition);
+  }
   loadMachineItems(g_page, st);
   applyRuleEditorVisibility(st);
   layout(g_page, st);
@@ -1705,7 +1717,6 @@ void clearEditor(State *st) {
   SetWindowTextW(st->name, L"");
   st->roomCode.clear(); st->machCode.clear(); st->machName.clear();
   SetWindowTextW(st->machine, L"未选择");
-  SendMessageW(st->groupMode, CB_SETCURSEL, 0, 0);
   destroyConditionRows(st);
   appendConditionRow(st);
   loadMachineItems(g_page, st);
@@ -1746,7 +1757,7 @@ void applyRuleEditorVisibility(State *st) {
   const bool list = st->rulesExpanded;
   const auto show = [](HWND control, bool visible) { ShowWindow(control, visible ? SW_SHOW : SW_HIDE); };
   for (HWND control : {st->nameLabel, st->machineLabel, st->machine, st->machineButton,
-                      st->name, st->groupMode, st->groupPrefix, st->groupSuffix,
+                      st->name,
                       st->addCondition, st->save, st->back}) show(control, form);
   for (HWND control : {st->newRule, st->editRule, st->del, st->rulesTitle, st->rulesList}) show(control, list);
   for (HWND control : {st->alertSearch, st->handled, st->handledAll, st->alertsTitle, st->alertsList})
@@ -1755,8 +1766,11 @@ void applyRuleEditorVisibility(State *st) {
   SetParent(st->scan, st->rulesExpanded ? st->rulesPane : g_page);
   show(st->scan, true);
   show(st->formPane, form);
-  for (auto &row : st->conditionRows) {
+  for (size_t index = 0; index < st->conditionRows.size(); ++index) {
+    auto &row = st->conditionRows[index];
     for (HWND control : rowControls(row)) show(control, form);
+    show(row.number, form && index == 0);
+    show(row.joiner, form && index != 0);
     show(row.right, form && !row.data.compare_with_value);
     show(row.value, form && row.data.compare_with_value);
     show(row.options, form && !row.data.compare_with_value);
@@ -1901,15 +1915,7 @@ void layoutRuleDialog(State *st) {
   place(st->nameLabel, wide ? rightX : 0, top, wide ? half : formW, titleH);
   place(st->name, wide ? rightX : 0, top + titleH + S(4), wide ? half : formW, controlH);
   top += fieldH + S(8);
-  const int prefixW = (std::max)(S(40), textH * 2 + S(8));
-  const int suffixW = (std::max)(S(70), textH * 3 + S(8));
-  const int groupW = (std::min)(S(175), formW - prefixW - suffixW - gap * 2);
-  place(st->groupPrefix, 0, top + S(4), prefixW, titleH);
-  place(st->groupMode, prefixW + gap, top, groupW, S(160));
-  place(st->groupSuffix, prefixW + gap * 2 + groupW, top + S(4), suffixW, titleH);
-  top += controlH + S(8);
-
-  int numberW = S(30);
+  int numberW = (std::max)(S(64), textH * 2 + GetSystemMetrics(SM_CXVSCROLL) + S(8));
   const int opW = (std::max)(S(60), textH * 2 + GetSystemMetrics(SM_CXVSCROLL) + S(8));
   for (const auto &row : st->conditionRows) {
     numberW = (std::max)(numberW, search::measure_control_text_width(hwnd, row.number, row.data.negate ? 75 : 30, 4));
@@ -1920,15 +1926,15 @@ void layoutRuleDialog(State *st) {
   for (auto &row : st->conditionRows) {
     const int kindW = (std::max)(S(76), textH * 3 + S(22));
     const int optionsW = (std::min)(formW / 2, search::measure_control_text_width(hwnd, row.options, 88, 12));
-    const int moreW = search::measure_control_text_width(hwnd, row.more, 44, 12);
     const int removeW = search::measure_control_text_width(hwnd, row.remove, 44, 12);
-    const int actions = (row.data.compare_with_value ? 0 : optionsW + gap) + moreW + removeW;
+    const int actions = (row.data.compare_with_value ? 0 : optionsW + gap) + removeW;
     const bool inlineRow = formW >= S(760) &&
-        formW >= numberW + opW + kindW + actions + gap * 6 + S(360);
+        formW >= numberW + opW + kindW + actions + gap * 5 + S(360);
     place(row.number, 0, top + S(4), numberW, titleH);
+    place(row.joiner, 0, top, numberW, S(150));
     if (inlineRow) {
       const int optionsSpace = row.data.compare_with_value ? 0 : optionsW + gap;
-      const int fieldsW = formW - numberW - opW - kindW - optionsSpace - moreW - removeW - gap * 6;
+      const int fieldsW = formW - numberW - opW - kindW - optionsSpace - removeW - gap * 5;
       const int leftW = fieldsW / 2;
       int x = numberW + gap;
       place(row.left, x, top, leftW, S(260)); x += leftW + gap;
@@ -1938,7 +1944,6 @@ void layoutRuleDialog(State *st) {
       place(row.right, x, top, targetW, S(260));
       place(row.value, x, top, targetW, controlH); x += targetW + gap;
       if (!row.data.compare_with_value) { place(row.options, x, top, optionsW, controlH); x += optionsW + gap; }
-      place(row.more, x, top, moreW, controlH); x += moreW + gap;
       place(row.remove, x, top, removeW, controlH);
       top += controlH + gap;
     } else {
@@ -1956,7 +1961,7 @@ void layoutRuleDialog(State *st) {
       top += controlH + gap;
       const int targetX = numberW + gap;
       const int targetW = formW - targetX;
-      const int actionsW = moreW + removeW + gap + (row.data.compare_with_value ? 0 : optionsW + gap);
+      const int actionsW = removeW + (row.data.compare_with_value ? 0 : optionsW + gap);
       const bool actionsBelow = targetW - actionsW - gap < S(180);
       const int inputW = actionsBelow ? targetW : targetW - actionsW - gap;
       place(row.right, targetX, top, inputW, S(260));
@@ -1969,7 +1974,6 @@ void layoutRuleDialog(State *st) {
         x += width + gap;
       };
       if (!row.data.compare_with_value) action(row.options, optionsW);
-      action(row.more, moreW);
       action(row.remove, removeW);
       top += controlH + gap;
     }
@@ -2167,12 +2171,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     st = reinterpret_cast<State *>(mcs->lParam);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
     g_page = hwnd;
-    st->groupMode = search::create_combo(hwnd, IDC_GROUP_MODE, 0, 0, 0, 0, false);
-    for (const wchar_t *mode : {L"全部条件", L"任一条件"})
-      SendMessageW(st->groupMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mode));
-    SendMessageW(st->groupMode, CB_SETCURSEL, 0, 0);
-    st->groupPrefix = search::create_label(hwnd, L"满足", 0, 0, 0, 0);
-    st->groupSuffix = search::create_label(hwnd, L"时提醒", 0, 0, 0, 0);
     st->addCondition = search::create_button(hwnd, IDC_ADD_CONDITION, L"＋ 添加条件", 0, 0, 0, 0);
     st->nameLabel = search::create_label(hwnd, L"规则名称", 0, 0, 0, 0);
     st->machineLabel = search::create_label(hwnd, L"仪器", 0, 0, 0, 0);
@@ -2240,7 +2238,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         nullptr, st->ctx.instance, nullptr);
     SetWindowSubclass(st->rulesPane, scrollPaneProc, 1, reinterpret_cast<DWORD_PTR>(st));
     for (HWND label : {st->nameLabel, st->machineLabel, st->machine,
-                      st->rulesTitle, st->groupPrefix, st->groupSuffix})
+                      st->rulesTitle})
       SetWindowLongPtrW(label, GWL_STYLE,
                        (GetWindowLongPtrW(label, GWL_STYLE) & ~SS_TYPEMASK) | SS_LEFT | SS_NOPREFIX);
     SetWindowLongPtrW(st->machine, GWL_STYLE,
@@ -2250,7 +2248,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         nullptr, st->ctx.instance, nullptr);
     SetWindowSubclass(st->formPane, scrollPaneProc, 1, reinterpret_cast<DWORD_PTR>(st));
     for (HWND control : {st->nameLabel, st->machineLabel, st->machine, st->machineButton,
-                         st->name, st->groupMode, st->groupPrefix, st->groupSuffix,
+                         st->name,
                          st->addCondition}) SetParent(control, st->formPane);
     for (HWND control : {st->newRule, st->editRule, st->del, st->rulesTitle,
                          st->rulesList}) SetParent(control, st->rulesPane);
@@ -2361,18 +2359,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                           HIWORD(wp) == CBN_KILLFOCUS);
       } else if (source == row.options && HIWORD(wp) == BN_CLICKED) {
         row.optionsExpanded = !row.optionsExpanded;
-      } else if (source == row.more && HIWORD(wp) == BN_CLICKED) {
-        HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING | (row.data.negate ? MF_CHECKED : MF_UNCHECKED),
-                    1, L"取反此条件");
-        RECT anchor{};
-        GetWindowRect(row.more, &anchor);
-        const UINT choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN,
-                                           anchor.left, anchor.bottom, 0, st->ruleDialog ? st->ruleDialog : hwnd, nullptr);
-        DestroyMenu(menu);
-        if (!IsWindow(hwnd) || reinterpret_cast<State *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)) != st)
-          return 0;
-        if (choice == 1) row.data.negate = !row.data.negate;
       } else if (source == row.remove && HIWORD(wp) == BN_CLICKED) {
         if (st->conditionRows.size() <= 1) return 0;
         st->loadingCondition = true;
@@ -2384,10 +2370,10 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         applyRuleEditorVisibility(st);
         layout(hwnd, st);
         auto &next = st->conditionRows[(std::min)(index, st->conditionRows.size() - 1)];
-        SetFocus(IsWindowEnabled(next.left) ? next.left : next.more);
+        SetFocus(IsWindowEnabled(next.left) ? next.left : next.remove);
         return 0;
       } else if (!((HIWORD(wp) == CBN_SELCHANGE &&
-                    (source == row.left || source == row.right || source == row.op || source == row.kind)) ||
+                    (source == row.left || source == row.right || source == row.op || source == row.kind || source == row.joiner)) ||
                    (HIWORD(wp) == EN_CHANGE &&
                     (source == row.value || source == row.multiplier || source == row.tolerance)))) {
         return 0;
@@ -2405,8 +2391,6 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     switch (LOWORD(wp)) {
-    case IDC_GROUP_MODE:
-      return 0;
     case IDC_ADD_CONDITION:
       if (st->conditionRows.size() >= 64) {
         MessageBoxW(st->ruleDialog ? st->ruleDialog : hwnd, L"每条规则最多支持 64 个条件。", TITLE, MB_ICONINFORMATION);
