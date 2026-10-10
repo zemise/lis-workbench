@@ -5,10 +5,7 @@
 
 namespace scheduled_check {
 
-struct Rule {
-  int id = 0;
-  bool enabled = true;
-  std::string name;
+struct Condition {
   std::string left_item_code;
   std::string left_item_name;
   std::string left_item_unit;
@@ -16,10 +13,6 @@ struct Rule {
   std::string right_item_code;
   std::string right_item_name;
   std::string right_item_unit;
-  // Empty machine code denotes a legacy, unscoped rule.
-  std::string room_code;
-  std::string mach_code;
-  std::string mach_name;
   // When true the right side is a literal threshold (right_value_text) and the
   // right_item_* fields are ignored.
   bool compare_with_value = false;
@@ -28,6 +21,20 @@ struct Rule {
   std::string right_multiplier_text = "1";
   // Relative percent of |B * multiplier|; literal mode ignores this field.
   std::string tolerance_percent_text = "0";
+  bool negate = false;
+};
+
+// The inherited condition is the first row, preserving legacy rule fields.
+struct Rule : Condition {
+  int id = 0;
+  bool enabled = true;
+  std::string name;
+  // Empty machine code denotes a legacy, unscoped rule.
+  std::string room_code;
+  std::string mach_code;
+  std::string mach_name;
+  bool match_any = false;
+  std::vector<Condition> extra_conditions;
   std::string created_at;
   std::string updated_at;
 };
@@ -76,6 +83,10 @@ struct Match {
   // Relative percent of |B * multiplier|; literal mode ignores this field.
   std::string tolerance_percent_text = "0";
   std::string fingerprint;
+  // Complete group snapshot. Empty for an ordinary legacy single condition.
+  std::string condition_summary;
+  // Newline-separated item codes for highlighting all group items.
+  std::string condition_item_codes;
 };
 
 bool parse_number(const std::string &text, double &value);
@@ -85,6 +96,13 @@ bool compare_numbers(double left, const std::string &op, double right);
 // <= at/below upper. Zero percent preserves the original comparison.
 bool compare_with_tolerance(double left, const std::string &op, double target,
                             double percent);
+bool validate_condition(const Condition &condition, std::string &error);
+std::string condition_description(const Condition &condition);
+std::vector<Condition> rule_conditions(const Rule &rule);
+std::vector<std::string> rule_item_codes(const Rule &rule);
+// Versioned length-prefixed persistence; empty data means a legacy rule.
+std::string serialize_condition_group(const Rule &rule);
+bool deserialize_condition_group(const std::string &data, Rule &rule);
 std::string item_display_name(const std::string &english,
                               const std::string &chinese,
                               const std::string &code);

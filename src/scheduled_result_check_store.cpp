@@ -96,6 +96,9 @@ bool add_column_if_missing(sqlite3 *db, const char *table,
 }
 bool ensure_rule_columns(sqlite3 *db, std::string &error) {
   return add_column_if_missing(
+             db, "scheduled_result_rule", "condition_group_text",
+             "condition_group_text TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(
              db, "scheduled_result_rule", "tolerance_percent_text",
              "tolerance_percent_text TEXT NOT NULL DEFAULT '0'", error) &&
          add_column_if_missing(
@@ -116,6 +119,12 @@ bool ensure_rule_columns(sqlite3 *db, std::string &error) {
 }
 bool ensure_alert_columns(sqlite3 *db, std::string &error) {
   return add_column_if_missing(
+             db, "scheduled_result_alert", "condition_summary",
+             "condition_summary TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(
+             db, "scheduled_result_alert", "condition_item_codes",
+             "condition_item_codes TEXT NOT NULL DEFAULT ''", error) &&
+         add_column_if_missing(
              db, "scheduled_result_alert", "tolerance_percent_text",
              "tolerance_percent_text TEXT NOT NULL DEFAULT '0'", error) &&
          add_column_if_missing(
@@ -242,6 +251,8 @@ Alert read_alert(sqlite3_stmt *s) {
   a.discovered_at = text(s, c++);
   a.right_multiplier_text = text(s, c++);
   a.tolerance_percent_text = text(s, c++);
+  a.condition_summary = text(s, c++);
+  a.condition_item_codes = text(s, c++);
   return a;
 }
 
@@ -253,7 +264,8 @@ bool load_alerts(sqlite3 *db, const char *where_clause,
       "left_result_text,left_result_value,operator,right_entry_id,"
       "right_item_code,right_item_name,right_item_eng,right_result_text,"
       "right_result_value,"
-      "compare_with_value,fingerprint,handled,discovered_at,right_multiplier_text,tolerance_percent_text";
+      "compare_with_value,fingerprint,handled,discovered_at,right_multiplier_text,tolerance_percent_text,"
+      "condition_summary,condition_item_codes";
   const std::string sql = std::string("SELECT ") + columns +
                           " FROM scheduled_result_alert " + where_clause +
                           " ORDER BY handled,id DESC";
@@ -296,7 +308,7 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
                "SELECT enabled,name,left_item_code,left_item_name,left_item_"
                "unit,operator,right_item_code,right_item_name,right_item_unit,"
                "compare_with_value,right_value_text,room_code,mach_code,mach_name,"
-               "right_multiplier_text,tolerance_percent_text "
+               "right_multiplier_text,tolerance_percent_text,condition_group_text "
                "FROM scheduled_result_rule WHERE id=?",
                statement, error))
     return false;
@@ -324,7 +336,8 @@ bool rule_is_current(sqlite3 *db, const Rule &rule, bool &current,
             text(statement.p, 12) == rule.mach_code &&
             text(statement.p, 13) == rule.mach_name &&
             text(statement.p, 14) == rule.right_multiplier_text &&
-            text(statement.p, 15) == rule.tolerance_percent_text;
+            text(statement.p, 15) == rule.tolerance_percent_text &&
+            text(statement.p, 16) == serialize_condition_group(rule);
   return true;
 }
 
@@ -352,7 +365,7 @@ bool load_rules(std::vector<Rule> &rows, std::string &error) {
                "operator,"
                "right_item_code,right_item_name,right_item_unit,"
                "compare_with_value,right_value_text,room_code,mach_code,"
-               "mach_name,created_at,updated_at,right_multiplier_text,tolerance_percent_text "
+               "mach_name,created_at,updated_at,right_multiplier_text,tolerance_percent_text,condition_group_text "
                "FROM scheduled_result_rule ORDER BY id",
                st, error))
     return false;
@@ -378,6 +391,10 @@ bool load_rules(std::vector<Rule> &rows, std::string &error) {
     r.updated_at = text(st.p, 16);
     r.right_multiplier_text = text(st.p, 17);
     r.tolerance_percent_text = text(st.p, 18);
+    if (!deserialize_condition_group(text(st.p, 19), r)) {
+      error = "规则条件组数据损坏，请检查本地规则数据库";
+      return false;
+    }
     rows.push_back(std::move(r));
   }
   if (rc != SQLITE_DONE) {
@@ -389,19 +406,12 @@ bool load_rules(std::vector<Rule> &rows, std::string &error) {
 }
 
 bool save_rule(Rule &r, std::string &error) {
-  double multiplier = 1.0;
-  if (!r.compare_with_value &&
-      (!parse_number(r.right_multiplier_text, multiplier) || multiplier <= 0.0)) {
-    error = "项目 B 倍数必须是大于 0 的有效数字";
+  if (r.extra_conditions.size() > 63) {
+    error = "每条规则最多支持 64 个条件";
     return false;
   }
-  double percent = 0.0;
-  if (!r.compare_with_value &&
-      (!parse_number(r.tolerance_percent_text, percent) ||
-       percent < 0.0 || percent > 100.0)) {
-    error = "允许误差必须是 0 至 100 的有效百分数";
-    return false;
-  }
+  for (const auto &condition : rule_conditions(r))
+    if (!validate_condition(condition, error)) return false;
   Db db;
   if (!ready(db, error))
     return false;
@@ -414,8 +424,8 @@ bool save_rule(Rule &r, std::string &error) {
             "scheduled_result_rule(name,enabled,left_item_code,left_item_name,"
             "left_item_unit,operator,right_item_code,right_item_name,right_"
             "item_unit,compare_with_value,right_value_text,room_code,mach_code,"
-            "mach_name,created_at,updated_at,right_multiplier_text,tolerance_percent_text) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "mach_name,created_at,updated_at,right_multiplier_text,tolerance_percent_text,condition_group_text) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             st, error))
       return false;
     bind_text(st.p, 1, r.name);
@@ -436,6 +446,7 @@ bool save_rule(Rule &r, std::string &error) {
     bind_text(st.p, 16, now);
     bind_text(st.p, 17, r.right_multiplier_text);
     bind_text(st.p, 18, r.tolerance_percent_text);
+    bind_text(st.p, 19, serialize_condition_group(r));
     if (sqlite3_step(st.p) != SQLITE_DONE) {
       error = sqlite3_errmsg(db.p);
       return false;
@@ -456,7 +467,7 @@ bool save_rule(Rule &r, std::string &error) {
             "left_item_unit=?,operator=?,right_item_code=?,right_item_name=?,"
             "right_item_unit=?,compare_with_value=?,right_value_text=?,"
             "room_code=?,mach_code=?,mach_name=?,updated_at=?,"
-            "right_multiplier_text=?,tolerance_percent_text=? WHERE id=?",
+            "right_multiplier_text=?,tolerance_percent_text=?,condition_group_text=? WHERE id=?",
             st, error)) {
       rollback(db.p);
       return false;
@@ -478,7 +489,8 @@ bool save_rule(Rule &r, std::string &error) {
     bind_text(st.p, 15, now);
     bind_text(st.p, 16, r.right_multiplier_text);
     bind_text(st.p, 17, r.tolerance_percent_text);
-    sqlite3_bind_int(st.p, 18, r.id);
+    bind_text(st.p, 18, serialize_condition_group(r));
+    sqlite3_bind_int(st.p, 19, r.id);
     if (sqlite3_step(st.p) != SQLITE_DONE) {
       error = sqlite3_errmsg(db.p);
       rollback(db.p);
@@ -637,8 +649,9 @@ bool record_matches(const std::vector<Rule> &rules,
                  "left_result_value,operator,right_entry_id,right_item_code,"
                  "right_item_name,right_item_eng,"
                  "right_result_text,right_result_value,compare_with_value,"
-                 "fingerprint,discovered_at,right_multiplier_text,tolerance_percent_text) "
-                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 "fingerprint,discovered_at,right_multiplier_text,tolerance_percent_text,"
+                 "condition_summary,condition_item_codes) "
+                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  st, error)) {
       ok = false;
       break;
@@ -670,6 +683,8 @@ bool record_matches(const std::vector<Rule> &rules,
     bind_text(st.p, c++, now);
     bind_text(st.p, c++, m.right_multiplier_text);
     bind_text(st.p, c++, m.tolerance_percent_text);
+    bind_text(st.p, c++, m.condition_summary);
+    bind_text(st.p, c++, m.condition_item_codes);
     if (sqlite3_step(st.p) != SQLITE_DONE) {
       error = sqlite3_errmsg(db.p);
       ok = false;

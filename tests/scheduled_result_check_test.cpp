@@ -244,6 +244,118 @@ int main() {
   valueRows[1].result = "阴性";
   matches = scheduled_check::evaluate({thresholdRule}, valueRows, &skipped);
   CHECK(matches.empty() && skipped == 1);
+  // Compound rules: AND/OR, NOT, unknown values, grouping and snapshots.
+  scheduled_check::Rule group;
+  group.id = 10;
+  group.name = "比例及附加条件";
+  group.left_item_code = "Hb";
+  group.right_item_code = "RBC";
+  group.op = "!=";
+  group.right_multiplier_text = "3";
+  group.tolerance_percent_text = "3";
+  scheduled_check::Condition extra;
+  extra.left_item_code = "MCV";
+  extra.op = ">=";
+  extra.compare_with_value = true;
+  extra.right_value_text = "80";
+  group.extra_conditions.push_back(extra);
+  extra.op = "<=";
+  extra.right_value_text = "100";
+  group.extra_conditions.push_back(extra);
+  std::vector<scheduled_check::ResultRow> groupRows(3);
+  const char *codes[] = {"Hb", "RBC", "MCV"};
+  const char *values[] = {"16", "5", "90"};
+  for (int i = 0; i < 3; ++i) {
+    groupRows[i].rep_no = "R3";
+    groupRows[i].item_code = codes[i];
+    groupRows[i].result = values[i];
+    groupRows[i].entry_id = std::to_string(i + 1);
+  }
+  matches = scheduled_check::evaluate({group}, groupRows);
+  CHECK(matches.size() == 1);
+  CHECK(matches[0].condition_summary.find("满足全部") != std::string::npos);
+  CHECK(matches[0].condition_item_codes == "Hb\nMCV\nRBC");
+  CHECK(matches[0].left_item_code == "Hb" && matches[0].right_result_text == "5");
+  const std::string firstGroupFingerprint = matches[0].fingerprint;
+  groupRows[2].result = "91";
+  matches = scheduled_check::evaluate({group}, groupRows);
+  CHECK(matches.size() == 1 && matches[0].fingerprint != firstGroupFingerprint);
+  groupRows[2].result = "101";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  groupRows[2].result = "100";
+  CHECK(scheduled_check::evaluate({group}, groupRows).size() == 1);
+  groupRows[2].result = "79";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  groupRows[2].result = "80";
+  CHECK(scheduled_check::evaluate({group}, groupRows).size() == 1);
+  groupRows[2].rep_no = "R4";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  CHECK(scheduled_check::needs_result_followup({group}, groupRows));
+  groupRows[2].rep_no = "R3";
+  groupRows[2].result = "阴性";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  group.extra_conditions[0].negate = true;
+  // NOT unknown remains unknown; it never becomes true.
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  CHECK(scheduled_check::evaluate({group}, {groupRows[0], groupRows[1]}).empty());
+  CHECK(scheduled_check::needs_result_followup({group}, {groupRows[0], groupRows[1]}));
+  group.extra_conditions[0].negate = false;
+  group.match_any = true;
+  matches = scheduled_check::evaluate({group}, groupRows);
+  CHECK(matches.size() == 1 && matches[0].condition_summary.find("无法判断") != std::string::npos);
+  CHECK(matches[0].condition_summary.find("满足任一") != std::string::npos);
+  CHECK(scheduled_check::evaluate({group}, {groupRows[0], groupRows[1]}).size() == 1);
+  groupRows[0].result = "15"; // First condition false; later condition decides OR.
+  groupRows[2].result = "90";
+  matches = scheduled_check::evaluate({group}, groupRows);
+  CHECK(matches.size() == 1 && matches[0].left_item_code == "MCV");
+  group.extra_conditions.resize(1);
+  groupRows[2].result = "79";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  group.extra_conditions[0].negate = true;
+  CHECK(scheduled_check::evaluate({group}, groupRows).size() == 1);
+  groupRows[2].result = "";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  group.negate = true;
+  CHECK(scheduled_check::evaluate({group}, groupRows).size() == 1);
+  group.room_code = "102";
+  group.mach_code = "1";
+  for (auto &r : groupRows) { r.room_code = "102"; r.mach_code = "1"; }
+  CHECK(scheduled_check::evaluate({group}, groupRows).size() == 1);
+  groupRows[0].mach_code = "2";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  groupRows[0].mach_code = "1";
+  group.extra_conditions[0].op = "invalid";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty()); // Invalid branches cannot be hidden by OR.
+  group.extra_conditions[0].op = ">=";
+  group.enabled = false;
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+  group.enabled = true;
+  group.left_item_name = "Hb:血红蛋白";
+  group.extra_conditions[0].left_item_name = "MCV:|红细胞平均体积";
+  const auto encoded = scheduled_check::serialize_condition_group(group);
+  scheduled_check::Rule decoded = group;
+  decoded.extra_conditions.clear(); decoded.negate = false; decoded.match_any = false;
+  CHECK(scheduled_check::deserialize_condition_group(encoded, decoded));
+  CHECK(scheduled_check::serialize_condition_group(decoded) == encoded);
+  CHECK(decoded.match_any && decoded.negate && decoded.extra_conditions[0].negate);
+  CHECK(decoded.extra_conditions[0].left_item_name == group.extra_conditions[0].left_item_name);
+  CHECK(scheduled_check::rule_item_codes(decoded) == scheduled_check::rule_item_codes(group));
+  CHECK(!scheduled_check::deserialize_condition_group(encoded + "x", decoded));
+  CHECK(!scheduled_check::deserialize_condition_group(encoded.substr(0, encoded.size() - 1), decoded));
+  CHECK(!scheduled_check::deserialize_condition_group("2:0:0:0:", decoded));
+  CHECK(!scheduled_check::deserialize_condition_group("1:2:0:0:", decoded));
+  CHECK(!scheduled_check::deserialize_condition_group("1:0:0:64:", decoded));
+  CHECK(!scheduled_check::deserialize_condition_group("1:0:0:1:99999999999999999:x", decoded));
+  CHECK(scheduled_check::deserialize_condition_group("", decoded));
+  CHECK(!decoded.match_any && !decoded.negate && decoded.extra_conditions.empty());
+  CHECK(scheduled_check::serialize_condition_group(decoded).empty());
+  // Computation overflow is unknown even when the condition is negated.
+  group.extra_conditions.clear(); group.match_any = false;
+  group.negate = true; group.right_multiplier_text = "1e308";
+  groupRows[0].result = "1"; groupRows[1].result = "2";
+  CHECK(scheduled_check::evaluate({group}, groupRows).empty());
+
   std::cout << "scheduled result check tests passed\n";
   return 0;
 }
