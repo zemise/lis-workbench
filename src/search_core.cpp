@@ -824,6 +824,14 @@ void add_report_status(std::ostringstream& sql, const std::string& value) {
         sql << " AND isnull(r.CONF,'')<>'T' AND isnull(r.CONF,'')<>'S'";
         return;
     }
+    if (status == "已审") {
+        sql << " AND r.CHK_FLAG='T'";
+        return;
+    }
+    if (status == "未审") {
+        sql << " AND isnull(r.CHK_FLAG,'')<>'T'";
+        return;
+    }
     if (status == "已发送") {
         sql << " AND r.CHK_FLAG='T'";
         return;
@@ -1246,6 +1254,84 @@ bool query_report_machine_picker_machines(const std::string& connection_string, 
 #endif
 }
 
+bool query_microbiology_report_machine_picker_machines(
+    const std::string& connection_string, const std::string& room_code,
+    std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)room_code;
+    (void)log;
+    error = "query_microbiology_report_machine_picker_machines is only available on Windows";
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) {
+        return false;
+    }
+
+    std::ostringstream sql;
+    sql << "SELECT CAST(m.ROOM_CODE AS varchar(20)), CAST(m.MACH_CODE AS varchar(20)),"
+        << " isnull(RTRIM(m.MACH_NAME),''), isnull(RTRIM(m.PY_CODE),''),"
+        << " isnull(CAST(main_group.GROUP_CODE AS varchar(20)),''),"
+        << " isnull(NULLIF(RTRIM(item.ITEM_NAME),''),"
+        << " isnull(RTRIM(lab_match.GROUP_NAME),'')),"
+        << " isnull(RTRIM(main_group.SAMP_CODE),''),"
+        << " isnull(RTRIM(samp.SAMP_NAME),'')"
+        << " FROM LS_AS_MACHINE m"
+        << " OUTER APPLY (SELECT TOP 1 g.GROUP_CODE, g.SAMP_CODE"
+        << " FROM LS_AS_GROUP g"
+        << " WHERE g.DELETE_BIT=0 AND g.MACH_CODE=m.MACH_CODE"
+        << " AND LTRIM(RTRIM(isnull(g.REP_STYLE,'')))='W'"
+        << " ORDER BY CASE WHEN NULLIF(RTRIM(CAST(g.GROUP_CODE AS varchar(20))),'')"
+        << " IS NULL THEN 1 ELSE 0 END,"
+        << " isnull(g.orderby,2147483647), g.GROUP_CODE) main_group"
+        << " LEFT JOIN LS_CODE_ITEM item"
+        << " ON RTRIM(item.ITEM_CODE)=CAST(main_group.GROUP_CODE AS varchar(10))"
+        << " OUTER APPLY (SELECT TOP 1 lm.GROUP_NAME"
+        << " FROM LS_AS_LABMATCH lm"
+        << " WHERE lm.GROUP_CODE=main_group.GROUP_CODE"
+        << " AND NULLIF(LTRIM(RTRIM(isnull(lm.GROUP_NAME,''))),'') IS NOT NULL"
+        << " ORDER BY CASE WHEN isnull(lm.DELETE_BIT,0)=0"
+        << " AND isnull(lm.USE_FLAG,0)=0 THEN 0 ELSE 1 END, lm.ID) lab_match"
+        << " LEFT JOIN LS_AS_SAMPLE samp"
+        << " ON CAST(samp.SAMP_CODE AS varchar(20))=RTRIM(main_group.SAMP_CODE)"
+        << " AND samp.DELETE_BIT=0"
+        << " WHERE m.DELETE_BIT=0 AND isnull(RTRIM(m.RUL),'')='启用'"
+        << " AND RTRIM(CAST(m.MACH_CODE AS varchar(20))) IN ('3001','7002')"
+        << " AND EXISTS (SELECT 1 FROM LS_AS_ROOM r"
+        << " WHERE r.DELETE_BIT=0 AND r.ROOM_CODE=m.ROOM_CODE"
+        << " AND r.Dept_Code IN (102,401))";
+    add_eq(sql, "m.ROOM_CODE", room_code);
+    sql << " ORDER BY m.ROOM_CODE, m.MACH_CODE";
+    if (log) {
+        log(std::string("query=") + __func__ + " event=execute\n");
+    }
+
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) {
+        return false;
+    }
+
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        MachineOption row;
+        row.room_code = fetch_column(stmt, 1);
+        row.mach_code = fetch_column(stmt, 2);
+        row.mach_name = fetch_column(stmt, 3);
+        row.py_code = fetch_column(stmt, 4);
+        row.group_code = fetch_column(stmt, 5);
+        row.group_name = fetch_column(stmt, 6);
+        row.sample_code = fetch_column(stmt, 7);
+        row.sample_name = fetch_column(stmt, 8);
+        rows.push_back(std::move(row));
+    }
+
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log) {
     rows.clear();
 #ifndef _WIN32
@@ -1284,7 +1370,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(cast(bar.JZ_FLAG as varchar(20)),'') ,"
         << " isnull(cast(r.MACH_CODE as varchar(20)),''),"
         << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(cast(r.MACH_CODE as varchar(20)),'')),"
-        << " isnull(cast(r.ROOM_CODE as varchar(20)),'')"
+        << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
+        << " isnull(LTRIM(RTRIM(cast(r.GROUP_CODE as varchar(20)))), '')"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -1382,6 +1469,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.mach_code = fetch_column(stmt, 35);
         row.mach_name = fetch_column(stmt, 36);
         row.room_code = fetch_column(stmt, 37);
+        row.group_code = fetch_column(stmt, 38);
         rows.push_back(row);
     }
 

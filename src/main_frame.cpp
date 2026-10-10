@@ -31,6 +31,7 @@
 #include "massive_transfusion_statistics_module.h"
 #include "mchc_correction_module.h"
 #include "menu_toolbar.h"
+#include "microbiology_report_module.h"
 #include "module_registry.h"
 #include "outpatient_query_module.h"
 #include "phone_directory_module.h"
@@ -70,6 +71,7 @@ constexpr int IDM_TOOL3 = 3013;
 constexpr int IDM_TOOL4 = 3014;
 constexpr int IDM_TOOL5 = 3015;
 constexpr int IDM_TOOL6 = 3016;
+constexpr int IDM_MICROBIOLOGY_REPORT = 3017;
 constexpr int IDM_STAT1 = 3021;
 constexpr int IDM_STAT2 = 3022;
 constexpr int IDM_STAT3 = 3023;
@@ -272,6 +274,8 @@ int toolbarCommandForMdiChild(HWND child) {
     return IDM_TOOL2;
   if (lstrcmpW(title, L"输血结果查询") == 0)
     return IDM_BLOOD;
+  if (lstrcmpW(title, L"微生物报告") == 0)
+    return IDM_MICROBIOLOGY_REPORT;
   if (lstrcmpW(title, L"检验结果查询") == 0)
     return IDM_QUERY;
   if (lstrcmpW(title, L"质控分析") == 0)
@@ -368,6 +372,10 @@ bool dispatchToolbarOnlyModule(int id) {
     return true;
   case IDM_TOOL3:
     create_specimen_sign_module(makeCtx());
+    updateToolbarState();
+    return true;
+  case IDM_MICROBIOLOGY_REPORT:
+    create_microbiology_report_module(makeCtx());
     updateToolbarState();
     return true;
   default:
@@ -833,6 +841,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     mtAddButton(tb, L"标本签收中心", IDM_TOOL3);
     mtAddButton(tb, L"常规报告", IDM_TOOL2);
     mtAddButton(tb, L"输血查询", IDM_BLOOD);
+    mtAddButton(tb, L"微生物报告", IDM_MICROBIOLOGY_REPORT);
     mtAddButton(tb, L"结果查询", IDM_QUERY);
     mtAddButton(tb, L"质控分析", IDM_QCONTROL);
     mtAddButton(tb, L"门诊查询", IDM_TOOL5);

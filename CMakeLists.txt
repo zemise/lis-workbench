@@ -169,12 +169,17 @@ add_executable(main_app WIN32
     src/massive_transfusion_statistics_module.cpp
     src/machine_picker_popup.cpp
     src/mchc_correction_module.cpp
+    src/microbiology_report_barcode_range.cpp
+    src/microbiology_report_module.cpp
+    src/microbiology_report_utils.cpp
+    src/microbiology_report_picture.cpp
     src/outpatient_query_module.cpp
     src/phone_directory_module.cpp
     src/quality_control_module.cpp
     src/quality_control_settings_dialog.cpp
     src/quality_control_store.cpp
     src/query_module.cpp
+    src/regular_report_barcode_range.cpp
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
@@ -198,6 +203,7 @@ if(WIN32)
     target_link_libraries(main_app PRIVATE dwmapi)
 endif()
 if(LIS_HAS_LABELPRINT)
+    target_sources(main_app PRIVATE src/microbiology_label_template.cpp src/microbiology_label_render.cpp)
     target_compile_definitions(main_app PRIVATE LIS_HAS_LABELPRINT=1)
     if(TARGET labelprint)
         target_compile_definitions(labelprint PRIVATE ${LIS_WIN7_COMPAT_DEFINITIONS})
@@ -233,6 +239,30 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(microbiology_quick_machine_tests
+        tests/microbiology_quick_machine_test.cpp
+        src/search_text.cpp
+    )
+    target_include_directories(microbiology_quick_machine_tests PRIVATE src)
+    add_test(NAME microbiology_quick_machine_tests COMMAND microbiology_quick_machine_tests)
+    if(LIS_HAS_LABELPRINT AND WIN32)
+        add_executable(microbiology_label_tests
+            tests/microbiology_label_test.cpp
+            src/microbiology_label_template.cpp
+            src/microbiology_label_render.cpp
+            src/microbiology_report_barcode_range.cpp
+        )
+        target_include_directories(microbiology_label_tests PRIVATE src)
+        target_link_libraries(microbiology_label_tests PRIVATE ${LIS_LABELPRINT_TARGET})
+        add_test(NAME microbiology_label_tests COMMAND microbiology_label_tests)
+    endif()
+    add_executable(regular_report_barcode_range_tests
+        tests/regular_report_barcode_range_test.cpp
+        src/regular_report_barcode_range.cpp
+    )
+    target_include_directories(regular_report_barcode_range_tests PRIVATE src)
+    add_test(NAME regular_report_barcode_range_tests COMMAND regular_report_barcode_range_tests)
+
     add_executable(scheduled_result_check_tests
         tests/scheduled_result_check_test.cpp
         src/scheduled_result_check_core.cpp

@@ -11,6 +11,7 @@
 #include "search_text.h"
 #include "search_ui_layout.h"
 #include "quick_machine_keys.h"
+#include "microbiology_quick_machine.h"
 #include "update_config.h"
 #include "win32_control_id.h"
 #include <commctrl.h>
@@ -119,6 +120,25 @@ constexpr COLORREF COLOR_MUTED_TEXT = RGB(0x6B, 0x72, 0x80);
 constexpr COLORREF COLOR_ACCENT = RGB(0x25, 0x63, 0xEB);
 constexpr COLORREF COLOR_SUCCESS = RGB(0x16, 0x7A, 0x3A);
 
+enum SettingsTab { DatabaseTab, LisTab, RegularReportTab, MicrobiologyReportTab, QualityControlTab, UpdateTab };
+
+struct QuickMachineSettings {
+    std::array<std::string, QUICK_MACHINE_COUNT> codes;
+    std::array<std::string, QUICK_MACHINE_COUNT> room_codes;
+    std::array<std::wstring, QUICK_MACHINE_COUNT> names;
+};
+
+void saveQuickMachineSettings(const wchar_t* section, const QuickMachineSettings& shortcuts) {
+    for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+        const auto slot = static_cast<std::size_t>(i);
+        search::save_module_str(section, quick_machine_code_key(i),
+                                search::utf8_to_wide(shortcuts.codes[slot]));
+        search::save_module_str(section, quick_machine_room_key(i),
+                                search::utf8_to_wide(shortcuts.room_codes[slot]));
+        search::save_module_str(section, quick_machine_name_key(i), shortcuts.names[slot]);
+    }
+}
+
 struct SettingsState {
     ModuleContext ctx;
     search::AppSettings app;
@@ -130,10 +150,9 @@ struct SettingsState {
     HWND updateAutoCheck = nullptr;
     HWND qualityControlPanel = nullptr;
     HWND tabs = nullptr;
-    int currentTab = 0;
-    std::array<std::string, QUICK_MACHINE_COUNT> quickMachineCodes;
-    std::array<std::string, QUICK_MACHINE_COUNT> quickMachineRoomCodes;
-    std::array<std::wstring, QUICK_MACHINE_COUNT> quickMachineNames;
+    int currentTab = DatabaseTab;
+    QuickMachineSettings regularQuickMachines;
+    QuickMachineSettings microbiologyQuickMachines;
 };
 
 struct SettingsMachinePickerState {
@@ -142,6 +161,7 @@ struct SettingsMachinePickerState {
     HWND roomCombo = nullptr;
     HWND machineList = nullptr;
     int slot = 0;
+    bool microbiology = false;
     std::vector<search::RoomOption> rooms;
     std::vector<search::MachineOption> machines;
 };
@@ -277,11 +297,11 @@ void showChild(HWND hwnd, int id, bool show) {
 
 void updateSettingsPageVisibility(HWND hwnd, SettingsState* st) {
     const int tab = st ? st->currentTab : 0;
-    const bool database = tab == 0;
-    const bool lis = tab == 1;
-    const bool report = tab == 2;
-    const bool qc = tab == 3;
-    const bool update = tab == 4;
+    const bool database = tab == DatabaseTab;
+    const bool lis = tab == LisTab;
+    const bool report = tab == RegularReportTab || tab == MicrobiologyReportTab;
+    const bool qc = tab == QualityControlTab;
+    const bool update = tab == UpdateTab;
 
     const int databaseIds[] = {IDC_TEXT_SECTION_DATABASE, IDC_TEXT_DATABASE_HINT, IDC_TEXT_DATABASE_DISPLAY,
                                IDC_LABEL_SERVER, IDC_SET_SERVER, IDC_LABEL_INITIAL_DATABASE, IDC_SET_INITIAL_DATABASE,
@@ -610,7 +630,7 @@ std::wstring selectedUpdateSourceType(HWND hwnd) {
 
 void updateSourceFieldVisibility(HWND hwnd) {
     auto* st = reinterpret_cast<SettingsState*>(GetPropW(hwnd, PROP_STATE));
-    const bool update_page = st ? st->currentTab == 4 : true;
+    const bool update_page = st ? st->currentTab == UpdateTab : true;
     const bool is_http = selectedUpdateSourceType(hwnd) == lis_update::kSourceHttp;
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_LABEL), update_page && is_http ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_URL), update_page && is_http ? SW_SHOW : SW_HIDE);
@@ -701,6 +721,49 @@ search::DbSettings collectForm(HWND hwnd) {
     return s;
 }
 
+QuickMachineSettings& pickerQuickMachines(SettingsMachinePickerState* ps) {
+    return ps->microbiology ? ps->settings->microbiologyQuickMachines : ps->settings->regularQuickMachines;
+}
+
+void refreshReportQuickMachineFields(HWND hwnd, SettingsState* st) {
+    const bool micro = st->currentTab == MicrobiologyReportTab;
+    auto& shortcuts = micro ? st->microbiologyQuickMachines : st->regularQuickMachines;
+    SetWindowTextW(GetDlgItem(hwnd, IDC_TEXT_SECTION_REPORT), micro ? L"微生物报告打印" : L"常规报告打印");
+    SetWindowTextW(GetDlgItem(hwnd, IDC_TEXT_REPORT_HINT), micro
+        ? L"快捷仪器独立配置：默认 1 为 3001、2 为 7002；打印机和 Zebra 字体与常规报告共用。"
+        : L"选择条码打印机，并设置底部 1 / 2 / 3 快捷检验仪器。");
+    std::array<bool, QUICK_MACHINE_COUNT> missingMachines{};
+    if (micro) {
+        std::vector<search::MachineOption> machines;
+        std::string error;
+        if (!search::load_microbiology_report_machine_picker_machine_options(
+                collectForm(hwnd), "", machines, error)) {
+            setSaveStatus(hwnd, (L"微生物快捷仪器加载失败：" + search::utf8_to_wide(error)).c_str());
+        } else {
+            for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+                const auto slot = static_cast<std::size_t>(i);
+                if (shortcuts.codes[slot].empty()) continue;
+                const auto* found = search::find_microbiology_quick_machine(
+                    machines, shortcuts.codes[slot], shortcuts.room_codes[slot]);
+                if (found) {
+                    shortcuts.room_codes[slot] = search::trim(found->room_code);
+                    shortcuts.names[slot] = search::utf8_to_wide(found->mach_name);
+                } else {
+                    missingMachines[slot] = true;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+        const auto slot = static_cast<std::size_t>(i);
+        const auto display = missingMachines[slot]
+            ? L"未找到有效仪器 " + search::utf8_to_wide(shortcuts.codes[slot])
+            : shortcuts.names[slot].empty()
+                ? search::utf8_to_wide(shortcuts.codes[slot]) : shortcuts.names[slot];
+        SetWindowTextW(GetDlgItem(hwnd, quickMachineEditId(i)), display.c_str());
+    }
+}
+
 std::string selectedPickerRoomCode(SettingsMachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return "";
     const int index = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCURSEL, 0, 0));
@@ -712,7 +775,7 @@ void populatePickerMachines(SettingsMachinePickerState* ps) {
     if (!ps || !ps->machineList) return;
     ListView_DeleteAllItems(ps->machineList);
     int selected = -1;
-    const std::string current = ps->settings ? ps->settings->quickMachineCodes[static_cast<size_t>(ps->slot)] : "";
+    const std::string current = ps->settings ? pickerQuickMachines(ps).codes[static_cast<size_t>(ps->slot)] : "";
     for (int i = 0; i < static_cast<int>(ps->machines.size()); ++i) {
         const auto& machine = ps->machines[static_cast<size_t>(i)];
         const auto code = search::utf8_to_wide(machine.mach_code);
@@ -742,7 +805,12 @@ void reloadPickerMachines(SettingsMachinePickerState* ps) {
     if (!ps || !ps->settings) return;
     ps->machines.clear();
     std::string error;
-    if (!search::load_report_machine_picker_machine_options(collectForm(ps->owner), selectedPickerRoomCode(ps), ps->machines, error)) {
+    const bool loaded = ps->microbiology
+        ? search::load_microbiology_report_machine_picker_machine_options(
+            collectForm(ps->owner), selectedPickerRoomCode(ps), ps->machines, error)
+        : search::load_report_machine_picker_machine_options(
+            collectForm(ps->owner), selectedPickerRoomCode(ps), ps->machines, error);
+    if (!loaded) {
         MessageBoxW(ps->owner, L"检验仪器加载失败。", L"系统设置", MB_ICONERROR);
     }
     populatePickerMachines(ps);
@@ -756,7 +824,23 @@ void reloadPickerRooms(SettingsMachinePickerState* ps) {
     if (!search::load_report_machine_picker_room_options(collectForm(ps->owner), ps->rooms, error)) {
         MessageBoxW(ps->owner, L"检验科室加载失败。", L"系统设置", MB_ICONERROR);
     }
-    const std::string currentRoom = ps->settings->quickMachineRoomCodes[static_cast<size_t>(ps->slot)];
+    if (ps->microbiology) {
+        std::vector<search::MachineOption> machines;
+        if (!search::load_microbiology_report_machine_picker_machine_options(
+                collectForm(ps->owner), "", machines, error)) {
+            MessageBoxW(ps->owner, L"微生物检验仪器加载失败。", L"系统设置", MB_ICONERROR);
+            ps->rooms.clear();
+        } else {
+            ps->rooms.erase(std::remove_if(ps->rooms.begin(), ps->rooms.end(),
+                [&](const search::RoomOption& room) {
+                    return std::none_of(machines.begin(), machines.end(),
+                        [&](const search::MachineOption& machine) {
+                            return search::trim(machine.room_code) == search::trim(room.room_code);
+                        });
+                }), ps->rooms.end());
+        }
+    }
+    const std::string currentRoom = pickerQuickMachines(ps).room_codes[static_cast<size_t>(ps->slot)];
     int selected = -1;
     for (int i = 0; i < static_cast<int>(ps->rooms.size()); ++i) {
         const auto text = search::utf8_to_wide(ps->rooms[static_cast<size_t>(i)].room_name);
@@ -774,11 +858,12 @@ void acceptSettingsMachinePicker(HWND hwnd, SettingsMachinePickerState* ps) {
     if (index < 0 || index >= static_cast<int>(ps->machines.size())) return;
     const auto& machine = ps->machines[static_cast<size_t>(index)];
     const auto slot = static_cast<size_t>(ps->slot);
-    ps->settings->quickMachineCodes[slot] = machine.mach_code;
-    ps->settings->quickMachineRoomCodes[slot] = selectedPickerRoomCode(ps);
-    ps->settings->quickMachineNames[slot] = search::utf8_to_wide(machine.mach_name);
-    SetWindowTextW(GetDlgItem(ps->owner, quickMachineEditId(ps->slot)),
-                   ps->settings->quickMachineNames[slot].c_str());
+    pickerQuickMachines(ps).codes[slot] = machine.mach_code;
+    pickerQuickMachines(ps).room_codes[slot] = selectedPickerRoomCode(ps);
+    pickerQuickMachines(ps).names[slot] = search::utf8_to_wide(machine.mach_name);
+    if ((ps->settings->currentTab == MicrobiologyReportTab) == ps->microbiology)
+        SetWindowTextW(GetDlgItem(ps->owner, quickMachineEditId(ps->slot)),
+                       pickerQuickMachines(ps).names[slot].c_str());
     DestroyWindow(hwnd);
 }
 
@@ -881,6 +966,7 @@ void showSettingsMachinePicker(HWND owner, SettingsState* st, int slot, HWND anc
     ps->settings = st;
     ps->owner = owner;
     ps->slot = slot;
+    ps->microbiology = st->currentTab == MicrobiologyReportTab;
     const float scale = search::dpi_scale_factor(owner);
     RECT popupRc{0, 0, static_cast<LONG>(PICKER_W * scale), static_cast<LONG>(PICKER_H * scale)};
     AdjustWindowRectEx(&popupRc, WS_POPUP | WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
@@ -935,7 +1021,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                        0, 0, S(300), S(30), hwnd,
                                        win32_control_id(IDC_SETTINGS_TABS), GetModuleHandleW(nullptr), nullptr);
-            const wchar_t* tabNames[] = {L"数据库与界面", L"LIS 摘要项目", L"常规报告打印", L"质控品设置", L"自动更新"};
+            const wchar_t* tabNames[] = {L"数据库与界面", L"LIS 摘要项目", L"常规报告打印", L"微生物报告打印", L"质控品设置", L"自动更新"};
             for (int i = 0; i < static_cast<int>(sizeof(tabNames) / sizeof(tabNames[0])); ++i) {
                 TCITEMW item{};
                 item.mask = TCIF_TEXT;
@@ -1038,15 +1124,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_CBC_MACHINES), app.lis.cbc_machines.c_str());
             SetWindowTextW(GetDlgItem(hwnd, IDC_SET_LIS_BLOOD_EXCLUDE_MACHINES), app.lis.blood_lis_exclude_machines.c_str());
             for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
-                st->quickMachineCodes[static_cast<size_t>(i)] =
+                st->regularQuickMachines.codes[static_cast<size_t>(i)] =
                     search::wide_to_utf8(search::load_module_str(L"RegularReport", quick_machine_code_key(i), L""));
-                st->quickMachineRoomCodes[static_cast<size_t>(i)] =
+                st->regularQuickMachines.room_codes[static_cast<size_t>(i)] =
                     search::wide_to_utf8(search::load_module_str(L"RegularReport", quick_machine_room_key(i), L""));
-                st->quickMachineNames[static_cast<size_t>(i)] =
+                st->regularQuickMachines.names[static_cast<size_t>(i)] =
                     search::load_module_str(L"RegularReport", quick_machine_name_key(i), L"");
                 SetWindowTextW(GetDlgItem(hwnd, quickMachineEditId(i)),
-                               st->quickMachineNames[static_cast<size_t>(i)].c_str());
+                               st->regularQuickMachines.names[static_cast<size_t>(i)].c_str());
                 SendMessageW(GetDlgItem(hwnd, quickMachineEditId(i)), EM_SETREADONLY, TRUE, 0);
+            }
+            for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
+                const auto machine = search::load_microbiology_quick_machine(i);
+                const auto slot = static_cast<std::size_t>(i);
+                st->microbiologyQuickMachines.codes[slot] = machine.code;
+                st->microbiologyQuickMachines.room_codes[slot] = machine.room_code;
+                st->microbiologyQuickMachines.names[slot] = machine.name;
             }
             populatePrinterCombo(hwnd);
             populateZebraChineseFontCombo(hwnd);
@@ -1140,6 +1233,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm->idFrom == IDC_SETTINGS_TABS && nm->code == TCN_SELCHANGE) {
                 st->currentTab = TabCtrl_GetCurSel(st->tabs);
+                if (st->currentTab == RegularReportTab || st->currentTab == MicrobiologyReportTab)
+                    refreshReportQuickMachineFields(hwnd, st);
                 if (st->qualityControlPanel) {
                     update_quality_control_settings_panel_db(st->qualityControlPanel, collectForm(hwnd));
                 }
@@ -1209,14 +1304,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 search::save_module_str(L"RegularReport", L"ZebraChineseFont",
                                         search::normalize_zebra_chinese_font(
                                             readCombo(hwnd, IDC_SET_ZEBRA_CHINESE_FONT)));
-                for (int i = 0; i < QUICK_MACHINE_COUNT; ++i) {
-                    search::save_module_str(L"RegularReport", quick_machine_code_key(i),
-                                            search::utf8_to_wide(st->quickMachineCodes[static_cast<size_t>(i)]));
-                    search::save_module_str(L"RegularReport", quick_machine_room_key(i),
-                                            search::utf8_to_wide(st->quickMachineRoomCodes[static_cast<size_t>(i)]));
-                    search::save_module_str(L"RegularReport", quick_machine_name_key(i),
-                                            st->quickMachineNames[static_cast<size_t>(i)]);
-                }
+                saveQuickMachineSettings(L"RegularReport", st->regularQuickMachines);
+                saveQuickMachineSettings(L"MicrobiologyReport", st->microbiologyQuickMachines);
                 saveUpdateConfig(collectUpdateConfig(hwnd));
                 search::save_module_int(lis_update::kConfigSection, L"AutoCheck",
                                         SendMessageW(st->updateAutoCheck,

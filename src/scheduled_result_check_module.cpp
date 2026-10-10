@@ -16,6 +16,7 @@
 #include "window_task.h"
 
 #include <algorithm>
+#include <array>
 #include <commctrl.h>
 #include <cstdint>
 #include <ctime>
@@ -52,12 +53,27 @@ constexpr int REMINDER_COLLAPSED_HEIGHT = 62;
 constexpr size_t REMINDER_VISIBLE_ROWS = 3;
 constexpr int IDC_NAME = 8101, IDC_LEFT = 8102, IDC_OP = 8103, IDC_RIGHT = 8104,
               IDC_SAVE = 8105;
-constexpr int IDC_DELETE = 8106, IDC_TOGGLE = 8107, IDC_SCAN = 8108,
+constexpr int IDC_DELETE = 8106, IDC_SCAN = 8108,
               IDC_RULES = 8109, IDC_ALERTS = 8110;
 constexpr int IDC_HANDLED = 8111, IDC_STATUS = 8112;
-constexpr int IDC_NEW = 8113, IDC_RULE_SETTINGS = 8114, IDC_VALUE_MODE = 8115,
+constexpr int IDC_NEW = 8113, IDC_VALUE_MODE = 8115,
               IDC_VALUE = 8116, IDC_MACHINE = 8117, IDC_ALERT_SEARCH = 8118,
-              IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121;
+              IDC_HANDLED_ALL = 8119, IDC_TABS = 8120, IDC_PROGRESS = 8121,
+              IDC_MULTIPLIER = 8122, IDC_TOLERANCE = 8123,
+              IDC_ADD_CONDITION = 8126,
+              IDC_REMOVE_CONDITION = 8127,
+              IDC_ROW_OPTIONS = 8129, IDC_ROW_JOIN = 8130, IDC_EDIT_RULE = 8131, IDC_BACK = 8132;
+
+// Each condition row and the persisted operator use the same stable order.
+struct ComparisonOption {
+  const char *op;
+  const wchar_t *symbol;
+};
+constexpr ComparisonOption COMPARISONS[] = {
+    {">", L">"}, {">=", L">="}, {"<", L"<"},
+    {"<=", L"<="}, {"=", L"="}, {"!=", L"!="},
+};
+constexpr int COMPARISON_COUNT = static_cast<int>(std::size(COMPARISONS));
 
 struct ScanResult {
   bool ok = false;
@@ -91,15 +107,32 @@ struct Monitor {
 } g_monitor;
 HWND g_page = nullptr;
 
+struct ConditionRow {
+  scheduled_check::Condition data;
+  HWND number = nullptr, left = nullptr, op = nullptr, kind = nullptr,
+       right = nullptr, value = nullptr, options = nullptr, joiner = nullptr,
+       remove = nullptr, multiplierLabel = nullptr, multiplier = nullptr,
+       toleranceLabel = nullptr, tolerance = nullptr, separator = nullptr;
+  std::string leftDraft, rightDraft;
+  bool optionsExpanded = false;
+};
+
 struct State {
   ModuleContext ctx;
-  HWND nameLabel = nullptr, leftLabel = nullptr, opLabel = nullptr,
-       rightLabel = nullptr, machineLabel = nullptr, rulesTitle = nullptr,
+  HWND nameLabel = nullptr, machineLabel = nullptr, rulesTitle = nullptr,
        alertsTitle = nullptr;
-  HWND name = nullptr, left = nullptr, op = nullptr, right = nullptr,
-       newRule = nullptr, save = nullptr, del = nullptr, toggle = nullptr,
-       scan = nullptr, ruleSettings = nullptr, valueMode = nullptr,
-       value = nullptr, machine = nullptr, machineButton = nullptr;
+  HWND name = nullptr, newRule = nullptr, save = nullptr, del = nullptr,
+       editRule = nullptr, back = nullptr, scan = nullptr,
+       machine = nullptr, machineButton = nullptr;
+  HWND ruleDialog = nullptr, formPane = nullptr, dialogStatus = nullptr;
+  HWND rulesPane = nullptr;
+  HWND addCondition = nullptr;
+  std::vector<ConditionRow> conditionRows;
+  int editingRuleId = 0;
+  bool editing = false;
+  bool loadingCondition = false;
+  int rulesScroll = 0;
+  int formScroll = 0;
   HWND rulesList = nullptr, alertsList = nullptr, handled = nullptr,
        handledAll = nullptr, status = nullptr, tabs = nullptr,
        alertSearch = nullptr, progress = nullptr;
@@ -114,12 +147,10 @@ struct State {
   std::unordered_set<std::string> machineItemCodes;
   bool machineItemsLoaded = false;
   bool dictionaryLoaded = false;
-  std::string pendingLeftCode, pendingRightCode;
   std::wstring alertFilter;
   int alertsSortColumn = 0;
   bool alertsSortAscending = true;
   bool rulesExpanded = false;
-  bool valueModeChecked = false;
   bool syncingRules = false;
 };
 
@@ -127,6 +158,12 @@ void refresh(State *st);
 void loadAlerts(State *st);
 void updateReminder(bool emphasize = false);
 void applyRuleEditorVisibility(State *st);
+void layout(HWND hwnd, State *st);
+void updateConditionRows(State *st);
+void layoutRuleDialog(State *st);
+bool createRuleDialog(State *st);
+void showRuleDialog(State *st);
+void closeRuleDialog(State *st);
 
 COLORREF mixColor(COLORREF a, COLORREF b, int aWeight, int bWeight) {
   return RGB((GetRValue(a) * aWeight + GetRValue(b) * bWeight) /
@@ -156,13 +193,24 @@ bool reminderAccentIsLight(COLORREF accent) {
 }
 
 std::wstring w(const std::string &s) { return search::utf8_to_wide(s); }
+std::wstring multiplierSuffix(const std::string &text) {
+  return text == "1" ? L"" : L" × " + w(text);
+}
+std::wstring toleranceSuffix(const std::string &text) {
+  double percent = 0.0;
+  if (!scheduled_check::parse_number(text, percent) || percent == 0.0)
+    return L"";
+  return L"（±" + w(text) + L"%）";
+}
 std::wstring alertLine(const scheduled_check::Alert &a) {
+  if (!a.condition_summary.empty()) return w(a.condition_summary);
   const std::wstring right = a.compare_with_value
                                  ? w(a.right_result_text)
                                  : w(a.right_item_name) + L" " +
-                                       w(a.right_result_text);
+                                       w(a.right_result_text) +
+                                       multiplierSuffix(a.right_multiplier_text);
   return w(a.left_item_name) + L" " + w(a.left_result_text) + L" " + w(a.op) +
-         L" " + right;
+         L" " + right + toleranceSuffix(a.tolerance_percent_text);
 }
 std::wstring reminderItemName(const std::string &english,
                               const std::string &chinese,
@@ -170,15 +218,18 @@ std::wstring reminderItemName(const std::string &english,
   return w(scheduled_check::item_display_name(english, chinese, code));
 }
 std::wstring reminderAlertLine(const scheduled_check::Alert &a) {
+  if (!a.condition_summary.empty()) return w(a.condition_summary);
   const std::wstring right =
       a.compare_with_value
           ? w(a.right_result_text)
           : reminderItemName(a.right_item_eng, a.right_item_name,
                              a.right_item_code) +
-                L" " + w(a.right_result_text);
+                L" " + w(a.right_result_text) +
+                multiplierSuffix(a.right_multiplier_text);
   return reminderItemName(a.left_item_eng, a.left_item_name,
                           a.left_item_code) +
-         L" " + w(a.left_result_text) + L" " + w(a.op) + L" " + right;
+         L" " + w(a.left_result_text) + L" " + w(a.op) + L" " + right +
+         toleranceSuffix(a.tolerance_percent_text);
 }
 std::string windowText(HWND h) {
   int n = GetWindowTextLengthW(h);
@@ -236,6 +287,12 @@ void openReminderAlert(size_t row) {
   std::vector<std::string> highlightCodes{a.left_item_code};
   if (!a.compare_with_value && !a.right_item_code.empty())
     highlightCodes.push_back(a.right_item_code);
+  if (!a.condition_item_codes.empty()) {
+    highlightCodes.clear();
+    std::istringstream codes(a.condition_item_codes);
+    std::string code;
+    while (std::getline(codes, code)) if (!code.empty()) highlightCodes.push_back(code);
+  }
   auto *target =
       new RegularReportOpenTarget{a.rep_no,    a.oper_no,   a.inspect_date,
                                   a.mach_code, a.mach_name, a.room_code,
@@ -766,8 +823,11 @@ std::string ruleSignature(const std::vector<scheduled_check::Rule> &rules) {
     field(rule.right_item_name);
     field(rule.right_item_unit);
     field(rule.right_value_text);
+    field(rule.right_multiplier_text);
+    field(rule.tolerance_percent_text);
     field(rule.room_code);
     field(rule.mach_code);
+    field(scheduled_check::serialize_condition_group(rule));
   }
   return out.str();
 }
@@ -820,8 +880,8 @@ ScanResult executeScan(const ModuleContext &ctx, bool forceFull) {
   std::vector<std::string> codes;
   for (const auto &r : legacyRules)
     if (r.enabled) {
-      codes.push_back(r.left_item_code);
-      codes.push_back(r.right_item_code);
+      const auto items = scheduled_check::rule_item_codes(r);
+      codes.insert(codes.end(), items.begin(), items.end());
     }
   std::sort(codes.begin(), codes.end());
   codes.erase(std::unique(codes.begin(), codes.end()), codes.end());
@@ -1000,9 +1060,8 @@ ScanResult executeScan(const ModuleContext &ctx, bool forceFull) {
   for (const auto &[machine, groupRules] : machineRules) {
     std::vector<std::string> machineCodes;
     for (const auto &rule : groupRules) {
-      machineCodes.push_back(rule.left_item_code);
-      if (!rule.compare_with_value)
-        machineCodes.push_back(rule.right_item_code);
+      const auto items = scheduled_check::rule_item_codes(rule);
+      machineCodes.insert(machineCodes.end(), items.begin(), items.end());
     }
     std::sort(machineCodes.begin(), machineCodes.end());
     machineCodes.erase(std::unique(machineCodes.begin(), machineCodes.end()),
@@ -1105,17 +1164,10 @@ void loadRules(State *st) {
     const auto &r = st->rules[i];
     setItem(st->rulesList, i, 0, r.enabled ? L"启用" : L"停用");
     setItem(st->rulesList, i, 1, w(r.name));
-    setItem(st->rulesList, i, 2,
-            w(r.left_item_name + " (" + r.left_item_code + ")"));
-    setItem(st->rulesList, i, 3, w(r.op));
-    setItem(st->rulesList, i, 4,
-            r.compare_with_value
-                ? L"固定值 " + w(r.right_value_text)
-                : w(r.right_item_name + " (" + r.right_item_code + ")"));
-    setItem(st->rulesList, i, 5,
-            r.mach_code.empty() ? L"未限定（旧规则）"
-                                : w(r.mach_name + " [" + r.room_code + "/" +
-                                    r.mach_code + "]"));
+    setItem(st->rulesList, i, 2, r.mach_code.empty() ? L"未限定（旧规则）" : w(r.mach_name));
+    const std::string summary = std::to_string(r.extra_conditions.size() + 1) +
+                                " 条：" + scheduled_check::rule_description(r);
+    setItem(st->rulesList, i, 3, w(summary));
     ListView_SetCheckState(st->rulesList, static_cast<int>(i), r.enabled);
   }
   st->syncingRules = false;
@@ -1127,10 +1179,14 @@ std::string alertSortValue(const scheduled_check::Alert &a, int column) {
   case 2: return a.rule_name;
   case 3: return a.rep_no;
   case 4: return a.oper_no;
+  case 10: return a.condition_summary;
   case 5: return a.left_item_name;
   case 6: return a.left_result_text;
-  case 7: return a.op;
-  case 8: return a.compare_with_value ? "固定值" : a.right_item_name;
+  case 7: return a.op + " " + a.tolerance_percent_text;
+  case 8:
+    return a.compare_with_value
+               ? "固定值"
+               : a.right_item_name + " × " + a.right_multiplier_text;
   default: return a.right_result_text;
   }
 }
@@ -1166,11 +1222,13 @@ void applyAlertFilter(State *st) {
     setItem(st->alertsList, i, 2, w(a.rule_name));
     setItem(st->alertsList, i, 3, w(a.rep_no));
     setItem(st->alertsList, i, 4, w(a.oper_no));
+    setItem(st->alertsList, i, 10, w(a.condition_summary));
     setItem(st->alertsList, i, 5, w(a.left_item_name));
     setItem(st->alertsList, i, 6, w(a.left_result_text));
-    setItem(st->alertsList, i, 7, w(a.op));
+    setItem(st->alertsList, i, 7, (a.condition_summary.empty() ? w(a.op) + toleranceSuffix(a.tolerance_percent_text) : L"条件组"));
     setItem(st->alertsList, i, 8,
-            a.compare_with_value ? L"固定值" : w(a.right_item_name));
+            a.compare_with_value ? L"固定值" : w(a.right_item_name) +
+                multiplierSuffix(a.right_multiplier_text));
     setItem(st->alertsList, i, 9, w(a.right_result_text));
   }
   const std::wstring title =
@@ -1190,7 +1248,7 @@ void refresh(State *st) {
   loadRules(st);
   loadAlerts(st);
   SetWindowTextW(st->status,
-                 L"仪器规则每分钟核查该仪器当日结果；旧规则沿用增量轮巡。LIS 数据库只读。");
+                 L"每分钟核查当日结果，规则保存在本机。");
 }
 
 int comboSelection(HWND combo) {
@@ -1263,57 +1321,219 @@ int resolveItem(State *st, HWND combo) {
   }
   return match;
 }
-void fillItems(State *st) {
-  const int oldLeft = resolveItem(st, st->left);
-  const int oldRight = resolveItem(st, st->right);
-  const auto selectedCode = [&](const std::string &pending, int index) {
-    if (!pending.empty()) return pending;
-    return index >= 0 ? st->items[index].item_code : std::string{};
+std::array<HWND, 14> rowControls(const ConditionRow &row) {
+  return {row.number, row.left, row.op, row.kind, row.right, row.value,
+          row.options, row.joiner, row.remove, row.multiplierLabel, row.multiplier,
+          row.toleranceLabel, row.tolerance, row.separator};
+}
+
+void rememberRow(State *st, ConditionRow &row) {
+  const auto draft = [st](HWND combo, const std::string &previous) {
+    const int index = resolveItem(st, combo);
+    if (index >= 0) return st->items[index].item_code;
+    const auto typed = search::trim(windowText(combo));
+    return typed.empty() && !st->machineItemsLoaded ? previous : typed;
   };
-  const std::string leftCode = selectedCode(st->pendingLeftCode, oldLeft);
-  const std::string rightCode = selectedCode(st->pendingRightCode, oldRight);
+  row.leftDraft = draft(row.left, row.leftDraft);
+  row.rightDraft = draft(row.right, row.rightDraft);
+  const int op = comboSelection(row.op);
+  row.data.op = op >= 0 && op < COMPARISON_COUNT ? COMPARISONS[op].op : "";
+  if (!st->conditionRows.empty() && &row != &st->conditionRows.front()) {
+    const int connection = comboSelection(row.joiner);
+    row.data.join = connection == 1 || connection == 3
+                        ? scheduled_check::ConditionJoin::any
+                        : scheduled_check::ConditionJoin::all;
+    row.data.negate = connection == 2 || connection == 3;
+  }
+  row.data.compare_with_value = comboSelection(row.kind) == 1;
+  row.data.right_value_text = search::trim(windowText(row.value));
+  row.data.right_multiplier_text = search::trim(windowText(row.multiplier));
+  row.data.tolerance_percent_text = search::trim(windowText(row.tolerance));
+}
+
+bool readCondition(State *st, ConditionRow &row, scheduled_check::Condition &condition,
+                   std::string &error) {
+  rememberRow(st, row);
+  const int left = resolveItem(st, row.left), right = resolveItem(st, row.right);
+  if (left < 0 || (!row.data.compare_with_value && right < 0)) {
+    error = "请选择当前仪器的项目";
+    return false;
+  }
+  condition = row.data;
+  const auto &item = st->items[left];
+  condition.left_item_code = item.item_code;
+  condition.left_item_name = item.item_name;
+  condition.left_item_unit = item.unit;
+  if (condition.compare_with_value) {
+    condition.right_item_code.clear();
+    condition.right_item_name.clear();
+    condition.right_item_unit.clear();
+    condition.right_multiplier_text = "1";
+    condition.tolerance_percent_text = "0";
+  } else {
+    const auto &target = st->items[right];
+    condition.right_item_code = target.item_code;
+    condition.right_item_name = target.item_name;
+    condition.right_item_unit = target.unit;
+    condition.right_value_text.clear();
+  }
+  return scheduled_check::validate_condition(condition, error);
+}
+
+void orderEditorControls(State *st) {
+  const auto last = [](HWND control) {
+    SetWindowPos(control, HWND_BOTTOM, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  };
+  for (HWND control : {st->machineButton, st->name}) last(control);
+  for (const auto &row : st->conditionRows)
+    for (HWND control : {row.joiner, row.left, row.op, row.kind, row.right, row.value,
+                        row.options, row.multiplier, row.tolerance, row.remove}) last(control);
+  for (HWND control : {st->addCondition, st->save, st->back}) last(control);
+}
+
+void updateConditionRows(State *st) {
+  if (st->loadingCondition) return;
+  st->loadingCondition = true;
+  for (size_t index = 0; index < st->conditionRows.size(); ++index) {
+    auto &row = st->conditionRows[index];
+    rememberRow(st, row);
+    double percent = 0.0;
+    const bool range = !row.data.compare_with_value &&
+        scheduled_check::parse_number(row.data.tolerance_percent_text, percent) &&
+        percent > 0.0 && percent <= 100.0;
+    SetWindowTextW(row.number, (std::to_wstring(index + 1) +
+                               (row.data.negate ? L" · 取反" : L"")).c_str());
+    std::wstring options = row.optionsExpanded ? L"收起参数" : L"倍数 / 误差";
+    if (!row.optionsExpanded) {
+      double multiple = 1.0;
+      if (scheduled_check::parse_number(row.data.right_multiplier_text, multiple) &&
+          (multiple != 1.0 || range))
+        options = L"×" + w(row.data.right_multiplier_text) + toleranceSuffix(row.data.tolerance_percent_text);
+    }
+    SetWindowTextW(row.options, options.c_str());
+    EnableWindow(row.remove, st->conditionRows.size() > 1);
+  }
+  st->loadingCondition = false;
+}
+
+void fillItems(State *st) {
+  const bool wasLoading = st->loadingCondition;
+  st->loadingCondition = true;
+  for (auto &row : st->conditionRows) rememberRow(st, row);
   st->items.clear();
   if (st->machineItemsLoaded && st->dictionaryLoaded)
     for (const auto &item : st->allItems)
-      if (st->machineItemCodes.count(item.item_code))
-        st->items.push_back(item);
-  for (HWND c : {st->left, st->right}) {
-    SendMessageW(c, CB_RESETCONTENT, 0, 0);
-    for (const auto &i : st->items) {
-      std::wstring label = w(i.item_name + "  [" + i.item_code + "]");
-      if (!i.item_eng.empty())
-        label += L"  " + w(i.item_eng);
-      if (!i.unit.empty())
-        label += L"  " + w(i.unit);
-      SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-    }
+      if (st->machineItemCodes.count(item.item_code)) st->items.push_back(item);
+  for (auto &row : st->conditionRows) {
+    const auto populate = [&](HWND combo, const std::string &draft) {
+      SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+      int selected = -1;
+      for (size_t index = 0; index < st->items.size(); ++index) {
+        const auto &item = st->items[index];
+        std::wstring label = w(item.item_name + "  [" + item.item_code + "]");
+        if (!item.item_eng.empty()) label += L"  " + w(item.item_eng);
+        if (!item.unit.empty()) label += L"  " + w(item.unit);
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (item.item_code == draft) selected = static_cast<int>(index);
+      }
+      if (selected >= 0) SendMessageW(combo, CB_SETCURSEL, selected, 0);
+      else SetWindowTextW(combo, w(draft).c_str());
+      EnableWindow(combo, st->machineItemsLoaded && !st->items.empty());
+    };
+    populate(row.left, row.leftDraft);
+    populate(row.right, row.rightDraft);
   }
-  EnableWindow(st->left, st->machineItemsLoaded && !st->items.empty());
-  EnableWindow(st->right, st->machineItemsLoaded && !st->items.empty());
   EnableWindow(st->save, st->machineItemsLoaded && !st->items.empty());
-  for (size_t i = 0; i < st->items.size(); ++i) {
-    if (st->items[i].item_code == leftCode)
-      SendMessageW(st->left, CB_SETCURSEL, i, 0);
-    if (st->items[i].item_code == rightCode)
-      SendMessageW(st->right, CB_SETCURSEL, i, 0);
+  st->loadingCondition = wasLoading;
+  if (st->editing) {
+    if (!st->machineItemsLoaded)
+      SetWindowTextW(st->status, L"请先选择仪器。");
+    else if (!st->dictionaryLoaded)
+      SetWindowTextW(st->status, L"正在加载项目字典...");
+    else if (st->items.empty())
+      SetWindowTextW(st->status, L"该仪器没有可选项目，请核对 LIS 配置。");
+    else
+      SetWindowTextW(st->status, (L"可选项目 " + std::to_wstring(st->items.size()) + L" 项").c_str());
   }
-  if (st->machineItemsLoaded && st->dictionaryLoaded) {
-    st->pendingLeftCode.clear();
-    st->pendingRightCode.clear();
-  }
-  if (!st->machineItemsLoaded)
-    SetWindowTextW(st->status, L"请先选择检验仪器，再选择该仪器的项目。");
-  else if (!st->dictionaryLoaded)
-    SetWindowTextW(st->status, L"项目字典尚未加载，暂不能选择项目。");
-  else if (st->items.empty())
-    SetWindowTextW(st->status, L"该仪器在 LS_AS_GROUP_ITEM 中没有可选项目，请核对 LIS 配置。");
-  else {
-    const std::wstring message = L"该仪器可选 " +
-        std::to_wstring(st->items.size()) +
-        L" 个项目；可输入项目代码精确匹配。";
-    SetWindowTextW(st->status, message.c_str());
+  updateConditionRows(st);
+  if (st->rulesPane) {
+    applyRuleEditorVisibility(st);
+    layout(g_page, st);
   }
 }
+
+void destroyConditionRows(State *st) {
+  const bool wasLoading = st->loadingCondition;
+  st->loadingCondition = true;
+  for (const auto &row : st->conditionRows)
+    for (HWND control : rowControls(row)) DestroyWindow(control);
+  st->conditionRows.clear();
+  st->loadingCondition = wasLoading;
+}
+
+void appendConditionRow(State *st, const scheduled_check::Condition &condition = {}) {
+  st->loadingCondition = true;
+  ConditionRow row;
+  row.data = condition;
+  row.leftDraft = condition.left_item_code;
+  row.rightDraft = condition.right_item_code;
+  double multiple = 1.0, percent = 0.0;
+  row.optionsExpanded = !condition.compare_with_value &&
+      ((!scheduled_check::parse_number(condition.right_multiplier_text, multiple) || multiple != 1.0) ||
+       (!scheduled_check::parse_number(condition.tolerance_percent_text, percent) || percent != 0.0));
+  const HWND parent = st->formPane;
+  row.number = search::create_label(parent, L"", 0, 0, 0, 0);
+  row.left = search::create_combo(parent, IDC_LEFT, 0, 0, 0, 0, true);
+  row.op = CreateWindowExW(0, WC_COMBOBOXW, L"",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+          CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+      0, 0, 0, 0, parent, win32_control_id(IDC_OP), st->ctx.instance, nullptr);
+  for (const auto &option : COMPARISONS)
+    SendMessageW(row.op, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(option.symbol));
+  int op = 0;
+  for (int i = 0; i < COMPARISON_COUNT; ++i) if (condition.op == COMPARISONS[i].op) op = i;
+  SendMessageW(row.op, CB_SETCURSEL, op, 0);
+  row.kind = search::create_combo(parent, IDC_VALUE_MODE, 0, 0, 0, 0, false);
+  for (const wchar_t *kind : {L"项目", L"固定值"})
+    SendMessageW(row.kind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kind));
+  SendMessageW(row.kind, CB_SETCURSEL, condition.compare_with_value ? 1 : 0, 0);
+  row.right = search::create_combo(parent, IDC_RIGHT, 0, 0, 0, 0, true);
+  for (HWND combo : {row.left, row.right}) {
+    COMBOBOXINFO info{sizeof(info)};
+    if (GetComboBoxInfo(combo, &info))
+      SendMessageW(info.hwndItem, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"选择项目或输入代码"));
+  }
+  row.value = search::create_edit(parent, IDC_VALUE, 0, 0, 0, 0);
+  SendMessageW(row.value, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"输入数值"));
+  row.options = search::create_button(parent, IDC_ROW_OPTIONS, L"倍数 / 误差", 0, 0, 0, 0);
+  row.joiner = search::create_combo(parent, IDC_ROW_JOIN, 0, 0, 0, 0, false);
+  for (const wchar_t *connection : {L"并", L"或", L"非"})
+    SendMessageW(row.joiner, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(connection));
+  // Only legacy OR + NOT needs the extra compatibility entry.
+  if (condition.join == scheduled_check::ConditionJoin::any && condition.negate)
+    SendMessageW(row.joiner, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"或非"));
+  const int connection = condition.join == scheduled_check::ConditionJoin::any ? (condition.negate ? 3 : 1) : (condition.negate ? 2 : 0);
+  SendMessageW(row.joiner, CB_SETCURSEL, connection, 0);
+  row.remove = search::create_button(parent, IDC_REMOVE_CONDITION, L"删除", 0, 0, 0, 0);
+  row.multiplierLabel = search::create_label(parent, L"倍数 ×", 0, 0, 0, 0);
+  row.multiplier = search::create_edit(parent, IDC_MULTIPLIER, 0, 0, 0, 0);
+  row.toleranceLabel = search::create_label(parent, L"误差 ±%", 0, 0, 0, 0);
+  row.tolerance = search::create_edit(parent, IDC_TOLERANCE, 0, 0, 0, 0);
+  row.separator = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_ETCHEDHORZ,
+      0, 0, 0, 0, parent, nullptr, st->ctx.instance, nullptr);
+  SetWindowTextW(row.left, w(row.leftDraft).c_str());
+  SetWindowTextW(row.right, w(row.rightDraft).c_str());
+  SetWindowTextW(row.value, w(condition.right_value_text).c_str());
+  SetWindowTextW(row.multiplier, w(condition.right_multiplier_text).c_str());
+  SetWindowTextW(row.tolerance, w(condition.tolerance_percent_text).c_str());
+  for (HWND control : rowControls(row))
+    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(st->ctx.uiFont), TRUE);
+  st->conditionRows.push_back(std::move(row));
+  orderEditorControls(st);
+  st->loadingCondition = false;
+}
+
 void loadMachineItems(HWND hwnd, State *st) {
   st->machineItemCodes.clear();
   st->machineItemsLoaded = false;
@@ -1387,6 +1607,7 @@ void startItemLoad(HWND hwnd, State *st) {
 }
 
 void saveRule(HWND hwnd, State *st) {
+  hwnd = st->ruleDialog ? st->ruleDialog : hwnd;
   if (st->roomCode.empty() || st->machCode.empty()) {
     MessageBoxW(hwnd, L"请先选择检验仪器；旧规则更新前也需要绑定仪器。",
                 TITLE, MB_ICONINFORMATION);
@@ -1397,61 +1618,57 @@ void saveRule(HWND hwnd, State *st) {
                 TITLE, MB_ICONINFORMATION);
     return;
   }
-  const int l = resolveItem(st, st->left);
-  const int o = comboSelection(st->op);
-  if (l < 0 || o < 0 || l >= static_cast<int>(st->items.size())) {
-    MessageBoxW(hwnd, L"请选择该仪器的项目 A 和比较关系；项目代码须属于所选仪器。",
-                TITLE, MB_ICONINFORMATION);
+  std::vector<scheduled_check::Condition> conditions;
+  for (size_t i = 0; i < st->conditionRows.size(); ++i) {
+    scheduled_check::Condition condition;
+    std::string error;
+    if (!readCondition(st, st->conditionRows[i], condition, error)) {
+      MessageBoxW(hwnd, w("条件 " + std::to_string(i + 1) + "：" + error).c_str(),
+                  TITLE, MB_ICONINFORMATION);
+      auto &row = st->conditionRows[i];
+      HWND invalid = row.left;
+      double number = 0.0;
+      if (resolveItem(st, row.left) >= 0) {
+        if (row.data.compare_with_value) invalid = row.value;
+        else if (resolveItem(st, row.right) < 0) invalid = row.right;
+        else if (!scheduled_check::parse_number(row.data.right_multiplier_text, number) || number <= 0.0) {
+          row.optionsExpanded = true;
+          invalid = row.multiplier;
+        } else if (!scheduled_check::parse_number(row.data.tolerance_percent_text, number) || number < 0.0 || number > 100.0) {
+          row.optionsExpanded = true;
+          invalid = row.tolerance;
+        }
+      }
+      updateConditionRows(st);
+      applyRuleEditorVisibility(st);
+      layout(g_page, st);
+      SetFocus(invalid);
+      return;
+    }
+    conditions.push_back(std::move(condition));
+  }
+  if (conditions.empty()) return;
+  scheduled_check::Rule rule;
+  const auto existing = std::find_if(st->rules.begin(), st->rules.end(),
+      [st](const scheduled_check::Rule &r) { return r.id == st->editingRuleId; });
+  if (st->editingRuleId > 0 && existing == st->rules.end()) {
+    MessageBoxW(hwnd, L"规则已不存在，请重新选择或新建。", TITLE, MB_ICONINFORMATION);
     return;
   }
-  scheduled_check::Rule rule;
-  const int sel = selected(st->rulesList);
-  if (sel >= 0 && sel < static_cast<int>(st->rules.size()))
-    rule = st->rules[sel];
+  if (existing != st->rules.end()) rule = *existing;
+  static_cast<scheduled_check::Condition &>(rule) = conditions.front();
+  rule.extra_conditions.assign(conditions.begin() + 1, conditions.end());
+  rule.match_any = false;
+  rule.join = scheduled_check::ConditionJoin::legacy;
   rule.room_code = st->roomCode;
   rule.mach_code = st->machCode;
   rule.mach_name = st->machName;
-  const auto &li = st->items[l];
   rule.name = search::trim(windowText(st->name));
-  static const char *ops[] = {">", ">=", "<", "<=", "=", "!="};
-  rule.op = ops[o];
-  rule.left_item_code = li.item_code;
-  rule.left_item_name = li.item_name;
-  rule.left_item_unit = li.unit;
-  rule.compare_with_value = st->valueModeChecked;
-  if (st->valueModeChecked) {
-    const std::string valueText = search::trim(windowText(st->value));
-    double threshold = 0.0;
-    if (!scheduled_check::parse_number(valueText, threshold)) {
-      MessageBoxW(hwnd, L"固定值必须是有效数字，例如 5.0、-1.5。", TITLE,
-                  MB_ICONINFORMATION);
-      return;
-    }
-    rule.right_value_text = valueText;
-    rule.right_item_code.clear();
-    rule.right_item_name.clear();
-    rule.right_item_unit.clear();
-    if (rule.name.empty())
-      rule.name = li.item_name + " " + rule.op + " " + valueText;
-  } else {
-    const int r = resolveItem(st, st->right);
-    if (r < 0 || r >= static_cast<int>(st->items.size())) {
-      MessageBoxW(hwnd, L"请选择该仪器的项目 B；项目代码须属于所选仪器。",
-                  TITLE, MB_ICONINFORMATION);
-      return;
-    }
-    if (l == r) {
-      MessageBoxW(hwnd, L"项目 A 和项目 B 不能相同。", TITLE,
-                  MB_ICONINFORMATION);
-      return;
-    }
-    const auto &ri = st->items[r];
-    rule.right_item_code = ri.item_code;
-    rule.right_item_name = ri.item_name;
-    rule.right_item_unit = ri.unit;
-    rule.right_value_text.clear();
-    if (rule.name.empty())
-      rule.name = li.item_name + " " + rule.op + " " + ri.item_name;
+  if (rule.name.empty()) {
+    rule.name = scheduled_check::condition_description(rule);
+    if (!rule.extra_conditions.empty())
+      rule.name += " 等 " +
+                   std::to_string(conditions.size()) + " 条条件";
   }
   if (rule.id <= 0)
     rule.enabled = true;
@@ -1460,64 +1677,52 @@ void saveRule(HWND hwnd, State *st) {
     MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
     return;
   }
+  st->editingRuleId = rule.id;
   refresh(st);
+  closeRuleDialog(st);
+  SetWindowTextW(st->status, L"规则已保存。");
   updateReminder();
   run_scheduled_result_check_now();
 }
 
 void selectRule(State *st) {
-  int row = selected(st->rulesList);
-  if (row < 0 || row >= static_cast<int>(st->rules.size()))
-    return;
-  const auto &r = st->rules[row];
-  SetWindowTextW(st->name, w(r.name).c_str());
-  st->roomCode = r.room_code;
-  st->machCode = r.mach_code;
-  st->machName = r.mach_name;
-  SetWindowTextW(st->machine,
-                 r.mach_code.empty()
-                     ? L"未限定（旧规则）"
-                     : w(r.mach_name + " [" + r.room_code + "/" + r.mach_code + "]").c_str());
-  st->pendingLeftCode.clear();
-  st->pendingRightCode.clear();
+  const int index = selected(st->rulesList);
+  if (index < 0 || index >= static_cast<int>(st->rules.size())) return;
+  const auto rule = st->rules[index];
+  if (!createRuleDialog(st)) return;
+  SetWindowTextW(st->ruleDialog, L"编辑规则");
+  st->editingRuleId = rule.id;
+  st->editing = true;
+  st->formScroll = 0;
+  SetWindowTextW(st->name, w(rule.name).c_str());
+  st->roomCode = rule.room_code; st->machCode = rule.mach_code; st->machName = rule.mach_name;
+  SetWindowTextW(st->machine, rule.mach_code.empty() ? L"未选择（旧规则）" : w(rule.mach_name).c_str());
+  destroyConditionRows(st);
+  for (auto condition : scheduled_check::rule_conditions(rule)) {
+    condition.join = scheduled_check::joins_with_or(rule, condition) ? scheduled_check::ConditionJoin::any : scheduled_check::ConditionJoin::all;
+    appendConditionRow(st, condition);
+  }
   loadMachineItems(g_page, st);
-  st->pendingLeftCode = r.left_item_code;
-  st->pendingRightCode = r.right_item_code;
-  auto pick = [&](HWND c, const std::string &code) {
-    for (size_t i = 0; i < st->items.size(); ++i)
-      if (st->items[i].item_code == code) {
-        SendMessageW(c, CB_SETCURSEL, i, 0);
-        break;
-      }
-  };
-  pick(st->left, r.left_item_code);
-  pick(st->right, r.right_item_code);
-  static const char *ops[] = {">", ">=", "<", "<=", "=", "!="};
-  for (int i = 0; i < 6; ++i)
-    if (r.op == ops[i])
-      SendMessageW(st->op, CB_SETCURSEL, i, 0);
-  st->valueModeChecked = r.compare_with_value;
-  SendMessageW(st->valueMode, BM_SETCHECK,
-               st->valueModeChecked ? BST_CHECKED : BST_UNCHECKED, 0);
-  SetWindowTextW(st->value, w(r.right_value_text).c_str());
   applyRuleEditorVisibility(st);
-  SetWindowTextW(st->save, L"更新规则");
+  layout(g_page, st);
+  showRuleDialog(st);
 }
+
 void clearEditor(State *st) {
-  ListView_SetItemState(st->rulesList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+  if (!createRuleDialog(st)) return;
+  SetWindowTextW(st->ruleDialog, L"新建规则");
+  st->editingRuleId = 0;
+  st->editing = true;
+  st->formScroll = 0;
   SetWindowTextW(st->name, L"");
   st->roomCode.clear(); st->machCode.clear(); st->machName.clear();
-  st->pendingLeftCode.clear(); st->pendingRightCode.clear();
-  SetWindowTextW(st->machine, L"尚未选择检验仪器");
+  SetWindowTextW(st->machine, L"未选择");
+  destroyConditionRows(st);
+  appendConditionRow(st);
   loadMachineItems(g_page, st);
-  SendMessageW(st->left, CB_SETCURSEL, -1, 0);
-  SendMessageW(st->right, CB_SETCURSEL, -1, 0);
-  SendMessageW(st->op, CB_SETCURSEL, 0, 0);
-  st->valueModeChecked = false;
-  SendMessageW(st->valueMode, BM_SETCHECK, BST_UNCHECKED, 0);
-  SetWindowTextW(st->value, L"");
   applyRuleEditorVisibility(st);
-  SetWindowTextW(st->save, L"保存规则");
+  layout(g_page, st);
+  showRuleDialog(st);
 }
 void openAlert(State *st, int row) {
   if (row < 0 || row >= static_cast<int>(st->alerts.size()))
@@ -1526,6 +1731,12 @@ void openAlert(State *st, int row) {
   std::vector<std::string> highlightCodes{a.left_item_code};
   if (!a.compare_with_value && !a.right_item_code.empty())
     highlightCodes.push_back(a.right_item_code);
+  if (!a.condition_item_codes.empty()) {
+    highlightCodes.clear();
+    std::istringstream codes(a.condition_item_codes);
+    std::string code;
+    while (std::getline(codes, code)) if (!code.empty()) highlightCodes.push_back(code);
+  }
   auto *target =
       new RegularReportOpenTarget{a.rep_no,    a.oper_no,   a.inspect_date,
                                   a.mach_code, a.mach_name, a.room_code,
@@ -1542,29 +1753,38 @@ void openAlert(State *st, int row) {
 }
 
 void applyRuleEditorVisibility(State *st) {
-  const int rulesShow = st->rulesExpanded ? SW_SHOW : SW_HIDE;
-  const int alertsShow = st->rulesExpanded ? SW_HIDE : SW_SHOW;
-  for (HWND control :
-       {st->nameLabel, st->leftLabel, st->opLabel, st->rightLabel,
-        st->machineLabel, st->machine, st->machineButton, st->name,
-        st->left, st->op, st->valueMode, st->newRule, st->save, st->del,
-        st->toggle, st->rulesTitle, st->rulesList})
-    ShowWindow(control, rulesShow);
-  ShowWindow(st->right,
-             rulesShow && !st->valueModeChecked ? SW_SHOW : SW_HIDE);
-  ShowWindow(st->value,
-             rulesShow && st->valueModeChecked ? SW_SHOW : SW_HIDE);
-  for (HWND control :
-       {st->alertSearch, st->handled, st->handledAll, st->alertsTitle,
-        st->alertsList})
-    ShowWindow(control, alertsShow);
-  // The legacy expand/collapse button is replaced by the tab control.
-  ShowWindow(st->ruleSettings, SW_HIDE);
-  SetWindowTextW(st->rightLabel,
-                 st->valueModeChecked ? L"固定值：" : L"项目 B：");
+  const bool form = st->editing;
+  const bool list = st->rulesExpanded;
+  const auto show = [](HWND control, bool visible) { ShowWindow(control, visible ? SW_SHOW : SW_HIDE); };
+  for (HWND control : {st->nameLabel, st->machineLabel, st->machine, st->machineButton,
+                      st->name,
+                      st->addCondition, st->save, st->back}) show(control, form);
+  for (HWND control : {st->newRule, st->editRule, st->del, st->rulesTitle, st->rulesList}) show(control, list);
+  for (HWND control : {st->alertSearch, st->handled, st->handledAll, st->alertsTitle, st->alertsList})
+    show(control, !st->rulesExpanded);
+  show(st->rulesPane, st->rulesExpanded);
+  SetParent(st->scan, st->rulesExpanded ? st->rulesPane : g_page);
+  show(st->scan, true);
+  show(st->formPane, form);
+  for (size_t index = 0; index < st->conditionRows.size(); ++index) {
+    auto &row = st->conditionRows[index];
+    for (HWND control : rowControls(row)) show(control, form);
+    show(row.number, form && index == 0);
+    show(row.joiner, form && index != 0);
+    show(row.right, form && !row.data.compare_with_value);
+    show(row.value, form && row.data.compare_with_value);
+    show(row.options, form && !row.data.compare_with_value);
+    for (HWND control : {row.multiplierLabel, row.multiplier, row.toleranceLabel, row.tolerance})
+      show(control, form && !row.data.compare_with_value && row.optionsExpanded);
+  }
+  const int selection = selected(st->rulesList);
+  const bool selectedRule = selection >= 0 && selection < static_cast<int>(st->rules.size());
+  EnableWindow(st->editRule, selectedRule);
+  EnableWindow(st->del, selectedRule);
 }
 
 void layout(HWND hwnd, State *st) {
+  layoutRuleDialog(st);
   RECT rc{};
   GetClientRect(hwnd, &rc);
   const int w = rc.right;
@@ -1576,15 +1796,16 @@ void layout(HWND hwnd, State *st) {
 
   const int pad = S(12);
   const int gap = S(8);
-  const int labelW = (std::max)(
-      {search::measure_control_text_width(hwnd, st->nameLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->machineLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->leftLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->opLabel, 72, 6),
-       search::measure_control_text_width(hwnd, st->rightLabel, 72, 6)});
-  const int controlH = S(26);
-  const int titleH = S(22);
-  const int statusH = S(22);
+  HDC fontDc = GetDC(hwnd);
+  HGDIOBJ oldFont = st->ctx.uiFont ? SelectObject(fontDc, st->ctx.uiFont) : nullptr;
+  TEXTMETRICW metrics{};
+  GetTextMetricsW(fontDc, &metrics);
+  if (oldFont) SelectObject(fontDc, oldFont);
+  ReleaseDC(hwnd, fontDc);
+  const int textH = static_cast<int>(metrics.tmHeight);
+  const int controlH = (std::max)(S(26), textH + S(8));
+  const int titleH = (std::max)(S(22), textH + S(4));
+  const int statusH = titleH;
   const int contentW = (std::max)(S(300), w - pad * 2);
   int y = pad;
 
@@ -1615,89 +1836,330 @@ void layout(HWND hwnd, State *st) {
     return;
   }
 
-  // Wide pages use two columns; narrow pages keep one task per row so labels
-  // and editable project fields never compete for the same horizontal space.
-  const int pickerW = search::measure_control_text_width(
-      hwnd, st->machineButton, 96, 18);
-  const int valueModeW =
-      search::measure_control_text_width(hwnd, st->valueMode, 96, 18);
-  if (contentW >= S(900)) {
-    const int half = (contentW - gap) / 2;
-    const int rightX = pad + half + gap;
-    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->machine, pad + labelW, y,
-               half - labelW - pickerW - gap, controlH, TRUE);
-    MoveWindow(st->machineButton, pad + half - pickerW, y,
-               pickerW, controlH, TRUE);
-    MoveWindow(st->nameLabel, rightX, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->name, rightX + labelW, y,
-               contentW - half - gap - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->left, pad + labelW, y, half - labelW, S(320), TRUE);
-    MoveWindow(st->rightLabel, rightX, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->right, rightX + labelW, y,
-               contentW - half - gap - labelW, S(320), TRUE);
-    MoveWindow(st->value, rightX + labelW, y,
-               contentW - half - gap - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
-    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
-               valueModeW, controlH, TRUE);
-    y += controlH + gap;
-  } else {
-    MoveWindow(st->machineLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->machine, pad + labelW, y,
-               (std::max)(S(80), contentW - labelW - pickerW - gap), controlH,
-               TRUE);
-    MoveWindow(st->machineButton, w - pad - pickerW, y,
-               pickerW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->nameLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->name, pad + labelW, y, contentW - labelW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->leftLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->left, pad + labelW, y, contentW - labelW, S(320), TRUE);
-    y += controlH + gap;
-    MoveWindow(st->opLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->op, pad + labelW, y, S(110), S(200), TRUE);
-    MoveWindow(st->valueMode, pad + labelW + S(110) + gap, y,
-               valueModeW, controlH, TRUE);
-    y += controlH + gap;
-    MoveWindow(st->rightLabel, pad, y + S(4), labelW, controlH, TRUE);
-    MoveWindow(st->right, pad + labelW, y, contentW - labelW, S(320), TRUE);
-    MoveWindow(st->value, pad + labelW, y, contentW - labelW, controlH, TRUE);
-    y += controlH + gap;
-  }
-  int buttonX = pad;
-  struct ButtonLayout {
-    HWND hwnd;
-    int width;
-  } buttons[] = {
-      {st->newRule,
-       search::measure_control_text_width(hwnd, st->newRule, 70, 18)},
-      {st->save, search::measure_control_text_width(hwnd, st->save, 86, 18)},
-      {st->del, search::measure_control_text_width(hwnd, st->del, 70, 18)},
-      {st->toggle,
-       search::measure_control_text_width(hwnd, st->toggle, 92, 18)},
-      {st->scan, search::measure_control_text_width(hwnd, st->scan, 86, 18)}};
-  for (const auto &button : buttons) {
-    if (buttonX > pad && buttonX + button.width > w - pad) {
-      buttonX = pad;
-      y += controlH + gap;
+  // Keep the saved rules and toolbar on the main page while the editor is modal.
+  const int paneH = (std::max)(S(80), statusY - y - S(36));
+  MoveWindow(st->rulesPane, pad, y, contentW, paneH, TRUE);
+  RECT paneRc{};
+  GetClientRect(st->rulesPane, &paneRc);
+  const int listW = (std::max)(S(180), static_cast<int>(paneRc.right) - S(12));
+  const auto place = [&](HWND control, int x, int top, int width, int height) {
+    MoveWindow(control, x, top - st->rulesScroll,
+               (std::max)(1, width), (std::max)(1, height), TRUE);
+  };
+  int top = S(6);
+  {
+    int buttonX = 0;
+    for (HWND button : {st->newRule, st->editRule, st->del, st->scan}) {
+      const int width = search::measure_control_text_width(hwnd, button, 86, 18);
+      if (buttonX && buttonX + width > listW) { buttonX = 0; top += controlH + gap; }
+      place(button, buttonX, top, width, controlH);
+      buttonX += width + gap;
     }
-    MoveWindow(button.hwnd, buttonX, y, button.width, controlH, TRUE);
-    buttonX += button.width + gap;
+    top += controlH + gap;
+    place(st->rulesTitle, 0, top, listW, titleH);
+    top += titleH + S(4);
+    place(st->rulesList, 0, top, listW, (std::max)(S(100), paneH - top - S(8)));
+    top += (std::max)(S(100), paneH - top - S(8)) + S(8);
+  }
+  const int totalH = top;
+  SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL};
+  scroll.nMin = 0; scroll.nMax = totalH - 1;
+  scroll.nPage = paneH; scroll.nPos = st->rulesScroll;
+  SetScrollInfo(st->rulesPane, SB_VERT, &scroll, TRUE);
+  const int clamped = GetScrollPos(st->rulesPane, SB_VERT);
+  MoveWindow(st->status, pad, statusY, contentW, statusH, TRUE);
+  if (clamped != st->rulesScroll) {
+    st->rulesScroll = clamped;
+    layout(hwnd, st);
   }
 
-  y += controlH + S(10);
-  MoveWindow(st->rulesTitle, pad, y, contentW, titleH, TRUE);
-  y += titleH;
+}
 
-  const int rulesH = (std::max)(S(110), statusY - y - S(5));
-  MoveWindow(st->rulesList, pad, y, contentW, rulesH, TRUE);
-  MoveWindow(st->status, pad, statusY, contentW, statusH, TRUE);
+void layoutRuleDialog(State *st) {
+  if (!st->ruleDialog) return;
+  HWND hwnd = st->ruleDialog;
+  RECT rc{};
+  GetClientRect(hwnd, &rc);
+  const float scale = search::dpi_scale_factor(hwnd);
+  const auto S = [scale](int value) { return (std::max)(1, static_cast<int>(value * scale + 0.5f)); };
+  const int pad = S(12), gap = S(6);
+  HDC dc = GetDC(hwnd);
+  HGDIOBJ old = st->ctx.uiFont ? SelectObject(dc, st->ctx.uiFont) : nullptr;
+  TEXTMETRICW metrics{};
+  GetTextMetricsW(dc, &metrics);
+  if (old) SelectObject(dc, old);
+  ReleaseDC(hwnd, dc);
+  const int textH = metrics.tmHeight;
+  const int controlH = (std::max)(S(26), textH + S(6));
+  const int titleH = (std::max)(S(20), textH + S(2));
+  const int footerY = (std::max)(pad, static_cast<int>(rc.bottom) - pad - controlH);
+  const int paneH = (std::max)(1, footerY - gap - pad);
+  MoveWindow(st->formPane, pad, pad, (std::max)(1, static_cast<int>(rc.right) - pad * 2), paneH, TRUE);
+  RECT paneRc{};
+  GetClientRect(st->formPane, &paneRc);
+  const int formW = (std::max)(S(180), static_cast<int>(paneRc.right) - S(4));
+  const bool wide = formW >= S(660);
+  const int half = (formW - S(12)) / 2;
+  const int rightX = half + S(12);
+  const auto place = [&](HWND control, int x, int top, int width, int height) {
+    MoveWindow(control, x, top - st->formScroll, (std::max)(1, width), (std::max)(1, height), TRUE);
+  };
+  int top = 0;
+  const int pickerW = search::measure_control_text_width(hwnd, st->machineButton, 96, 18);
+  const int fieldH = titleH + S(4) + controlH;
+  const int scopeW = wide ? half : formW;
+  place(st->machineLabel, 0, top, scopeW, titleH);
+  place(st->machine, 0, top + titleH + S(4), scopeW - pickerW - gap, controlH);
+  place(st->machineButton, scopeW - pickerW, top + titleH + S(4), pickerW, controlH);
+  if (!wide) top += fieldH + gap;
+  place(st->nameLabel, wide ? rightX : 0, top, wide ? half : formW, titleH);
+  place(st->name, wide ? rightX : 0, top + titleH + S(4), wide ? half : formW, controlH);
+  top += fieldH + S(8);
+  int numberW = (std::max)(S(64), textH * 2 + GetSystemMetrics(SM_CXVSCROLL) + S(8));
+  const int opW = (std::max)(S(60), textH * 2 + GetSystemMetrics(SM_CXVSCROLL) + S(8));
+  for (const auto &row : st->conditionRows) {
+    numberW = (std::max)(numberW, search::measure_control_text_width(hwnd, row.number, row.data.negate ? 75 : 30, 4));
+    // Set both the collapsed field and popup row height after font changes.
+    SendMessageW(row.op, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), textH + S(4));
+    SendMessageW(row.op, CB_SETITEMHEIGHT, 0, textH + S(6));
+  }
+  for (auto &row : st->conditionRows) {
+    const int kindW = (std::max)(S(76), textH * 3 + S(22));
+    const int optionsW = (std::min)(formW / 2, search::measure_control_text_width(hwnd, row.options, 88, 12));
+    const int removeW = search::measure_control_text_width(hwnd, row.remove, 44, 12);
+    const int actions = (row.data.compare_with_value ? 0 : optionsW + gap) + removeW;
+    const bool inlineRow = formW >= S(760) &&
+        formW >= numberW + opW + kindW + actions + gap * 5 + S(360);
+    place(row.number, 0, top + S(4), numberW, titleH);
+    place(row.joiner, 0, top, numberW, S(150));
+    if (inlineRow) {
+      const int optionsSpace = row.data.compare_with_value ? 0 : optionsW + gap;
+      const int fieldsW = formW - numberW - opW - kindW - optionsSpace - removeW - gap * 5;
+      const int leftW = fieldsW / 2;
+      int x = numberW + gap;
+      place(row.left, x, top, leftW, S(260)); x += leftW + gap;
+      place(row.op, x, top, opW, S(220)); x += opW + gap;
+      place(row.kind, x, top, kindW, S(160)); x += kindW + gap;
+      const int targetW = fieldsW - leftW;
+      place(row.right, x, top, targetW, S(260));
+      place(row.value, x, top, targetW, controlH); x += targetW + gap;
+      if (!row.data.compare_with_value) { place(row.options, x, top, optionsW, controlH); x += optionsW + gap; }
+      place(row.remove, x, top, removeW, controlH);
+      top += controlH + gap;
+    } else {
+      const int firstW = formW - numberW - gap;
+      const bool compact = firstW < S(500);
+      const int leftW = compact ? firstW : firstW - opW - kindW - gap * 2;
+      place(row.left, numberW + gap, top, leftW, S(260));
+      if (compact) top += controlH + gap;
+      const int relationX = compact ? numberW + gap : numberW + gap * 2 + leftW;
+      const bool stackKind = compact && firstW < opW + kindW + gap;
+      const int relationW = opW;
+      place(row.op, relationX, top, relationW, S(220));
+      if (stackKind) top += controlH + gap;
+      place(row.kind, stackKind ? numberW + gap : relationX + relationW + gap, top, kindW, S(160));
+      top += controlH + gap;
+      const int targetX = numberW + gap;
+      const int targetW = formW - targetX;
+      const int actionsW = removeW + (row.data.compare_with_value ? 0 : optionsW + gap);
+      const bool actionsBelow = targetW - actionsW - gap < S(180);
+      const int inputW = actionsBelow ? targetW : targetW - actionsW - gap;
+      place(row.right, targetX, top, inputW, S(260));
+      place(row.value, targetX, top, inputW, controlH);
+      if (actionsBelow) top += controlH + gap;
+      int x = actionsBelow ? targetX : targetX + inputW + gap;
+      const auto action = [&](HWND control, int width) {
+        if (x > targetX && x + width > formW) { x = targetX; top += controlH + gap; }
+        place(control, x, top, width, controlH);
+        x += width + gap;
+      };
+      if (!row.data.compare_with_value) action(row.options, optionsW);
+      action(row.remove, removeW);
+      top += controlH + gap;
+    }
+    if (!row.data.compare_with_value && row.optionsExpanded) {
+      const int x = numberW + gap;
+      const int labelW = (std::max)(S(60), textH * 4);
+      const int errorLabelW = (std::max)(S(85), textH * 5);
+      const int inputW = S(85);
+      place(row.multiplierLabel, x, top + S(4), labelW, titleH);
+      place(row.multiplier, x + labelW + S(4), top, inputW, controlH);
+      int errorX = x + labelW + inputW + gap * 2;
+      if (errorX + errorLabelW + inputW + S(25) > formW) { top += controlH + gap; errorX = x; }
+      place(row.toleranceLabel, errorX, top + S(4), errorLabelW, titleH);
+      place(row.tolerance, errorX + errorLabelW + S(4), top, inputW, controlH);
+      top += controlH + gap;
+    }
+    place(row.separator, 0, top + S(4), formW, S(2));
+    top += S(8);
+  }
+  place(st->addCondition, 0, top,
+        search::measure_control_text_width(hwnd, st->addCondition, 115, 18), controlH);
+  top += controlH + S(8);
+  SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_PAGE | SIF_POS};
+  scroll.nMin = 0; scroll.nMax = top - 1; scroll.nPage = paneH; scroll.nPos = st->formScroll;
+  SetScrollInfo(st->formPane, SB_VERT, &scroll, TRUE);
+  const int clamped = GetScrollPos(st->formPane, SB_VERT);
+  const int buttonW = search::measure_control_text_width(hwnd, st->save, 86, 20);
+  MoveWindow(st->save, rc.right - pad - buttonW, footerY, buttonW, controlH, TRUE);
+  MoveWindow(st->back, rc.right - pad - buttonW * 2 - gap, footerY, buttonW, controlH, TRUE);
+  MoveWindow(st->dialogStatus, pad, footerY + S(3), (std::max)(1, static_cast<int>(rc.right) - pad * 2 - buttonW * 2 - gap * 2), titleH, TRUE);
+  SetWindowTextW(st->dialogStatus, w(windowText(st->status)).c_str());
+  if (clamped != st->formScroll) { st->formScroll = clamped; layoutRuleDialog(st); }
+}
+
+LRESULT CALLBACK scrollPaneProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                UINT_PTR id, DWORD_PTR data) {
+  auto *st = reinterpret_cast<State *>(data);
+  if (msg == WM_COMMAND || msg == WM_NOTIFY || msg == WM_DRAWITEM || msg == WM_MEASUREITEM)
+    return SendMessageW(g_page, msg, wp, lp);
+  if (msg == WM_VSCROLL || msg == WM_MOUSEWHEEL) {
+    SCROLLINFO info{sizeof(info), SIF_ALL};
+    GetScrollInfo(hwnd, SB_VERT, &info);
+    int position = info.nPos;
+    const int step = static_cast<int>(48 * search::dpi_scale_factor(hwnd));
+    if (msg == WM_MOUSEWHEEL) {
+      position -= MulDiv(GET_WHEEL_DELTA_WPARAM(wp), step, WHEEL_DELTA);
+    } else {
+      switch (LOWORD(wp)) {
+      case SB_LINEUP: position -= step; break;
+      case SB_LINEDOWN: position += step; break;
+      case SB_PAGEUP: position -= info.nPage; break;
+      case SB_PAGEDOWN: position += info.nPage; break;
+      case SB_THUMBTRACK: case SB_THUMBPOSITION: position = info.nTrackPos; break;
+      case SB_TOP: position = info.nMin; break;
+      case SB_BOTTOM: position = info.nMax; break;
+      default: return 0;
+      }
+    }
+    int &offset = hwnd == st->formPane ? st->formScroll : st->rulesScroll;
+    offset = (std::max)(0, (std::min)(position, info.nMax - static_cast<int>(info.nPage) + 1));
+    layout(g_page, st);
+    return 0;
+  }
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(hwnd, scrollPaneProc, id);
+  return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void closeRuleDialog(State *st) {
+  HWND dialog = st->ruleDialog;
+  if (!dialog) return;
+  st->editing = false;
+  st->ruleDialog = nullptr;
+  st->dialogStatus = nullptr;
+  // Keep the reusable controls and their event handlers with the module.
+  for (HWND control : {st->formPane, st->save, st->back}) {
+    ShowWindow(control, SW_HIDE);
+    SetParent(control, g_page);
+  }
+  DestroyWindow(dialog);
+  applyRuleEditorVisibility(st);
+  layout(g_page, st);
+}
+
+LRESULT CALLBACK ruleDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  auto *st = reinterpret_cast<State *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    st = reinterpret_cast<State *>(reinterpret_cast<CREATESTRUCTW *>(lp)->lpCreateParams);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+  }
+  if (!st) return DefWindowProcW(hwnd, msg, wp, lp);
+  switch (msg) {
+  case WM_SIZE:
+    layoutRuleDialog(st);
+    return 0;
+  case WM_GETMINMAXINFO: {
+    const float scale = search::dpi_scale_factor(hwnd);
+    auto *limits = reinterpret_cast<MINMAXINFO *>(lp);
+    limits->ptMinTrackSize = {static_cast<LONG>(520 * scale), static_cast<LONG>(300 * scale)};
+    return 0;
+  }
+  case WM_MOUSEWHEEL:
+    return SendMessageW(st->formPane, msg, wp, lp);
+  case DM_GETDEFID:
+    return MAKELONG(IDC_SAVE, DC_HASDEFID);
+  case WM_COMMAND:
+    if (LOWORD(wp) == IDCANCEL) { closeRuleDialog(st); return 0; }
+    if (LOWORD(wp) == IDOK) {
+      return SendMessageW(g_page, WM_COMMAND, MAKEWPARAM(IDC_SAVE, BN_CLICKED), reinterpret_cast<LPARAM>(st->save));
+    }
+    return SendMessageW(g_page, msg, wp, lp);
+  case WM_CLOSE:
+    closeRuleDialog(st);
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+bool createRuleDialog(State *st) {
+  if (st->ruleDialog) return false;
+  constexpr const wchar_t *className = L"ScheduledCheckRuleDialog";
+  WNDCLASSEXW wc{sizeof(wc)};
+  wc.lpfnWndProc = ruleDialogProc;
+  wc.hInstance = st->ctx.instance;
+  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+  wc.lpszClassName = className;
+  if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+  HWND owner = GetAncestor(g_page, GA_ROOT);
+  st->ruleDialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+      className, L"新建规则", WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
+      CW_USEDEFAULT, CW_USEDEFAULT, 980, 360, owner, nullptr, st->ctx.instance, st);
+  if (!st->ruleDialog) {
+    MessageBoxW(g_page, L"规则窗口打开失败，请重试。", TITLE, MB_ICONERROR);
+    return false;
+  }
+  SetParent(st->formPane, st->ruleDialog);
+  SetParent(st->save, st->ruleDialog);
+  SetParent(st->back, st->ruleDialog);
+  st->dialogStatus = search::create_label(st->ruleDialog, L"", 0, 0, 0, 0);
+  SetWindowLongPtrW(st->dialogStatus, GWL_STYLE, SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS | WS_CHILD | WS_VISIBLE);
+  SendMessageW(st->save, BM_SETSTYLE, BS_DEFPUSHBUTTON, TRUE);
+  search::apply_font_to_children(st->ruleDialog, st->ctx.uiFont);
+  return true;
+}
+
+void showRuleDialog(State *st) {
+  HWND dialog = st->ruleDialog;
+  HWND owner = GetWindow(dialog, GW_OWNER);
+  RECT ownerRect{}, work{};
+  GetWindowRect(owner, &ownerRect);
+  MONITORINFO monitor{sizeof(monitor)};
+  GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &monitor);
+  work = monitor.rcWork;
+  const float scale = search::dpi_scale_factor(owner);
+  const int width = (std::min)(static_cast<int>(980 * scale), static_cast<int>(work.right - work.left));
+  // A small editor for a single condition; grow only for existing longer rules.
+  const int desiredHeight = 300 + static_cast<int>((std::min)(st->conditionRows.size(), size_t{6})) * 46;
+  const int height = (std::min)(static_cast<int>(desiredHeight * scale), static_cast<int>(work.bottom - work.top));
+  const int x = (std::max)(static_cast<int>(work.left), (std::min)(static_cast<int>(work.right) - width, static_cast<int>((ownerRect.left + ownerRect.right - width) / 2)));
+  const int y = (std::max)(static_cast<int>(work.top), (std::min)(static_cast<int>(work.bottom) - height, static_cast<int>((ownerRect.top + ownerRect.bottom - height) / 2)));
+  SetWindowPos(dialog, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+  layoutRuleDialog(st);
+  const bool ownerEnabled = IsWindowEnabled(owner);
+  if (ownerEnabled) EnableWindow(owner, FALSE);
+  ShowWindow(dialog, SW_SHOW);
+  SetForegroundWindow(dialog);
+  SetFocus(st->editingRuleId ? st->name : st->machineButton);
+  MSG message{};
+  while (IsWindow(dialog)) {
+    const BOOL result = GetMessageW(&message, nullptr, 0, 0);
+    if (result <= 0) {
+      if (IsWindow(dialog)) SendMessageW(dialog, WM_CLOSE, 0, 0);
+      if (result == 0) PostQuitMessage(static_cast<int>(message.wParam));
+      break;
+    }
+    if (!IsDialogMessageW(dialog, &message)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+  }
+  if (ownerEnabled && IsWindow(owner)) {
+    EnableWindow(owner, TRUE);
+    SetActiveWindow(owner);
+    if (IsWindow(g_page)) SetFocus(g_page);
+  }
 }
 
 LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1709,39 +2171,20 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     st = reinterpret_cast<State *>(mcs->lParam);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
     g_page = hwnd;
-    st->nameLabel = search::create_label(hwnd, L"规则名称：", 0, 0, 0, 0);
-    st->machineLabel = search::create_label(hwnd, L"检验仪器：", 0, 0, 0, 0);
-    st->machine = search::create_label(hwnd, L"尚未选择检验仪器", 0, 0, 0, 0);
-    st->machineButton = search::create_button(
-        hwnd, IDC_MACHINE, L"选择仪器", 0, 0, 0, 0);
-    st->leftLabel = search::create_label(hwnd, L"项目 A：", 0, 0, 0, 0);
-    st->opLabel = search::create_label(hwnd, L"比较关系：", 0, 0, 0, 0);
-    st->rightLabel = search::create_label(hwnd, L"项目 B：", 0, 0, 0, 0);
+    st->addCondition = search::create_button(hwnd, IDC_ADD_CONDITION, L"＋ 添加条件", 0, 0, 0, 0);
+    st->nameLabel = search::create_label(hwnd, L"规则名称", 0, 0, 0, 0);
+    st->machineLabel = search::create_label(hwnd, L"仪器", 0, 0, 0, 0);
+    st->machine = search::create_label(hwnd, L"未选择", 0, 0, 0, 0);
+    st->machineButton = search::create_button(hwnd, IDC_MACHINE, L"选择仪器", 0, 0, 0, 0);
     st->name = search::create_edit(hwnd, IDC_NAME, 0, 0, 0, 0);
-    SendMessageW(st->name, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"规则名称（可选）"));
-    st->left = search::create_combo(hwnd, IDC_LEFT, 0, 0, 0, 0, true);
-    st->op = search::create_combo(hwnd, IDC_OP, 0, 0, 0, 0, false);
-    for (const wchar_t *x : {L">", L">=", L"<", L"<=", L"=", L"!="})
-      SendMessageW(st->op, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(x));
-    SendMessageW(st->op, CB_SETCURSEL, 0, 0);
-    st->right = search::create_combo(hwnd, IDC_RIGHT, 0, 0, 0, 0, true);
-    st->valueMode = CreateWindowExW(
-        0, L"BUTTON", L"与固定值比较",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, hwnd,
-        win32_control_id(IDC_VALUE_MODE), st->ctx.instance, nullptr);
-    st->value = search::create_edit(hwnd, IDC_VALUE, 0, 0, 0, 0);
-    SendMessageW(st->value, EM_SETCUEBANNER, TRUE,
-                 reinterpret_cast<LPARAM>(L"如 5.0"));
-    st->ruleSettings =
-        search::create_button(hwnd, IDC_RULE_SETTINGS, L"规则设置", 0, 0, 0, 0);
-    st->newRule = search::create_button(hwnd, IDC_NEW, L"新建", 0, 0, 0, 0);
+    SendMessageW(st->name, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"选填，自动命名"));
+    st->newRule = search::create_button(hwnd, IDC_NEW, L"新建规则", 0, 0, 0, 0);
+    st->editRule = search::create_button(hwnd, IDC_EDIT_RULE, L"编辑", 0, 0, 0, 0);
+    st->back = search::create_button(hwnd, IDC_BACK, L"取消", 0, 0, 0, 0);
     st->save = search::create_button(hwnd, IDC_SAVE, L"保存规则", 0, 0, 0, 0);
-    st->del = search::create_button(hwnd, IDC_DELETE, L"删除", 0, 0, 0, 0);
-    st->toggle =
-        search::create_button(hwnd, IDC_TOGGLE, L"启用/停用", 0, 0, 0, 0);
+    st->del = search::create_button(hwnd, IDC_DELETE, L"删除规则", 0, 0, 0, 0);
     st->scan = search::create_button(hwnd, IDC_SCAN, L"立即扫描", 0, 0, 0, 0);
-    st->rulesTitle = search::create_label(hwnd, L"核查规则", 0, 0, 0, 0);
+    st->rulesTitle = search::create_label(hwnd, L"已保存规则", 0, 0, 0, 0);
     st->rulesList = CreateWindowExW(
         WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL, 0, 0, 0, 0, hwnd,
@@ -1750,9 +2193,9 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                                          LVS_EX_GRIDLINES |
                                                          LVS_EX_DOUBLEBUFFER |
                                                          LVS_EX_CHECKBOXES);
-    const wchar_t *rh[] = {L"状态", L"规则名称", L"项目 A", L"关系", L"项目 B", L"检验仪器"};
-    int rw[] = {70, 180, 250, 60, 250, 180};
-    for (int i = 0; i < 6; ++i)
+    const wchar_t *rh[] = {L"状态", L"规则名称", L"仪器", L"条件摘要"};
+    int rw[] = {70, 220, 180, 650};
+    for (int i = 0; i < 4; ++i)
       search::add_list_column(st->rulesList, i, rh[i], rw[i]);
     st->handled =
         search::create_button(hwnd, IDC_HANDLED, L"标记已处理", 0, 0, 0, 0);
@@ -1766,9 +2209,9 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                                           LVS_EX_DOUBLEBUFFER);
     const wchar_t *ah[] = {L"发现时间", L"状态",   L"规则",   L"报告号",
                            L"样本号",   L"项目 A", L"A 结果", L"关系",
-                           L"项目 B",   L"B 结果"};
-    int aw[] = {145, 70, 160, 95, 95, 180, 80, 55, 180, 80};
-    for (int i = 0; i < 10; ++i)
+                           L"项目 B",   L"B 结果", L"条件详情"};
+    int aw[] = {145, 70, 160, 95, 95, 180, 80, 130, 180, 80, 500};
+    for (int i = 0; i < 11; ++i)
       search::add_list_column(st->alertsList, i, ah[i], aw[i]);
     st->status = search::create_label(hwnd, L"正在加载项目字典...", 0, 0, 0, 0);
     st->tabs = CreateWindowExW(
@@ -1790,6 +2233,25 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_MARQUEE, 0, 0, 0, 0, hwnd,
         win32_control_id(IDC_PROGRESS), st->ctx.instance, nullptr);
     SendMessageW(st->progress, PBM_SETMARQUEE, TRUE, 30);
+    st->rulesPane = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"",
+        WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 0, 0, hwnd,
+        nullptr, st->ctx.instance, nullptr);
+    SetWindowSubclass(st->rulesPane, scrollPaneProc, 1, reinterpret_cast<DWORD_PTR>(st));
+    for (HWND label : {st->nameLabel, st->machineLabel, st->machine,
+                      st->rulesTitle})
+      SetWindowLongPtrW(label, GWL_STYLE,
+                       (GetWindowLongPtrW(label, GWL_STYLE) & ~SS_TYPEMASK) | SS_LEFT | SS_NOPREFIX);
+    SetWindowLongPtrW(st->machine, GWL_STYLE,
+                     GetWindowLongPtrW(st->machine, GWL_STYLE) | SS_ENDELLIPSIS);
+    st->formPane = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"",
+        WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 0, 0, hwnd,
+        nullptr, st->ctx.instance, nullptr);
+    SetWindowSubclass(st->formPane, scrollPaneProc, 1, reinterpret_cast<DWORD_PTR>(st));
+    for (HWND control : {st->nameLabel, st->machineLabel, st->machine, st->machineButton,
+                         st->name,
+                         st->addCondition}) SetParent(control, st->formPane);
+    for (HWND control : {st->newRule, st->editRule, st->del, st->rulesTitle,
+                         st->rulesList}) SetParent(control, st->rulesPane);
     search::apply_font_to_children(hwnd, st->ctx.uiFont);
     fillItems(st);
     applyRuleEditorVisibility(st);
@@ -1806,9 +2268,9 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (st && st->ctx.appContext) {
       auto *context = static_cast<app::Context *>(st->ctx.appContext);
       st->ctx.dbSettings = context->dbSettings;
+      for (auto &row : st->conditionRows) rememberRow(st, row);
       st->allItems.clear();
       st->dictionaryLoaded = false;
-      st->items.clear();
       st->machineItemCodes.clear();
       st->machineItemsLoaded = false;
       fillItems(st);
@@ -1820,17 +2282,105 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (st) {
       st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
       search::apply_font_to_children(hwnd, st->ctx.uiFont);
+      if (st->ruleDialog) search::apply_font_to_children(st->ruleDialog, st->ctx.uiFont);
       layout(hwnd, st);
     }
     return 0;
-  case WM_COMMAND:
+  case WM_MEASUREITEM: {
+    auto *item = reinterpret_cast<MEASUREITEMSTRUCT *>(lp);
+    if (!st || !item || item->CtlType != ODT_COMBOBOX || item->CtlID != IDC_OP) break;
+    HDC dc = GetDC(hwnd);
+    HGDIOBJ old = st->ctx.uiFont ? SelectObject(dc, st->ctx.uiFont) : nullptr;
+    TEXTMETRICW metrics{};
+    GetTextMetricsW(dc, &metrics);
+    if (old) SelectObject(dc, old);
+    ReleaseDC(hwnd, dc);
+    item->itemHeight = metrics.tmHeight + static_cast<UINT>(6 * search::dpi_scale_factor(hwnd));
+    return TRUE;
+  }
+  case WM_DRAWITEM: {
+    auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(lp);
+    if (!item || item->CtlType != ODT_COMBOBOX || item->CtlID != IDC_OP) break;
+    const bool selectedItem = (item->itemState & ODS_SELECTED) != 0;
+    const int savedDc = SaveDC(item->hDC);
+    FillRect(item->hDC, &item->rcItem, GetSysColorBrush(selectedItem ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+    SetTextColor(item->hDC, GetSysColor((item->itemState & ODS_DISABLED) ? COLOR_GRAYTEXT :
+                                      selectedItem ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+    SetBkMode(item->hDC, TRANSPARENT);
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(item->hwndItem, WM_GETFONT, 0, 0));
+    if (font) SelectObject(item->hDC, font);
+    if (item->itemID < static_cast<UINT>(COMPARISON_COUNT))
+      DrawTextW(item->hDC, COMPARISONS[item->itemID].symbol, -1, &item->rcItem,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT))
+      DrawFocusRect(item->hDC, &item->rcItem);
+    RestoreDC(item->hDC, savedDc);
+    return TRUE;
+  }
+  case WM_COMMAND: {
     if (!st)
       break;
-    if ((LOWORD(wp) == IDC_LEFT || LOWORD(wp) == IDC_RIGHT) &&
-        (HIWORD(wp) == CBN_EDITCHANGE || HIWORD(wp) == CBN_KILLFOCUS)) {
-      autoMatchItemCode(st, reinterpret_cast<HWND>(lp),
-                        LOWORD(wp) == IDC_LEFT ? L"项目 A" : L"项目 B",
-                        HIWORD(wp) == CBN_KILLFOCUS);
+    if (st->loadingCondition) return 0;
+    wchar_t controlClass[32]{};
+    if (lp) GetClassNameW(reinterpret_cast<HWND>(lp), controlClass, 32);
+    const bool comboFocused = _wcsicmp(controlClass, L"ComboBox") == 0 && HIWORD(wp) == CBN_SETFOCUS;
+    const bool editFocused = _wcsicmp(controlClass, L"Edit") == 0 && HIWORD(wp) == EN_SETFOCUS;
+    // Focus notifications are not button actions. Opening the picker transfers
+    // focus and must not recursively open it again on BN_KILLFOCUS.
+    if (_wcsicmp(controlClass, L"Button") == 0 && HIWORD(wp) != BN_CLICKED)
+      return 0;
+    if (lp && st->editing && GetParent(reinterpret_cast<HWND>(lp)) == st->formPane &&
+        (comboFocused || editFocused)) {
+      RECT fieldRect{}, paneRect{};
+      GetWindowRect(reinterpret_cast<HWND>(lp), &fieldRect);
+      MapWindowPoints(nullptr, st->formPane, reinterpret_cast<POINT *>(&fieldRect), 2);
+      GetClientRect(st->formPane, &paneRect);
+      // Combo window bounds include the dropdown; scroll only its edit/header.
+      const int visibleH = comboFocused
+                               ? static_cast<int>(SendMessageW(reinterpret_cast<HWND>(lp), CB_GETITEMHEIGHT, static_cast<WPARAM>(-1), 0)) +
+                                     static_cast<int>(8 * search::dpi_scale_factor(hwnd))
+                               : static_cast<int>(fieldRect.bottom - fieldRect.top);
+      if (fieldRect.top < 0)
+        st->formScroll = (std::max)(0, st->formScroll + static_cast<int>(fieldRect.top));
+      else if (fieldRect.top + visibleH > paneRect.bottom)
+        st->formScroll += fieldRect.top + visibleH - paneRect.bottom;
+      if (GetScrollPos(st->formPane, SB_VERT) != st->formScroll)
+        layout(hwnd, st);
+      return 0;
+    }
+    for (size_t index = 0; index < st->conditionRows.size(); ++index) {
+      auto &row = st->conditionRows[index];
+      const HWND source = reinterpret_cast<HWND>(lp);
+      const auto controls = rowControls(row);
+      if (std::find(controls.begin(), controls.end(), source) == controls.end()) continue;
+      if ((source == row.left || source == row.right) &&
+          (HIWORD(wp) == CBN_EDITCHANGE || HIWORD(wp) == CBN_KILLFOCUS)) {
+        autoMatchItemCode(st, source, source == row.left ? L"项目" : L"比较项目",
+                          HIWORD(wp) == CBN_KILLFOCUS);
+      } else if (source == row.options && HIWORD(wp) == BN_CLICKED) {
+        row.optionsExpanded = !row.optionsExpanded;
+      } else if (source == row.remove && HIWORD(wp) == BN_CLICKED) {
+        if (st->conditionRows.size() <= 1) return 0;
+        st->loadingCondition = true;
+        for (HWND control : controls) DestroyWindow(control);
+        st->conditionRows.erase(st->conditionRows.begin() + index);
+        orderEditorControls(st);
+        st->loadingCondition = false;
+        updateConditionRows(st);
+        applyRuleEditorVisibility(st);
+        layout(hwnd, st);
+        auto &next = st->conditionRows[(std::min)(index, st->conditionRows.size() - 1)];
+        SetFocus(IsWindowEnabled(next.left) ? next.left : next.remove);
+        return 0;
+      } else if (!((HIWORD(wp) == CBN_SELCHANGE &&
+                    (source == row.left || source == row.right || source == row.op || source == row.kind || source == row.joiner)) ||
+                   (HIWORD(wp) == EN_CHANGE &&
+                    (source == row.value || source == row.multiplier || source == row.tolerance)))) {
+        return 0;
+      }
+      updateConditionRows(st);
+      applyRuleEditorVisibility(st);
+      layout(hwnd, st);
       return 0;
     }
     if (LOWORD(wp) == IDC_ALERT_SEARCH && HIWORD(wp) == EN_CHANGE) {
@@ -1841,25 +2391,28 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     switch (LOWORD(wp)) {
-    case IDC_RULE_SETTINGS:
-      st->rulesExpanded = !st->rulesExpanded;
-      if (st->tabs)
-        TabCtrl_SetCurSel(st->tabs, st->rulesExpanded ? 1 : 0);
-      applyRuleEditorVisibility(st);
-      layout(hwnd, st);
+    case IDC_ADD_CONDITION:
+      if (st->conditionRows.size() >= 64) {
+        MessageBoxW(st->ruleDialog ? st->ruleDialog : hwnd, L"每条规则最多支持 64 个条件。", TITLE, MB_ICONINFORMATION);
+        return 0;
+      }
+      appendConditionRow(st);
+      fillItems(st);
+      SetFocus(st->conditionRows.back().left);
       return 0;
-    case IDC_VALUE_MODE:
-      st->valueModeChecked =
-          SendMessageW(st->valueMode, BM_GETCHECK, 0, 0) == BST_CHECKED;
-      applyRuleEditorVisibility(st);
-      layout(hwnd, st);
+    case IDC_EDIT_RULE:
+      selectRule(st);
+      return 0;
+    case IDC_BACK:
+      closeRuleDialog(st);
       return 0;
     case IDC_NEW:
       clearEditor(st);
       return 0;
     case IDC_MACHINE: {
+      if (HIWORD(wp) != BN_CLICKED) return 0;
       search::MachinePickerPopupOptions options;
-      options.owner = hwnd;
+      options.owner = st->ruleDialog ? st->ruleDialog : hwnd;
       options.anchor = st->machineButton;
       options.font = st->ctx.uiFont;
       options.db_settings = st->ctx.dbSettings;
@@ -1870,20 +2423,11 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!IsWindow(hwnd)) return;
         auto *state = reinterpret_cast<State *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (!state) return;
-        const bool sameMachine = state->roomCode == machine.room_code &&
-                                 state->machCode == machine.mach_code;
-        const int leftIndex = sameMachine ? resolveItem(state, state->left) : -1;
-        const int rightIndex = sameMachine ? resolveItem(state, state->right) : -1;
-        state->pendingLeftCode = leftIndex >= 0
-                                     ? state->items[leftIndex].item_code : "";
-        state->pendingRightCode = rightIndex >= 0
-                                      ? state->items[rightIndex].item_code : "";
+        for (auto &row : state->conditionRows) rememberRow(state, row);
         state->roomCode = machine.room_code;
         state->machCode = machine.mach_code;
         state->machName = machine.mach_name;
-        SetWindowTextW(state->machine,
-                       w(machine.mach_name + " [" + machine.room_code + "/" +
-                         machine.mach_code + "]").c_str());
+        SetWindowTextW(state->machine, w(machine.mach_name).c_str());
         loadMachineItems(hwnd, state);
       };
       search::show_machine_picker_popup(options);
@@ -1902,24 +2446,11 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
           return 0;
         }
-        clearEditor(st);
+        st->editing = false;
         refresh(st);
+        applyRuleEditorVisibility(st);
+        layout(hwnd, st);
         updateReminder();
-      }
-      return 0;
-    }
-    case IDC_TOGGLE: {
-      int x = selected(st->rulesList);
-      if (x >= 0 && x < static_cast<int>(st->rules.size())) {
-        std::string e;
-        if (!scheduled_check::set_rule_enabled(st->rules[x].id,
-                                               !st->rules[x].enabled, e)) {
-          MessageBoxW(hwnd, w(e).c_str(), TITLE, MB_ICONERROR);
-          return 0;
-        }
-        refresh(st);
-        updateReminder();
-        run_scheduled_result_check_now();
       }
       return 0;
     }
@@ -1966,6 +2497,7 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     }
     break;
+  }
   case WM_NOTIFY:
     if (st) {
       auto *n = reinterpret_cast<NMHDR *>(lp);
@@ -2029,14 +2561,16 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
           }
         }
-        selectRule(st);
+        if (!st->syncingRules) applyRuleEditorVisibility(st);
       }
+      if (n->idFrom == IDC_RULES && n->code == NM_DBLCLK) selectRule(st);
       if (n->idFrom == IDC_ALERTS && n->code == NM_DBLCLK)
         openAlert(st, selected(st->alertsList));
     }
     break;
   case WM_NCDESTROY:
     if (st) {
+      closeRuleDialog(st);
       st->itemTask.cancel();
       st->machineItemTask.cancel();
       if (g_page == hwnd)

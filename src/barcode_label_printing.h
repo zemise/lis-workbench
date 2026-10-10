@@ -4,6 +4,8 @@
 
 namespace search {
 
+enum class BarcodeLabelTemplate { Standard, Microbiology };
+
 // Shared data contract for LabelPrint medical barcode labels.
 struct BarcodeLabelPayload {
     std::string sample_no;
@@ -14,6 +16,10 @@ struct BarcodeLabelPayload {
     std::string department;
     std::string patient_id;
     std::string timestamp;
+    BarcodeLabelTemplate label_template = BarcodeLabelTemplate::Standard;
+    std::string order_text;
+    std::string sex;
+    std::string age;
 };
 
 std::wstring configured_barcode_printer_name();

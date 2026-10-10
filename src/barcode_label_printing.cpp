@@ -5,6 +5,7 @@
 
 #if defined(LIS_HAS_LABELPRINT)
 #include "labelprint/labelprint.h"
+#include "microbiology_label_template.h"
 #endif
 
 #include <stdexcept>
@@ -30,6 +31,26 @@ labelprint::MedicalLabelLayout zebraMedicalLabelLayout() {
     layout.testItem.maxWidth = ZEBRA_BARCODE_TEXT_WIDTH;
     layout.testItem.align = labelprint::MedicalLabelTextAlign::Center;
     return layout;
+}
+
+void printMicrobiologyLabel(const BarcodeLabelPayload& payload,
+                            const std::wstring& printer_name) {
+    if (printer_name.empty()) throw std::runtime_error("Printer name is required");
+    const auto model = labelprint::detectMedicalLabelPrinterModel(printer_name);
+    labelprint::PrinterProfile profile = labelprint::PrinterProfiles::xprinter_xp360b();
+    if (model == labelprint::MedicalLabelPrinterModel::ZebraZd888) {
+        profile = labelprint::PrinterProfiles::zebra_zd888();
+        profile.nativeChineseFont = wide_to_utf8(configured_zebra_chinese_font());
+        profile.nativeChineseFontFallback.clear();
+    } else if (model == labelprint::MedicalLabelPrinterModel::GodexG500u) {
+        profile = labelprint::PrinterProfiles::godex_g500u();
+    }
+    const auto doc = build_microbiology_label(payload, model);
+    const auto job = render_microbiology_label(doc, profile);
+    labelprint::PrinterConnection conn;
+    conn.wideName = printer_name;
+    labelprint::WindowsRawTransport transport;
+    transport.send(job, conn);
 }
 
 bool printZebraMedicalLabelWithoutFallback(const labelprint::MedicalLabelData& data,
@@ -107,6 +128,11 @@ std::wstring barcode_label_details(const BarcodeLabelPayload& payload) {
     append_detail_line(message, L"条码号：", payload.barcode_value);
     append_detail_line(message, L"姓名：", payload.patient_name);
     append_detail_line(message, L"标本：", payload.specimen_type);
+    if (payload.label_template == BarcodeLabelTemplate::Microbiology) {
+        append_detail_line(message, L"医嘱内容：", payload.order_text);
+        append_detail_line(message, L"性别：", payload.sex);
+        append_detail_line(message, L"年龄：", payload.age);
+    }
     append_detail_line(message, L"开单日期：", payload.timestamp);
     append_detail_line(message, L"科室代码：", payload.department);
     message += L"病人号：";
@@ -124,6 +150,10 @@ bool barcode_label_printing_available() {
 
 void print_barcode_label(const BarcodeLabelPayload& payload, const std::wstring& printer_name) {
 #if defined(LIS_HAS_LABELPRINT)
+    if (payload.label_template == BarcodeLabelTemplate::Microbiology) {
+        printMicrobiologyLabel(payload, printer_name);
+        return;
+    }
     labelprint::MedicalLabelData data;
     data.sampleNo = payload.sample_no;
     data.testItem = payload.test_item;

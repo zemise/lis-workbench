@@ -1,13 +1,14 @@
-#include "regular_report_module.h"
-#include "regular_report_state.h"
+#include "microbiology_report_module.h"
+#include "microbiology_report_state.h"
 
 #ifdef _WIN32
 
 #include "app_settings_io.h"
+#include "microbiology_quick_machine.h"
 #include "barcode_label_printing.h"
 #include "main_app.h"
 #include "log.h"
-#include "regular_report_barcode_range.h"
+#include "microbiology_report_barcode_range.h"
 #include "resource.h"
 #include "search_controller.h"
 #include "search_splitter.h"
@@ -42,43 +43,43 @@
 // Aliases to extracted utility functions (local shorthand in anonymous ns)
 // ============================================================================
 
-// These aliases make the panel code readable without the "regular" prefix.
+// These aliases make the panel code readable without the "microbiology" prefix.
 // They're only valid within this translation unit's anonymous namespace.
 
 namespace {
 
-inline int S(HWND h, int v) { return regularS(h, v); }
+inline int S(HWND h, int v) { return microbiologyS(h, v); }
 inline HWND makeStatic(HWND p, const wchar_t* t, int x, int y, int w, int h, DWORD s = SS_LEFT) {
-    return regularMakeStatic(p, t, x, y, w, h, s);
+    return microbiologyMakeStatic(p, t, x, y, w, h, s);
 }
 inline HWND makeEdit(HWND p, const wchar_t* t, int x, int y, int w, int h, DWORD e = ES_AUTOHSCROLL) {
-    return regularMakeEdit(p, t, x, y, w, h, e);
+    return microbiologyMakeEdit(p, t, x, y, w, h, e);
 }
 inline HWND makeDatePicker(HWND p, int x, int y, int w, int h,
                             const wchar_t* f, const SYSTEMTIME* v, int id = 0) {
-    return regularMakeDatePicker(p, x, y, w, h, f, v, id);
+    return microbiologyMakeDatePicker(p, x, y, w, h, f, v, id);
 }
 
 // ============================================================================
 
 // Forward decls for functions defined later in this file
-void runReportQuery(RegularReportState* st, bool preserveState = false);
-void querySelectedResults(RegularReportState* st, int selected);
-void finishReportQuery(RegularReportState* st, HWND hwnd,
-                       std::unique_ptr<ReportLoadResult> result);
-void finishResultQuery(RegularReportState* st, HWND hwnd,
-                       std::unique_ptr<ResultLoadResult> result);
-void sortReportRowsByColumn(RegularReportState* st, int column);
-void populateLeftPanelFromReport(RegularReportState* st, int selected);
-void selectReportRow(RegularReportState* st, int index);
-void selectAdjacentReportRow(RegularReportState* st, int delta);
-bool hasSelectedReportRow(const RegularReportState* st);
-int currentReportIndex(const RegularReportState* st);
-void beginResultEdit(RegularReportState* st, int row);
-void finishResultEdit(RegularReportState* st, bool commit, bool moveNext = false,
+void runReportQuery(MicrobiologyReportState* st, bool preserveState = false);
+void querySelectedResults(MicrobiologyReportState* st, int selected);
+void finishReportQuery(MicrobiologyReportState* st, HWND hwnd,
+                       std::unique_ptr<MicrobiologyReportLoadResult> result);
+void finishResultQuery(MicrobiologyReportState* st, HWND hwnd,
+                       std::unique_ptr<MicrobiologyResultLoadResult> result);
+void sortReportRowsByColumn(MicrobiologyReportState* st, int column);
+void populateLeftPanelFromReport(MicrobiologyReportState* st, int selected);
+void selectReportRow(MicrobiologyReportState* st, int index);
+void selectAdjacentReportRow(MicrobiologyReportState* st, int delta);
+bool hasSelectedReportRow(const MicrobiologyReportState* st);
+int currentReportIndex(const MicrobiologyReportState* st);
+void beginResultEdit(MicrobiologyReportState* st, int row);
+void finishResultEdit(MicrobiologyReportState* st, bool commit, bool moveNext = false,
                       bool restoreListFocus = true);
-bool inspectDateMatchesCurrentQuery(const RegularReportState* st);
-void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preserve = false);
+void setSubmitDateRangeAndQuery(MicrobiologyReportState* st, SYSTEMTIME start,
+                                SYSTEMTIME end, bool preserve = false);
 LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                 UINT_PTR subclassId, DWORD_PTR data);
 
@@ -94,34 +95,35 @@ HWND makeButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, i
 }
 
 HWND makeCombo(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
-    HWND combo = regularAddClipSiblings(search::create_combo(parent, 0, x, y, w, h, false));
+    HWND combo = microbiologyAddClipSiblings(search::create_combo(parent, 0, x, y, w, h, false));
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
     return combo;
 }
 
-constexpr int REGULAR_TREND_DEFAULT_DAYS = 14;
+constexpr int MICROBIOLOGY_TREND_DEFAULT_DAYS = 14;
+constexpr int MICROBIOLOGY_REPORT_DEFAULT_DAYS = 7;
 
-std::string regularDateText(SYSTEMTIME st) {
-    st = regularNormalizeDate(st);
+std::string microbiologyDateText(SYSTEMTIME st) {
+    st = microbiologyNormalizeDate(st);
     char buffer[16]{};
     std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
     return buffer;
 }
 
-SYSTEMTIME regularReportTrendEndDate(const search::ReportRow& row) {
+SYSTEMTIME microbiologyReportTrendEndDate(const search::ReportRow& row) {
     SYSTEMTIME end{};
-    if (regularParseDateTimeText(row.chk_date, end)) return regularNormalizeDate(end);
-    return regularTodayDate();
+    if (microbiologyParseDateTimeText(row.chk_date, end)) return microbiologyNormalizeDate(end);
+    return microbiologyTodayDate();
 }
 
 // ============================================================================
 // Machine picker
 // ============================================================================
 
-void acceptAndCloseMachinePicker(HWND hwnd, MachinePickerState* ps);
+void acceptAndCloseMachinePicker(HWND hwnd, MicrobiologyMachinePickerState* ps);
 
-std::string selectedMachinePickerRoomCode(MachinePickerState* ps) {
+std::string selectedMachinePickerRoomCode(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return "";
     const auto idx = static_cast<int>(SendMessageW(ps->roomCombo, CB_GETCURSEL, 0, 0));
     if (idx <= 0) return "";
@@ -130,7 +132,7 @@ std::string selectedMachinePickerRoomCode(MachinePickerState* ps) {
     return ps->rooms[static_cast<size_t>(roomIndex)].room_code;
 }
 
-std::string machinePickerSearchText(MachinePickerState* ps) {
+std::string machinePickerSearchText(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->searchEdit) return "";
     wchar_t buffer[128]{};
     GetWindowTextW(ps->searchEdit, buffer, 128);
@@ -151,7 +153,7 @@ bool machineMatchesSearch(const search::MachineOption& row, const std::string& n
     return code.find(q) != std::string::npos || py.find(q) != std::string::npos;
 }
 
-void selectMachinePickerRoomByCode(MachinePickerState* ps, const std::string& roomCode) {
+void selectMachinePickerRoomByCode(MicrobiologyMachinePickerState* ps, const std::string& roomCode) {
     if (!ps || !ps->roomCombo) return;
     const std::string target = search::trim(roomCode);
     if (target.empty()) {
@@ -170,20 +172,22 @@ void selectMachinePickerRoomByCode(MachinePickerState* ps, const std::string& ro
     }
 }
 
-void syncMachinePickerRoomFromSelection(MachinePickerState* ps) {
+void syncMachinePickerRoomFromSelection(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->machineList) return;
     const int sel = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
     if (sel < 0 || sel >= static_cast<int>(ps->machines.size())) return;
     selectMachinePickerRoomByCode(ps, ps->machines[static_cast<size_t>(sel)].room_code);
 }
 
-void applyMachinePickerFilter(MachinePickerState* ps) {
+void applyMachinePickerFilter(MicrobiologyMachinePickerState* ps) {
     if (!ps) return;
     ps->machines.clear();
     const std::string keyword = machinePickerSearchText(ps);
     const std::string roomCode = search::trim(selectedMachinePickerRoomCode(ps));
     const bool restrictByRoom = keyword.empty() && ps->roomChosenByUser && !roomCode.empty();
     for (const auto& row : ps->allMachines) {
+        if (!microbiologyIsAllowedMachineCode(row.mach_code))
+            continue;
         if (restrictByRoom && search::trim(row.room_code) != roomCode)
             continue;
         if (machineMatchesSearch(row, keyword))
@@ -191,58 +195,58 @@ void applyMachinePickerFilter(MachinePickerState* ps) {
     }
 }
 
-int machinePickerListHeight(HWND hwnd, MachinePickerState* ps) {
+int machinePickerListHeight(HWND hwnd, MicrobiologyMachinePickerState* ps) {
     const int vis = std::clamp(static_cast<int>(ps ? ps->machines.size() : 0),
-                               REGULAR_MACHINE_PICKER_MIN_ROWS, REGULAR_MACHINE_PICKER_MAX_ROWS);
-    const int fh = ps && ps->report ? regularFontLogicalHeight(hwnd, ps->report->ctx.uiFont) : 16;
+                               MICROBIOLOGY_MACHINE_PICKER_MIN_ROWS, MICROBIOLOGY_MACHINE_PICKER_MAX_ROWS);
+    const int fh = ps && ps->report ? microbiologyFontLogicalHeight(hwnd, ps->report->ctx.uiFont) : 16;
     const int rh = S(hwnd, std::max(22, fh + 6));
-    return S(hwnd, REGULAR_MACHINE_PICKER_HEADER_H) + vis * rh +
-           S(hwnd, REGULAR_MACHINE_PICKER_LIST_EXTRA_H);
+    return S(hwnd, MICROBIOLOGY_MACHINE_PICKER_HEADER_H) + vis * rh +
+           S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_EXTRA_H);
 }
 
-void layoutMachinePicker(HWND hwnd, MachinePickerState* ps) {
+void layoutMachinePicker(HWND hwnd, MicrobiologyMachinePickerState* ps) {
     if (!hwnd || !ps || !ps->machineList) return;
-    const int ix = S(hwnd, REGULAR_MACHINE_PICKER_INPUT_X);
-    const int searchY = S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_Y);
-    const int labelW = S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W);
+    const int ix = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_INPUT_X);
+    const int searchY = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_Y);
+    const int labelW = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_LABEL_W);
     const int editX = ix + labelW;
-    const int editW = S(hwnd, REGULAR_MACHINE_PICKER_LIST_W) - labelW;
+    const int editW = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W) - labelW;
     if (ps->searchEdit)
         MoveWindow(ps->searchEdit, editX, searchY, editW, S(hwnd, 24), TRUE);
     if (ps->roomCombo)
-        MoveWindow(ps->roomCombo, ix, S(hwnd, REGULAR_MACHINE_PICKER_ROOM_Y),
-                   S(hwnd, REGULAR_MACHINE_PICKER_LIST_W),
-                   S(hwnd, REGULAR_MACHINE_PICKER_COMBO_DROP_H), TRUE);
-    const int ly = S(hwnd, REGULAR_MACHINE_PICKER_LIST_Y);
-    const int lw = S(hwnd, REGULAR_MACHINE_PICKER_LIST_W);
+        MoveWindow(ps->roomCombo, ix, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_ROOM_Y),
+                   S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W),
+                   S(hwnd, MICROBIOLOGY_MACHINE_PICKER_COMBO_DROP_H), TRUE);
+    const int ly = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_Y);
+    const int lw = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W);
     const int lh = machinePickerListHeight(hwnd, ps);
     MoveWindow(ps->machineList, ix, ly, lw, lh, TRUE);
-    ListView_SetColumnWidth(ps->machineList, 0, S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 1, S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 2, S(hwnd, REGULAR_MACHINE_PICKER_GROUP_CODE_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 3, S(hwnd, REGULAR_MACHINE_PICKER_GROUP_NAME_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 4, S(hwnd, REGULAR_MACHINE_PICKER_SAMPLE_COL_W));
-    ListView_SetColumnWidth(ps->machineList, 5, S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 0, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_CODE_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 1, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_NAME_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 2, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_GROUP_CODE_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 3, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_GROUP_NAME_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 4, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SAMPLE_COL_W));
+    ListView_SetColumnWidth(ps->machineList, 5, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_PY_COL_W));
 
-    RECT cr{0, 0, S(hwnd, REGULAR_MACHINE_PICKER_CLIENT_W),
-            ly + lh + S(hwnd, REGULAR_MACHINE_PICKER_BOTTOM_PAD)};
+    RECT cr{0, 0, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_CLIENT_W),
+            ly + lh + S(hwnd, MICROBIOLOGY_MACHINE_PICKER_BOTTOM_PAD)};
     AdjustWindowRectEx(&cr, GetWindowLongW(hwnd, GWL_STYLE), FALSE,
                        GetWindowLongW(hwnd, GWL_EXSTYLE));
     SetWindowPos(hwnd, nullptr, 0, 0, cr.right - cr.left, cr.bottom - cr.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void populateMachinePickerRooms(MachinePickerState* ps) {
+void populateMachinePickerRooms(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->roomCombo) return;
-    regularComboReset(ps->roomCombo);
-    regularComboAdd(ps->roomCombo, L"全部");
+    microbiologyComboReset(ps->roomCombo);
+    microbiologyComboAdd(ps->roomCombo, L"全部");
     for (const auto& row : ps->rooms) {
-        regularComboAdd(ps->roomCombo, search::utf8_to_wide(row.room_name));
+        microbiologyComboAdd(ps->roomCombo, search::utf8_to_wide(row.room_name));
     }
     SendMessageW(ps->roomCombo, CB_SETCURSEL, 0, 0);
 }
 
-void populateMachinePickerMachines(MachinePickerState* ps) {
+void populateMachinePickerMachines(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->machineList) return;
     applyMachinePickerFilter(ps);
     ps->refreshingMachines = true;
@@ -285,7 +289,7 @@ void populateMachinePickerMachines(MachinePickerState* ps) {
     layoutMachinePicker(ps->report ? ps->report->machinePickerPopup : nullptr, ps);
 }
 
-void reloadMachinePickerRooms(MachinePickerState* ps) {
+void reloadMachinePickerRooms(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->report || !ps->roomCombo) return;
     ps->rooms.clear();
     ps->allMachines.clear();
@@ -306,17 +310,35 @@ void reloadMachinePickerRooms(MachinePickerState* ps) {
             populateMachinePickerMachines(ps);
             MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
                                                        : ps->report->leftContent,
-                        L"检验科室加载失败。", L"常规报告", MB_ICONERROR);
+                        L"检验科室加载失败。", L"微生物报告", MB_ICONERROR);
             return;
         }
-        if (!search::load_report_machine_picker_machine_options(ps->report->ctx.dbSettings, "", machines, error)) {
+        if (!search::load_microbiology_report_machine_picker_machine_options(
+                ps->report->ctx.dbSettings, "", machines, error)) {
             populateMachinePickerRooms(ps);
             populateMachinePickerMachines(ps);
             MessageBoxW(ps->report->machinePickerPopup ? ps->report->machinePickerPopup
                                                        : ps->report->leftContent,
-                        L"检验仪器加载失败。", L"常规报告", MB_ICONERROR);
+                        L"检验仪器加载失败。", L"微生物报告", MB_ICONERROR);
             return;
         }
+        machines.erase(
+            std::remove_if(machines.begin(), machines.end(),
+                [](const search::MachineOption& machine) {
+                    return !microbiologyIsAllowedMachineCode(machine.mach_code);
+                }),
+            machines.end());
+        rooms.erase(
+            std::remove_if(rooms.begin(), rooms.end(),
+                [&machines](const search::RoomOption& room) {
+                    const std::string roomCode = search::trim(room.room_code);
+                    return std::none_of(
+                        machines.begin(), machines.end(),
+                        [&roomCode](const search::MachineOption& machine) {
+                            return search::trim(machine.room_code) == roomCode;
+                        });
+                }),
+            rooms.end());
         ps->report->cachedMachinePickerRooms = std::move(rooms);
         ps->report->cachedMachinePickerMachines = std::move(machines);
         ps->report->machinePickerCacheConnectionString = cacheKey;
@@ -333,26 +355,27 @@ void reloadMachinePickerRooms(MachinePickerState* ps) {
     populateMachinePickerMachines(ps);
 }
 
-void acceptMachinePicker(MachinePickerState* ps) {
+void acceptMachinePicker(MicrobiologyMachinePickerState* ps) {
     if (!ps || !ps->report || !ps->report->machineEdit || !ps->machineList) return;
     const int sel = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
     if (sel >= 0 && sel < static_cast<int>(ps->machines.size())) {
         const auto& m = ps->machines[static_cast<size_t>(sel)];
+        if (!microbiologyIsAllowedMachineCode(m.mach_code)) return;
         SetWindowTextW(ps->report->machineEdit, search::utf8_to_wide(m.mach_name).c_str());
         ps->report->selectedMachineCode = m.mach_code;
         ps->report->selectedRoomCode = m.room_code;
-        regularUpdateQuickMachineButtonLabels(ps->report);
+        microbiologyUpdateQuickMachineButtonLabels(ps->report);
     }
 }
 
-void acceptAndCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
-    RegularReportState* rpt = ps ? ps->report : nullptr;
+void acceptAndCloseMachinePicker(HWND hwnd, MicrobiologyMachinePickerState* ps) {
+    MicrobiologyReportState* rpt = ps ? ps->report : nullptr;
     acceptMachinePicker(ps);
     DestroyWindow(hwnd);
     runReportQuery(rpt);
 }
 
-void selectMachinePickerRow(MachinePickerState* ps, int row) {
+void selectMachinePickerRow(MicrobiologyMachinePickerState* ps, int row) {
     if (!ps || !ps->machineList) return;
     const int count = ListView_GetItemCount(ps->machineList);
     if (count <= 0) return;
@@ -362,10 +385,10 @@ void selectMachinePickerRow(MachinePickerState* ps, int row) {
                           LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(ps->machineList, row, FALSE);
     syncMachinePickerRoomFromSelection(ps);
-    regularRedrawSelectedListRow(ps->machineList);
+    microbiologyRedrawSelectedListRow(ps->machineList);
 }
 
-void moveMachinePickerSelection(MachinePickerState* ps, int delta) {
+void moveMachinePickerSelection(MicrobiologyMachinePickerState* ps, int delta) {
     if (!ps || !ps->machineList || delta == 0) return;
     int row = ListView_GetNextItem(ps->machineList, -1, LVNI_SELECTED);
     if (row < 0) row = 0;
@@ -375,7 +398,7 @@ void moveMachinePickerSelection(MachinePickerState* ps, int delta) {
 
 LRESULT CALLBACK machinePickerSearchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                          UINT_PTR sid, DWORD_PTR data) {
-    auto* ps = reinterpret_cast<MachinePickerState*>(data);
+    auto* ps = reinterpret_cast<MicrobiologyMachinePickerState*>(data);
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE) {
@@ -404,67 +427,67 @@ LRESULT CALLBACK machinePickerSearchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
-void postCloseMachinePicker(HWND hwnd, MachinePickerState* ps) {
+void postCloseMachinePicker(HWND hwnd, MicrobiologyMachinePickerState* ps) {
     if (!ps || ps->closePosted) return;
     ps->closePosted = true;
     PostMessageW(hwnd, WM_CLOSE, 0, 0);
 }
 
 LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* ps = reinterpret_cast<MachinePickerState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    auto* ps = reinterpret_cast<MicrobiologyMachinePickerState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE) { DestroyWindow(hwnd); return 0; }
             break;
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-            ps = reinterpret_cast<MachinePickerState*>(cs->lpCreateParams);
+            ps = reinterpret_cast<MicrobiologyMachinePickerState*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ps));
             if (!ps || !ps->report) return -1;
             ps->report->machinePickerPopup = hwnd;
-            const int ix = S(hwnd, REGULAR_MACHINE_PICKER_INPUT_X);
-            makeStatic(hwnd, L"检索内容", ix, S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_Y),
-                       S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W), S(hwnd, 18));
+            const int ix = S(hwnd, MICROBIOLOGY_MACHINE_PICKER_INPUT_X);
+            makeStatic(hwnd, L"检索内容", ix, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_LABEL_Y),
+                       S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_LABEL_W), S(hwnd, 18));
             ps->searchEdit = makeEdit(hwnd, L"",
-                ix + S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_LABEL_W),
-                S(hwnd, REGULAR_MACHINE_PICKER_SEARCH_Y),
-                S(hwnd, REGULAR_MACHINE_PICKER_LIST_W - REGULAR_MACHINE_PICKER_SEARCH_LABEL_W),
+                ix + S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_LABEL_W),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SEARCH_Y),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W - MICROBIOLOGY_MACHINE_PICKER_SEARCH_LABEL_W),
                 S(hwnd, 24));
-            SetWindowLongPtrW(ps->searchEdit, GWLP_ID, REGULAR_IDC_MACHINE_PICKER_SEARCH);
+            SetWindowLongPtrW(ps->searchEdit, GWLP_ID, MICROBIOLOGY_IDC_MACHINE_PICKER_SEARCH);
             SetWindowSubclass(ps->searchEdit, machinePickerSearchProc,
-                              REGULAR_MACHINE_PICKER_SEARCH_SUBCLASS,
+                              MICROBIOLOGY_MACHINE_PICKER_SEARCH_SUBCLASS,
                               reinterpret_cast<DWORD_PTR>(ps));
-            ps->roomCombo = search::create_combo(hwnd, REGULAR_IDC_MACHINE_PICKER_ROOM,
-                ix, S(hwnd, REGULAR_MACHINE_PICKER_ROOM_Y),
-                S(hwnd, REGULAR_MACHINE_PICKER_LIST_W),
-                S(hwnd, REGULAR_MACHINE_PICKER_COMBO_DROP_H), false);
+            ps->roomCombo = search::create_combo(hwnd, MICROBIOLOGY_IDC_MACHINE_PICKER_ROOM,
+                ix, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_ROOM_Y),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_COMBO_DROP_H), false);
             ps->machineList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-                ix, S(hwnd, REGULAR_MACHINE_PICKER_LIST_Y),
-                S(hwnd, REGULAR_MACHINE_PICKER_LIST_W),
-                S(hwnd, REGULAR_MACHINE_PICKER_INITIAL_LIST_H),
-                hwnd, win32_control_id(REGULAR_IDC_MACHINE_PICKER_MACH),
+                ix, S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_Y),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_LIST_W),
+                S(hwnd, MICROBIOLOGY_MACHINE_PICKER_INITIAL_LIST_H),
+                hwnd, win32_control_id(MICROBIOLOGY_IDC_MACHINE_PICKER_MACH),
                 GetModuleHandleW(nullptr), nullptr);
             ListView_SetExtendedListViewStyle(ps->machineList,
                 LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
             search::add_list_column(ps->machineList, 0, L"仪器",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_CODE_COL_W));
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_CODE_COL_W));
             search::add_list_column(ps->machineList, 1, L"仪器名称",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_NAME_COL_W));
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_NAME_COL_W));
             search::add_list_column(ps->machineList, 2, L"项目代码",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_GROUP_CODE_COL_W));
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_GROUP_CODE_COL_W));
             search::add_list_column(ps->machineList, 3, L"项目名称",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_GROUP_NAME_COL_W));
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_GROUP_NAME_COL_W));
             search::add_list_column(ps->machineList, 4, L"样本",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_SAMPLE_COL_W));
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_SAMPLE_COL_W));
             search::add_list_column(ps->machineList, 5, L"拼音码",
-                                     S(hwnd, REGULAR_MACHINE_PICKER_PY_COL_W));
-            regularApplyFont(hwnd, ps->report->ctx.uiFont);
+                                     S(hwnd, MICROBIOLOGY_MACHINE_PICKER_PY_COL_W));
+            microbiologyApplyFont(hwnd, ps->report->ctx.uiFont);
             reloadMachinePickerRooms(ps);
             return 0;
         }
         case WM_COMMAND: {
-            if (LOWORD(wp) == REGULAR_IDC_MACHINE_PICKER_ROOM && HIWORD(wp) == CBN_SELCHANGE) {
+            if (LOWORD(wp) == MICROBIOLOGY_IDC_MACHINE_PICKER_ROOM && HIWORD(wp) == CBN_SELCHANGE) {
                 if (ps && !ps->syncingRoom) {
                     ps->roomChosenByUser = true;
                     if (ps->searchEdit)
@@ -473,7 +496,7 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 populateMachinePickerMachines(ps);
                 return 0;
             }
-            if (LOWORD(wp) == REGULAR_IDC_MACHINE_PICKER_SEARCH && HIWORD(wp) == EN_CHANGE) {
+            if (LOWORD(wp) == MICROBIOLOGY_IDC_MACHINE_PICKER_SEARCH && HIWORD(wp) == EN_CHANGE) {
                 if (ps && !ps->roomChosenByUser && machinePickerSearchText(ps).empty())
                     selectMachinePickerRoomByCode(ps, "");
                 populateMachinePickerMachines(ps);
@@ -483,39 +506,39 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+            if (nm && nm->idFrom == MICROBIOLOGY_IDC_MACHINE_PICKER_MACH &&
                 nm->code == NM_KILLFOCUS) {
-                regularRedrawSelectedListRow(ps ? ps->machineList : nullptr);
+                microbiologyRedrawSelectedListRow(ps ? ps->machineList : nullptr);
                 return 0;
             }
-            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+            if (nm && nm->idFrom == MICROBIOLOGY_IDC_MACHINE_PICKER_MACH &&
                 nm->code == NM_CUSTOMDRAW) {
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    if (regularCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row))
+                    if (microbiologyCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row))
                         return CDRF_NOTIFYSUBITEMDRAW;
                     return CDRF_NOTIFYSUBITEMDRAW;
                 }
                 if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    regularCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row);
+                    microbiologyCustomDrawListSelection(cd, ps ? ps->machineList : nullptr, row);
                     return CDRF_DODEFAULT;
                 }
             }
-            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+            if (nm && nm->idFrom == MICROBIOLOGY_IDC_MACHINE_PICKER_MACH &&
                 (nm->code == NM_RETURN || nm->code == NM_DBLCLK)) {
                 acceptAndCloseMachinePicker(hwnd, ps);
                 return 0;
             }
-            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+            if (nm && nm->idFrom == MICROBIOLOGY_IDC_MACHINE_PICKER_MACH &&
                 nm->code == NM_CLICK) {
                 if (ps && ps->searchEdit)
                     SetFocus(ps->searchEdit);
                 return 0;
             }
-            if (nm && nm->idFrom == REGULAR_IDC_MACHINE_PICKER_MACH &&
+            if (nm && nm->idFrom == MICROBIOLOGY_IDC_MACHINE_PICKER_MACH &&
                 nm->code == LVN_ITEMCHANGED) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 if (lv && ps && !ps->refreshingMachines && (lv->uNewState & LVIS_SELECTED))
@@ -543,14 +566,14 @@ LRESULT CALLBACK machinePickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 void registerMachinePickerClass(HINSTANCE instance) {
     static bool reg = false;
     if (reg) return;
-    REGISTER_MDI_CHILD_CLASS(instance, machinePickerProc, REGULAR_MACHINE_PICKER_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
+    REGISTER_MDI_CHILD_CLASS(instance, machinePickerProc, MICROBIOLOGY_MACHINE_PICKER_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
 }
 
-void showMachinePicker(RegularReportState* st, HWND anchor) {
+void showMachinePicker(MicrobiologyReportState* st, HWND anchor) {
     if (!st || !anchor) return;
     if (IsWindow(st->machinePickerPopup)) {
         SetForegroundWindow(st->machinePickerPopup);
-        auto* ps = reinterpret_cast<MachinePickerState*>(
+        auto* ps = reinterpret_cast<MicrobiologyMachinePickerState*>(
             GetWindowLongPtrW(st->machinePickerPopup, GWLP_USERDATA));
         if (ps && ps->searchEdit)
             SetFocus(ps->searchEdit);
@@ -558,8 +581,8 @@ void showMachinePicker(RegularReportState* st, HWND anchor) {
     }
     registerMachinePickerClass(st->ctx.instance);
     RECT ar{}; GetWindowRect(anchor, &ar);
-    const int w = S(anchor, REGULAR_MACHINE_PICKER_CLIENT_W);
-    const int h = S(anchor, REGULAR_MACHINE_PICKER_INITIAL_H);
+    const int w = S(anchor, MICROBIOLOGY_MACHINE_PICKER_CLIENT_W);
+    const int h = S(anchor, MICROBIOLOGY_MACHINE_PICKER_INITIAL_H);
     int x = ar.left, y = ar.bottom + S(anchor, 2);
     HMONITOR mon = MonitorFromRect(&ar, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{}; mi.cbSize = sizeof(mi);
@@ -569,8 +592,8 @@ void showMachinePicker(RegularReportState* st, HWND anchor) {
         x = std::max(x, static_cast<int>(mi.rcWork.left));
         y = std::max(y, static_cast<int>(mi.rcWork.top));
     }
-    auto* ps = new MachinePickerState; ps->report = st;
-    HWND popup = CreateWindowExW(WS_EX_TOOLWINDOW, REGULAR_MACHINE_PICKER_CLASS,
+    auto* ps = new MicrobiologyMachinePickerState; ps->report = st;
+    HWND popup = CreateWindowExW(WS_EX_TOOLWINDOW, MICROBIOLOGY_MACHINE_PICKER_CLASS,
                                  L"选择检验仪器", WS_POPUP | WS_CAPTION,
                                  x, y, w, h,
                                  GetAncestor(st->leftContent, GA_ROOT),
@@ -585,7 +608,7 @@ void showMachinePicker(RegularReportState* st, HWND anchor) {
 // Left panel — scroll + subclass + creation
 // ============================================================================
 
-void clearLeftPanel(RegularReportState* st) {
+void clearLeftPanel(MicrobiologyReportState* st) {
     if (!st) return;
     for (HWND child : st->leftControls)
         if (IsWindow(child)) DestroyWindow(child);
@@ -607,11 +630,11 @@ void clearLeftPanel(RegularReportState* st) {
     st->inspectDatePicker = nullptr; st->collectDateEdit = nullptr;
 }
 
-void updateLeftScrollBar(RegularReportState* st) {
+void updateLeftScrollBar(MicrobiologyReportState* st) {
     if (!st || !st->leftPanel || !st->leftContent || !st->leftScrollBar) return;
     RECT rc{}; GetClientRect(st->leftPanel, &rc);
     const int page = std::max(1, static_cast<int>(rc.bottom - rc.top));
-    const int contentH = S(st->leftPanel, std::max(REGULAR_LEFT_CONTENT_HEIGHT, st->leftContentHeight));
+    const int contentH = S(st->leftPanel, std::max(MICROBIOLOGY_LEFT_CONTENT_HEIGHT, st->leftContentHeight));
     const int maxScroll = std::max(0, contentH - page);
     st->leftScrollY = std::clamp(st->leftScrollY, 0, maxScroll);
     const int scrollW = GetSystemMetrics(SM_CXVSCROLL);
@@ -626,17 +649,17 @@ void updateLeftScrollBar(RegularReportState* st) {
     ShowWindow(st->leftScrollBar, contentH > page ? SW_SHOW : SW_HIDE);
 }
 
-void scrollLeftPanelTo(RegularReportState* st, int targetY) {
+void scrollLeftPanelTo(MicrobiologyReportState* st, int targetY) {
     if (!st || !st->leftPanel || !st->leftContent) return;
     RECT rc{}; GetClientRect(st->leftPanel, &rc);
     const int page = static_cast<int>(rc.bottom - rc.top);
     const int maxScroll = std::max(0, S(st->leftPanel,
-        std::max(REGULAR_LEFT_CONTENT_HEIGHT, st->leftContentHeight)) - page);
+        std::max(MICROBIOLOGY_LEFT_CONTENT_HEIGHT, st->leftContentHeight)) - page);
     st->leftScrollY = std::clamp(targetY, 0, maxScroll);
     updateLeftScrollBar(st);
 }
 
-void drawLeftGroupFrames(HWND hwnd, RegularReportState* st, HDC dc) {
+void drawLeftGroupFrames(HWND hwnd, MicrobiologyReportState* st, HDC dc) {
     RECT client{}; GetClientRect(hwnd, &client);
     FillRect(dc, &client, st && st->panelBrush ? st->panelBrush
                                                 : GetSysColorBrush(COLOR_BTNFACE));
@@ -663,7 +686,7 @@ void drawLeftGroupFrames(HWND hwnd, RegularReportState* st, HDC dc) {
 
 LRESULT CALLBACK leftPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_VSCROLL: {
             if (!st) break;
@@ -671,8 +694,8 @@ LRESULT CALLBACK leftPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             GetScrollInfo(st->leftScrollBar, SB_CTL, &si);
             int t = st->leftScrollY;
             switch (LOWORD(wp)) {
-                case SB_LINEUP: t -= S(hwnd, REGULAR_LEFT_SCROLL_STEP); break;
-                case SB_LINEDOWN: t += S(hwnd, REGULAR_LEFT_SCROLL_STEP); break;
+                case SB_LINEUP: t -= S(hwnd, MICROBIOLOGY_LEFT_SCROLL_STEP); break;
+                case SB_LINEDOWN: t += S(hwnd, MICROBIOLOGY_LEFT_SCROLL_STEP); break;
                 case SB_PAGEUP: t -= static_cast<int>(si.nPage); break;
                 case SB_PAGEDOWN: t += static_cast<int>(si.nPage); break;
                 case SB_THUMBTRACK: case SB_THUMBPOSITION: t = si.nTrackPos; break;
@@ -686,7 +709,7 @@ LRESULT CALLBACK leftPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st) {
                 const int d = GET_WHEEL_DELTA_WPARAM(wp);
                 scrollLeftPanelTo(st, st->leftScrollY -
-                    (d / WHEEL_DELTA) * S(hwnd, REGULAR_LEFT_SCROLL_STEP * 3));
+                    (d / WHEEL_DELTA) * S(hwnd, MICROBIOLOGY_LEFT_SCROLL_STEP * 3));
                 return 0;
             }
             break;
@@ -697,23 +720,13 @@ LRESULT CALLBACK leftPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 
 LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_COMMAND:
-            if (st && LOWORD(wp) == REGULAR_IDC_MACHINE_PICKER_BUTTON && HIWORD(wp) == BN_CLICKED) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_MACHINE_PICKER_BUTTON && HIWORD(wp) == BN_CLICKED) {
                 showMachinePicker(st, reinterpret_cast<HWND>(lp)); return 0;
             }
             break;
-        case WM_NOTIFY: {
-            auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (st && nm && nm->idFrom == REGULAR_IDC_INSPECT_DATE &&
-                nm->code == DTN_DATETIMECHANGE && !st->suppressInspectDateQuery &&
-                !search::trim(st->selectedMachineCode).empty()) {
-                runReportQuery(st, hasSelectedReportRow(st) && inspectDateMatchesCurrentQuery(st));
-                return 0;
-            }
-            break;
-        }
         case WM_PAINT: {
             PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps);
             drawLeftGroupFrames(hwnd, st, dc);
@@ -722,11 +735,11 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             HWND ctl = reinterpret_cast<HWND>(lp);
-            if (GetPropW(ctl, L"RegularEmergencyLabel")) {
+            if (GetPropW(ctl, L"MicrobiologyEmergencyLabel")) {
                 SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0xE6, 0, 0));
                 return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
             }
-            if (GetPropW(ctl, L"RegularLeftLabel")) {
+            if (GetPropW(ctl, L"MicrobiologyLeftLabel")) {
                 SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0x00, 0x00, 0xC4));
                 return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
             }
@@ -741,7 +754,7 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // Right panel — summary paint + tab switching
 // ============================================================================
 
-void showRightInfoPage(RegularReportState* st) {
+void showRightInfoPage(MicrobiologyReportState* st) {
     if (!st || !st->rightTab) return;
     const bool show = TabCtrl_GetCurSel(st->rightTab) == 0;
     for (HWND c : st->rightInfoControls)
@@ -752,7 +765,7 @@ void showRightInfoPage(RegularReportState* st) {
 
 LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                 UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps{}; HDC dc = BeginPaint(hwnd, &ps);
@@ -760,9 +773,9 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             FillRect(dc, &c, st && st->panelBrush ? st->panelBrush
                                                    : GetSysColorBrush(COLOR_BTNFACE));
             if (st) {
-                const auto s1 = regularRightSummaryLine1(st);
-                const auto s2 = regularRightSummaryLine2(st);
-                const auto hdr = regularRightHeaderLayout(hwnd, st->ctx.uiFont,
+                const auto s1 = microbiologyRightSummaryLine1(st);
+                const auto s2 = microbiologyRightSummaryLine2(st);
+                const auto hdr = microbiologyRightHeaderLayout(hwnd, st->ctx.uiFont,
                     c.right - c.left, s1, s2);
                 HGDIOBJ of = st->ctx.uiFont ? SelectObject(dc, st->ctx.uiFont) : nullptr;
                 SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0, 0, 0xCC));
@@ -780,8 +793,8 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         }
         case WM_COMMAND: {
             const int id = LOWORD(wp);
-            if (st && id == REGULAR_IDC_REPORT_FIRST_BUTTON) { selectReportRow(st, 0); return 0; }
-            if (st && id == REGULAR_IDC_REPORT_LAST_BUTTON) {
+            if (st && id == MICROBIOLOGY_IDC_REPORT_FIRST_BUTTON) { selectReportRow(st, 0); return 0; }
+            if (st && id == MICROBIOLOGY_IDC_REPORT_LAST_BUTTON) {
                 if (st->reportList) {
                     const int last = static_cast<int>(st->reportRows.size()) - 1;
                     ListView_SetItemState(st->reportList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
@@ -792,31 +805,37 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 }
                 return 0;
             }
-            if (st && id == REGULAR_IDC_REPORT_DATE_TODAY_BUTTON) {
-                setInspectDateAndQuery(st, regularTodayDate(), true); return 0;
-            }
-            if (st && id == REGULAR_IDC_REPORT_DATE_PREV_BUTTON) {
-                setInspectDateAndQuery(st, regularAddDays(
-                    regularDatePickerSystemTime(st->inspectDatePicker), -1)); return 0;
-            }
-            if (st && id == REGULAR_IDC_REPORT_DATE_NEXT_BUTTON) {
-                setInspectDateAndQuery(st, regularAddDays(
-                    regularDatePickerSystemTime(st->inspectDatePicker), 1)); return 0;
-            }
-            if (st && id == REGULAR_IDC_REPORT_AUTO_REFRESH_CHECK && HIWORD(wp) == BN_CLICKED) {
-                regularUpdateAutoRefreshTimer(st); return 0;
-            }
-            if (st && id == REGULAR_IDC_REPORT_AUTO_REFRESH_SECONDS && HIWORD(wp) == EN_CHANGE) {
-                regularUpdateAutoRefreshTimer(st); return 0;
+            if (st && (id == MICROBIOLOGY_IDC_REVIEW_PENDING ||
+                       id == MICROBIOLOGY_IDC_REVIEWED) && HIWORD(wp) == BN_CLICKED) {
+                if (!search::trim(st->selectedMachineCode).empty())
+                    runReportQuery(st, false);
+                return 0;
             }
             break;
         }
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (st && nm->idFrom == REGULAR_IDC_RIGHT_TAB && nm->code == TCN_SELCHANGE) {
+            if (st && nm && !st->suppressRightFilterQuery &&
+                (nm->idFrom == MICROBIOLOGY_IDC_SUBMIT_DATE_START ||
+                 nm->idFrom == MICROBIOLOGY_IDC_SUBMIT_DATE_END) &&
+                nm->code == DTN_DATETIMECHANGE) {
+                SYSTEMTIME start = microbiologyDatePickerSystemTime(st->rightSubmitStartPicker);
+                SYSTEMTIME end = microbiologyDatePickerSystemTime(st->rightSubmitEndPicker);
+                const std::string startText = microbiologyDateText(start);
+                const std::string endText = microbiologyDateText(end);
+                if (startText > endText) {
+                    if (nm->idFrom == MICROBIOLOGY_IDC_SUBMIT_DATE_START) end = start;
+                    else start = end;
+                    setSubmitDateRangeAndQuery(st, start, end, false);
+                } else if (!search::trim(st->selectedMachineCode).empty()) {
+                    runReportQuery(st, false);
+                }
+                return 0;
+            }
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_RIGHT_TAB && nm->code == TCN_SELCHANGE) {
                 showRightInfoPage(st); return 0;
             }
-            if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == LVN_ITEMCHANGED) {
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_REPORT_LIST && nm->code == LVN_ITEMCHANGED) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED) &&
                     !(lv->uOldState & LVIS_SELECTED)) {
@@ -824,35 +843,35 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     return 0;
                 }
             }
-            if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == LVN_COLUMNCLICK) {
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_REPORT_LIST && nm->code == LVN_COLUMNCLICK) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 sortReportRowsByColumn(st, lv->iSubItem); return 0;
             }
-            if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == NM_RCLICK) {
-                regularShowReportContextMenu(st, reinterpret_cast<NMITEMACTIVATE*>(lp));
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_REPORT_LIST && nm->code == NM_RCLICK) {
+                microbiologyShowReportContextMenu(st, reinterpret_cast<NMITEMACTIVATE*>(lp));
                 return 0;
             }
-            if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == NM_KILLFOCUS) {
-                regularRedrawSelectedListRow(st->reportList); return 0;
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_REPORT_LIST && nm->code == NM_KILLFOCUS) {
+                microbiologyRedrawSelectedListRow(st->reportList); return 0;
             }
-            if (nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == NM_CUSTOMDRAW) {
+            if (nm->idFrom == MICROBIOLOGY_IDC_REPORT_LIST && nm->code == NM_CUSTOMDRAW) {
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    if (regularCustomDrawListSelection(cd, st ? st->reportList : nullptr, row))
+                    if (microbiologyCustomDrawListSelection(cd, st ? st->reportList : nullptr, row))
                         return CDRF_NOTIFYSUBITEMDRAW;
                     return CDRF_NOTIFYSUBITEMDRAW;
                 }
                 if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    if (!regularCustomDrawListSelection(cd, st ? st->reportList : nullptr, row)) {
-                        cd->clrTextBk = cd->iSubItem == REGULAR_RIGHT_REPORT_PRINT_COL
-                            ? regularReportPrintCellColor(st, row)
-                            : regularReportRowColor(st, row);
+                    if (!microbiologyCustomDrawListSelection(cd, st ? st->reportList : nullptr, row)) {
+                        cd->clrTextBk = cd->iSubItem == MICROBIOLOGY_RIGHT_REPORT_PRINT_COL
+                            ? microbiologyReportPrintCellColor(st, row)
+                            : microbiologyReportRowColor(st, row);
                         cd->clrText = st && row >= 0 &&
                             row < static_cast<int>(st->reportRows.size()) &&
-                            regularReportUsesEmergencyTextColor(st->reportRows[static_cast<size_t>(row)])
+                            microbiologyReportUsesEmergencyTextColor(st->reportRows[static_cast<size_t>(row)])
                             ? RGB(0xE6, 0, 0) : RGB(0, 0, 0);
                     }
                     return CDRF_NEWFONT;
@@ -869,7 +888,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // Middle panel — tab switching + picture scroll + result list NM_CUSTOMDRAW
 // ============================================================================
 
-void showMiddleResultPage(RegularReportState* st) {
+void showMiddleResultPage(MicrobiologyReportState* st) {
     if (!st || !st->middleTab) return;
     const int page = TabCtrl_GetCurSel(st->middleTab);
     const bool showRes = page == 0, showPic = page == 1;
@@ -881,32 +900,32 @@ void showMiddleResultPage(RegularReportState* st) {
     if (IsWindow(st->status)) ShowWindow(st->status, showRes ? SW_SHOW : SW_HIDE);
     InvalidateRect(st->middlePanel, nullptr, TRUE);
     if (showPic) {
-        regularUpdatePictureViewport(st);
-        regularQuerySelectedPicture(st, st->selectedReportIndex);
+        microbiologyUpdatePictureViewport(st);
+        microbiologyQuerySelectedPicture(st, st->selectedReportIndex);
     }
 }
 
 LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
-            if (st && nm->idFrom == REGULAR_IDC_MIDDLE_TAB && nm->code == TCN_SELCHANGE) {
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_MIDDLE_TAB && nm->code == TCN_SELCHANGE) {
                 finishResultEdit(st, false); showMiddleResultPage(st); return 0;
             }
-            if (nm->idFrom == REGULAR_IDC_RESULT_LIST && nm->code == NM_CUSTOMDRAW) {
+            if (nm->idFrom == MICROBIOLOGY_IDC_RESULT_LIST && nm->code == NM_CUSTOMDRAW) {
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                 if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                 if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                    if (regularCustomDrawListSelection(cd, st ? st->resultList : nullptr,
+                    if (microbiologyCustomDrawListSelection(cd, st ? st->resultList : nullptr,
                         static_cast<int>(cd->nmcd.dwItemSpec)))
                         return CDRF_NOTIFYSUBITEMDRAW;
                     return CDRF_NOTIFYSUBITEMDRAW;
                 }
                 if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    if (regularCustomDrawListSelection(cd, st ? st->resultList : nullptr, row))
+                    if (microbiologyCustomDrawListSelection(cd, st ? st->resultList : nullptr, row))
                         return CDRF_NEWFONT;
                     const auto idx = static_cast<size_t>(cd->nmcd.dwItemSpec);
                     if (st && idx < st->resultRows.size()) {
@@ -920,23 +939,23 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                             cd->clrTextBk = RGB(0xFF, 0xD9, 0x9A);
                             cd->clrText = RGB(0x70, 0x2F, 0x14);
                         } else {
-                            cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
-                                ? REGULAR_COLOR_WHITE
-                                : (regularResultRowHasCriticalValue(rd)
-                                    ? REGULAR_COLOR_CRITICAL_FINAL
-                                    : REGULAR_COLOR_RESULT_SIDE_BG);
-                            const COLORREF c = regularResultTextColor(rd);
+                            cd->clrTextBk = cd->iSubItem == MICROBIOLOGY_RESULT_VALUE_COL
+                                ? MICROBIOLOGY_COLOR_WHITE
+                                : (microbiologyResultRowHasCriticalValue(rd)
+                                    ? MICROBIOLOGY_COLOR_CRITICAL_FINAL
+                                    : MICROBIOLOGY_COLOR_RESULT_SIDE_BG);
+                            const COLORREF c = microbiologyResultTextColor(rd);
                             if (c != CLR_INVALID) cd->clrText = c;
                         }
                     } else {
-                        cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
-                            ? REGULAR_COLOR_WHITE : REGULAR_COLOR_RESULT_SIDE_BG;
+                        cd->clrTextBk = cd->iSubItem == MICROBIOLOGY_RESULT_VALUE_COL
+                            ? MICROBIOLOGY_COLOR_WHITE : MICROBIOLOGY_COLOR_RESULT_SIDE_BG;
                     }
                     return CDRF_NEWFONT;
                 }
             }
-            if (st && nm->idFrom == REGULAR_IDC_RESULT_LIST && nm->code == NM_KILLFOCUS) {
-                regularRedrawSelectedListRow(st->resultList); return 0;
+            if (st && nm->idFrom == MICROBIOLOGY_IDC_RESULT_LIST && nm->code == NM_KILLFOCUS) {
+                microbiologyRedrawSelectedListRow(st->resultList); return 0;
             }
             break;
         }
@@ -944,8 +963,8 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && reinterpret_cast<HWND>(lp) == st->pictureHScroll) {
                 SCROLLINFO si{}; si.cbSize = sizeof(si); si.fMask = SIF_ALL;
                 GetScrollInfo(st->pictureHScroll, SB_CTL, &si);
-                regularScrollPictureViewport(st,
-                    regularScrollTargetFromCode(hwnd, LOWORD(wp), si, st->pictureScrollX),
+                microbiologyScrollPictureViewport(st,
+                    microbiologyScrollTargetFromCode(hwnd, LOWORD(wp), si, st->pictureScrollX),
                     st->pictureScrollY);
                 return 0;
             }
@@ -954,8 +973,8 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && reinterpret_cast<HWND>(lp) == st->pictureVScroll) {
                 SCROLLINFO si{}; si.cbSize = sizeof(si); si.fMask = SIF_ALL;
                 GetScrollInfo(st->pictureVScroll, SB_CTL, &si);
-                regularScrollPictureViewport(st, st->pictureScrollX,
-                    regularScrollTargetFromCode(hwnd, LOWORD(wp), si, st->pictureScrollY));
+                microbiologyScrollPictureViewport(st, st->pictureScrollX,
+                    microbiologyScrollTargetFromCode(hwnd, LOWORD(wp), si, st->pictureScrollY));
                 return 0;
             }
             break;
@@ -970,62 +989,62 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 
 LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_COMMAND:
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_1) {
-                regularApplyQuickMachine(st, 0); return 0;
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_MACHINE_1) {
+                microbiologyApplyQuickMachine(st, 0); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_2) {
-                regularApplyQuickMachine(st, 1); return 0;
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_MACHINE_2) {
+                microbiologyApplyQuickMachine(st, 1); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_3) {
-                regularApplyQuickMachine(st, 2); return 0;
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_MACHINE_3) {
+                microbiologyApplyQuickMachine(st, 2); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_REFRESH) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_REFRESH) {
                 if (search::trim(st->selectedMachineCode).empty())
-                    MessageBoxW(st->hwnd, L"请先选择检验仪器。", L"常规报告", MB_ICONWARNING);
+                    MessageBoxW(st->hwnd, L"请先选择检验仪器。", L"微生物报告", MB_ICONWARNING);
                 else
                     runReportQuery(st, true);
                 return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_PRINT_BARCODE) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_PRINT_BARCODE) {
                 if (st->barcodePrintTask.active()) {
                     MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
-                                L"常规报告", MB_ICONINFORMATION);
+                                L"微生物报告", MB_ICONINFORMATION);
                     return 0;
                 }
                 const int index = currentReportIndex(st);
                 if (index < 0) {
-                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"常规报告",
+                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"微生物报告",
                                 MB_ICONINFORMATION);
                 } else {
                     st->contextReportIndex = index;
-                    MessageBoxW(st->hwnd, regularPrintBarcodeForContext(st).c_str(),
-                                L"常规报告", MB_ICONINFORMATION);
+                    MessageBoxW(st->hwnd, microbiologyPrintBarcodeForContext(st).c_str(),
+                                L"微生物报告", MB_ICONINFORMATION);
                 }
                 return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE) {
-                regularShowBatchBarcodeDialog(st);
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_BATCH_PRINT_BARCODE) {
+                microbiologyShowBatchBarcodeDialog(st);
                 return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_PREV_REPORT) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_PREV_REPORT) {
                 selectAdjacentReportRow(st, -1); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_NEXT_REPORT) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_NEXT_REPORT) {
                 selectAdjacentReportRow(st, 1); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_GRAPH) {
-                regularOpenPicturePopupForSelection(st); return 0;
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_GRAPH) {
+                microbiologyOpenPicturePopupForSelection(st); return 0;
             }
-            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TREND) {
+            if (st && LOWORD(wp) == MICROBIOLOGY_IDC_BOTTOM_TREND) {
                 const int index = currentReportIndex(st);
                 if (index < 0) {
                     MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"趋势图提示", MB_ICONINFORMATION);
                 } else {
                     st->contextReportIndex = index;
-                    regularShowTrendForContext(st);
+                    microbiologyShowTrendForContext(st);
                 }
                 return 0;
             }
@@ -1039,7 +1058,7 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // Tab control helpers
 // ============================================================================
 
-bool focusLeftTabControl(RegularReportState* st, HWND cur, bool rev) {
+bool focusLeftTabControl(MicrobiologyReportState* st, HWND cur, bool rev) {
     if (!st || st->leftTabControls.empty()) return false;
     auto it = std::find(st->leftTabControls.begin(), st->leftTabControls.end(), cur);
     if (it == st->leftTabControls.end()) return false;
@@ -1056,7 +1075,7 @@ bool focusLeftTabControl(RegularReportState* st, HWND cur, bool rev) {
 
 LRESULT CALLBACK leftTabControlProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                     UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_GETDLGCODE:
             return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTTAB;
@@ -1070,12 +1089,12 @@ LRESULT CALLBACK leftTabControlProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
-void registerLeftTabControls(RegularReportState* st, std::initializer_list<HWND> ctrls) {
+void registerLeftTabControls(MicrobiologyReportState* st, std::initializer_list<HWND> ctrls) {
     if (!st) return;
     for (HWND h : ctrls) {
         if (!h) continue;
         st->leftTabControls.push_back(h);
-        SetWindowSubclass(h, leftTabControlProc, REGULAR_LEFT_TAB_SUBCLASS,
+        SetWindowSubclass(h, leftTabControlProc, MICROBIOLOGY_LEFT_TAB_SUBCLASS,
                           reinterpret_cast<DWORD_PTR>(st));
     }
 }
@@ -1086,12 +1105,12 @@ void registerLeftTabControls(RegularReportState* st, std::initializer_list<HWND>
 
 LRESULT CALLBACK sampleInputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_GETDLGCODE:
             return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTALLKEYS;
         case WM_KEYDOWN:
-            if (wp == VK_RETURN) { regularSelectReportRowBySampleInput(st); return 0; }
+            if (wp == VK_RETURN) { microbiologySelectReportRowBySampleInput(st); return 0; }
             break;
         case WM_CHAR:
             if (wp == VK_RETURN) return 0;
@@ -1105,7 +1124,7 @@ LRESULT CALLBACK sampleInputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // List helpers
 // ============================================================================
 
-void addColumns(HWND list, const ColumnDef* cols, int cnt, HWND scaleHost) {
+void addColumns(HWND list, const MicrobiologyColumnDef* cols, int cnt, HWND scaleHost) {
     for (int i = 0; i < cnt; ++i)
         search::add_list_column(list, cols[i].index, cols[i].title,
                                  S(scaleHost, cols[i].width));
@@ -1138,8 +1157,8 @@ void setCellIfChanged(HWND list, int row, int col, const std::wstring& text) {
 // Column seeding
 // ============================================================================
 
-void seedLists(RegularReportState* st) {
-    const ColumnDef resCols[] = {
+void seedLists(MicrobiologyReportState* st) {
+    const MicrobiologyColumnDef resCols[] = {
         {0, L"", 32}, {1, L"", 44}, {2, L"组合项目", 82}, {3, L"英文", 72},
         {4, L"项目名称", 132}, {5, L"结果", 96}, {6, L"偏", 36},
         {7, L"参考区间", 112}, {8, L"单位", 76}, {9, L"说明", 96},
@@ -1147,7 +1166,7 @@ void seedLists(RegularReportState* st) {
     addColumns(st->resultList, resCols,
                static_cast<int>(sizeof(resCols) / sizeof(resCols[0])), st->resultList);
 
-    const ColumnDef rptCols[] = {
+    const MicrobiologyColumnDef rptCols[] = {
         {0, L"标签", 26}, {1, L"样本号", 58}, {2, L"姓名", 70}, {3, L"性别", 36},
         {4, L"年龄", 66}, {5, L"医嘱内容", 110}, {6, L"科室代码", 78},
         {7, L"床号", 46}, {8, L"打印", 64}, {9, L"病人类型", 84},
@@ -1167,7 +1186,7 @@ void seedLists(RegularReportState* st) {
 // Panel creation
 // ============================================================================
 
-void createLeftPanel(HWND parent, RegularReportState* st) {
+void createLeftPanel(HWND parent, MicrobiologyReportState* st) {
     HWND p = st->leftContent;
     auto add = [&](HWND h) { st->leftControls.push_back(h); return h; };
     auto x = [&](int v) { return S(parent, v); };
@@ -1177,22 +1196,22 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     const int scrollW = GetSystemMetrics(SM_CXVSCROLL);
     const float sc = std::max(0.1f, search::dpi_scale_factor(parent));
     const int panelPxW = prc.right > prc.left
-        ? static_cast<int>(prc.right - prc.left) : S(parent, REGULAR_LEFT_PANEL_MIN_W);
+        ? static_cast<int>(prc.right - prc.left) : S(parent, MICROBIOLOGY_LEFT_PANEL_MIN_W);
     const int panelLogicalW = static_cast<int>(std::max(0, panelPxW - scrollW) / sc);
     const int gx = 8, innerPad = 6;
-    const int lw = regularLeftLabelWidth(parent, st->ctx.uiFont);
+    const int lw = microbiologyLeftLabelWidth(parent, st->ctx.uiFont);
     const int gw = std::max(240, panelLogicalW - gx - 8);
     const int gr = gx + gw - innerPad;
     const int ix = std::max(gx + innerPad + lw + 4, gx + innerPad + 54);
     const int lx = std::max(gx + innerPad, ix - lw - 4);
     const int fiw = std::max(120, gr - ix);
     const int rew = 72, rex = gr - rew;
-    const int nrew = 48, nrex = gr - nrew;
-    const int rlw = regularRightLabelWidth(parent, st->ctx.uiFont);
+    const int nrew = 72, nrex = gr - nrew;
+    const int rlw = microbiologyRightLabelWidth(parent, st->ctx.uiFont);
     const int rlx = rex - rlw - 4, nrlx = nrex - rlw - 4;
     const int lsw = std::max(42, rlx - ix - 8);
     const int nlsw = std::max(42, nrlx - ix - 8);
-    const int fh = regularFontLogicalHeight(parent, st->ctx.uiFont);
+    const int fh = microbiologyFontLogicalHeight(parent, st->ctx.uiFont);
     const int lh = std::max(24, fh + 4), eh = std::max(22, fh + 8);
     const int bh = std::max(26, fh + 10), cih = std::max(18, fh + 6);
     const int rs = std::max(34, eh + 10);
@@ -1208,7 +1227,7 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     auto lbl = [&](const wchar_t* t, int px, int py, int w, int h = 24,
                    DWORD s = SS_RIGHT | SS_CENTERIMAGE | SS_ENDELLIPSIS) {
         HWND hw = makeStatic(p, t, x(px), y(py), x(fitW(px, w, 16)), x(std::max(h, lh)), s | SS_CENTERIMAGE);
-        SetPropW(hw, L"RegularLeftLabel", reinterpret_cast<HANDLE>(1)); add(hw); return hw;
+        SetPropW(hw, L"MicrobiologyLeftLabel", reinterpret_cast<HANDLE>(1)); add(hw); return hw;
     };
     auto edt = [&](const wchar_t* t, int px, int py, int w, int h = 24, DWORD e = ES_AUTOHSCROLL) {
         bool ml = (e & ES_MULTILINE) != 0;
@@ -1249,19 +1268,19 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     lbl(L"检验仪器", lx, rowY(0), lw);
     const int pbw = 34, pbx = gr - pbw;
     st->machineEdit = edt(L"", ix, rowY(0) - 2, std::max(80, pbx - ix - 6), eh, ES_CENTER | ES_READONLY);
-    st->machinePickerButton = btn(L"...", pbx, rowY(0) - 2, pbw, bh, REGULAR_IDC_MACHINE_PICKER_BUTTON);
+    st->machinePickerButton = btn(L"...", pbx, rowY(0) - 2, pbw, bh, MICROBIOLOGY_IDC_MACHINE_PICKER_BUTTON);
     lbl(L"组合项目", lx, rowY(1), lw); st->groupEdit = edt(L"", ix, rowY(1) - 2, fiw, eh, ES_CENTER | ES_READONLY);
     lbl(L"标本", lx, rowY(2), lw); st->sampleEdit = edt(L"", ix, rowY(2) - 2, fiw, eh, ES_CENTER | ES_READONLY);
     lbl(L"检验单号", lx, rowY(3), lw); st->reportNoEdit = edt(L"", ix, rowY(3) - 2, nlsw, eh, ES_CENTER | ES_READONLY);
     lbl(L"样本号", nrlx, rowY(3), rlw); st->operNoEdit = edt(L"", nrex, rowY(3) - 2, nrew, eh, ES_CENTER);
-    SetWindowSubclass(st->operNoEdit, sampleInputProc, REGULAR_SAMPLE_INPUT_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
+    SetWindowSubclass(st->operNoEdit, sampleInputProc, MICROBIOLOGY_SAMPLE_INPUT_SUBCLASS, reinterpret_cast<DWORD_PTR>(st));
     lbl(L"病人类型", lx, rowY(4), lw);
     const int ucw = 20, ucg = -12, ucx = nrlx - ucw - ucg;
     const int ptw = std::max(42, ucx - ix - 6);
     st->patientTypeCombo = cbo(L"", ix, rowY(4) - 2, ptw, cih * 5);
     st->urgentCheck = cbx(ucx, rowY(4) - 2, ucw, eh + 2);
     st->urgentLabel = lbl(L"急诊", nrlx, rowY(4), rlw);
-    SetPropW(st->urgentLabel, L"RegularEmergencyLabel", reinterpret_cast<HANDLE>(1));
+    SetPropW(st->urgentLabel, L"MicrobiologyEmergencyLabel", reinterpret_cast<HANDLE>(1));
     st->urgentEdit = edt(L"", nrex, rowY(4) - 2, nrew, eh);
     lbl(L"条形码", lx, rowY(5), lw); st->barcodeEdit = edt(L"", ix, rowY(5) - 2, fiw, eh, ES_CENTER);
     lbl(L"病人号", lx, rowY(6), lw); st->regNoEdit = edt(L"", ix, rowY(6) - 2, fiw, eh);
@@ -1276,7 +1295,7 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     const int auw = 52, aux = std::max(ix + 54, nrlx - auw - 4);
     st->ageEdit = edt(L"", ix, rowY(1) - 2, std::max(48, aux - ix - 4), eh);
     st->ageUnitCombo = cbo(L"岁", aux, rowY(1) - 2, auw, cih * 5);
-    regularFillAgeUnitCombo(st->ageUnitCombo);
+    microbiologyFillAgeUnitCombo(st->ageUnitCombo);
     lbl(L"床号", nrlx, rowY(1), rlw); st->bedEdit = edt(L"", nrex, rowY(1) - 2, nrew, eh);
     lbl(L"电话", lx, rowY(2), lw); st->phoneEdit = edt(L"", ix, rowY(2) - 2, fiw, eh, ES_CENTER);
     lbl(L"临床科室", lx, rowY(3), lw); st->deptEdit = edt(L"", ix, rowY(3) - 2, fiw, eh);
@@ -1297,11 +1316,12 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     lbl(L"上机时间", lx, rowY(4), lw); st->machineDatePicker = dtp(ix, rowY(4) - 2, fiw, eh, L"yyyy-MM-dd HH:mm", nullptr);
     lbl(L"报告时间", lx, rowY(5), lw); st->reportDatePicker = dtp(ix, rowY(5) - 2, fiw, eh, L"yyyy-MM-dd HH:mm", nullptr);
     lbl(L"检验日期", lx, rowY(6), lw);
-    SYSTEMTIME idate = regularTodayDate();
-    st->inspectDatePicker = dtp(ix, rowY(6) - 2, fiw, eh, L"yyyy-MM-dd", &idate, REGULAR_IDC_INSPECT_DATE);
+    SYSTEMTIME idate = microbiologyTodayDate();
+    st->inspectDatePicker = dtp(ix, rowY(6) - 2, fiw, eh, L"yyyy-MM-dd", &idate, MICROBIOLOGY_IDC_INSPECT_DATE);
     lbl(L"采集日期", lx, rowY(7), lw); st->collectDateEdit = edt(L"", ix, rowY(7) - 2, fiw, eh, ES_CENTER | ES_READONLY);
-    regularSetControlsEnabled(false, {st->applyDatePicker, st->receiveDatePicker,
-        st->machineDatePicker, st->reportDatePicker, st->collectDateEdit});
+    microbiologySetControlsEnabled(false, {st->applyDatePicker, st->receiveDatePicker,
+        st->machineDatePicker, st->reportDatePicker, st->inspectDatePicker,
+        st->collectDateEdit});
 
     registerLeftTabControls(st, {
         st->machinePickerButton, st->urgentCheck, st->urgentEdit,
@@ -1314,222 +1334,223 @@ void createLeftPanel(HWND parent, RegularReportState* st) {
     });
 }
 
-void createMiddlePanel(HWND parent, RegularReportState* st) {
+void createMiddlePanel(HWND parent, MicrobiologyReportState* st) {
     HWND p = st->middlePanel;
     auto aR = [&](HWND h) { st->middleResultControls.push_back(h); return h; };
     auto aP = [&](HWND h) { st->middlePictureControls.push_back(h); return h; };
 
     st->middleTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-        S(parent, REGULAR_PAD), S(parent, 0), S(parent, 520), S(parent, REGULAR_TAB_H),
-        p, win32_control_id(REGULAR_IDC_MIDDLE_TAB), GetModuleHandleW(nullptr), nullptr);
+        S(parent, MICROBIOLOGY_PAD), S(parent, 0), S(parent, 520), S(parent, MICROBIOLOGY_TAB_H),
+        p, win32_control_id(MICROBIOLOGY_IDC_MIDDLE_TAB), GetModuleHandleW(nullptr), nullptr);
     const wchar_t* mTabs[] = {L"项目结果", L"结果图"};
     insertTabs(st->middleTab, mTabs, static_cast<int>(sizeof(mTabs) / sizeof(mTabs[0])));
 
     st->resultList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-        S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_LIST_Y),
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_MIDDLE_LIST_Y),
         S(parent, 520), S(parent, 350),
-        p, win32_control_id(REGULAR_IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
+        p, win32_control_id(MICROBIOLOGY_IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->resultList,
         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-    SetWindowSubclass(st->resultList, resultListProc, REGULAR_RESULT_LIST_SUBCLASS,
+    SetWindowSubclass(st->resultList, resultListProc, MICROBIOLOGY_RESULT_LIST_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     aR(st->resultList);
     st->status = makeStatic(p, L"结果列表右键功能：项目复制；参数设置。[项目总数：7]",
-        S(parent, REGULAR_PAD), S(parent, 424), S(parent, 520),
-        S(parent, REGULAR_MIDDLE_STATUS_H));
+        S(parent, MICROBIOLOGY_PAD), S(parent, 424), S(parent, 520),
+        S(parent, MICROBIOLOGY_MIDDLE_STATUS_H));
     aR(st->status);
 
     st->pictureViewport = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-        S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_LIST_Y),
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_MIDDLE_LIST_Y),
         S(parent, 520), S(parent, 350),
         p, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->pictureViewport, pictureViewportProc, REGULAR_PICTURE_VIEWPORT_SUBCLASS,
+    SetWindowSubclass(st->pictureViewport, microbiologyPictureViewportProc, MICROBIOLOGY_PICTURE_VIEWPORT_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->pictureView = CreateWindowExW(0, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-        0, 0, S(parent, REGULAR_PICTURE_FIXED_W), S(parent, REGULAR_PICTURE_FIXED_H),
+        0, 0, S(parent, MICROBIOLOGY_PICTURE_FIXED_W), S(parent, MICROBIOLOGY_PICTURE_FIXED_H),
         st->pictureViewport, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->pictureView, pictureViewProc, REGULAR_PICTURE_VIEW_SUBCLASS,
+    SetWindowSubclass(st->pictureView, microbiologyPictureViewProc, MICROBIOLOGY_PICTURE_VIEW_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->pictureHScroll = CreateWindowExW(0, L"SCROLLBAR", L"",
         WS_CHILD | SBS_HORZ,
-        S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_LIST_Y + 350),
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_MIDDLE_LIST_Y + 350),
         S(parent, 520), S(parent, GetSystemMetrics(SM_CYHSCROLL)),
         p, nullptr, GetModuleHandleW(nullptr), nullptr);
     st->pictureVScroll = CreateWindowExW(0, L"SCROLLBAR", L"",
         WS_CHILD | SBS_VERT,
-        S(parent, REGULAR_PAD + 520), S(parent, REGULAR_MIDDLE_LIST_Y),
+        S(parent, MICROBIOLOGY_PAD + 520), S(parent, MICROBIOLOGY_MIDDLE_LIST_Y),
         S(parent, GetSystemMetrics(SM_CXVSCROLL)), S(parent, 350),
         p, nullptr, GetModuleHandleW(nullptr), nullptr);
     aP(st->pictureViewport); aP(st->pictureHScroll); aP(st->pictureVScroll);
-    regularUpdatePictureViewport(st);
+    microbiologyUpdatePictureViewport(st);
     showMiddleResultPage(st);
 }
 
-void createRightPanel(HWND parent, RegularReportState* st) {
+void createRightPanel(HWND parent, MicrobiologyReportState* st) {
     HWND p = st->rightPanel;
     auto aI = [&](HWND h) { st->rightInfoControls.push_back(h); return h; };
     st->rightTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-        S(parent, REGULAR_PAD), S(parent, REGULAR_RIGHT_TAB_Y),
-        S(parent, 576), S(parent, REGULAR_TAB_H),
-        p, win32_control_id(REGULAR_IDC_RIGHT_TAB), GetModuleHandleW(nullptr), nullptr);
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_RIGHT_TAB_Y),
+        S(parent, 576), S(parent, MICROBIOLOGY_TAB_H),
+        p, win32_control_id(MICROBIOLOGY_IDC_RIGHT_TAB), GetModuleHandleW(nullptr), nullptr);
     const wchar_t* tabs[] = {L"信息列表", L"结果比较"};
     insertTabs(st->rightTab, tabs, static_cast<int>(sizeof(tabs) / sizeof(tabs[0])));
 
+    const SYSTEMTIME submitEnd = microbiologyTodayDate();
+    const SYSTEMTIME submitStart = microbiologyAddDays(
+        submitEnd, -MICROBIOLOGY_REPORT_DEFAULT_DAYS + 1);
+    st->rightSubmitTimeLabel = makeStatic(p, L"送检时间",
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y + 2),
+        S(parent, 78), S(parent, 24), SS_LEFT | SS_CENTERIMAGE);
+    st->rightSubmitStartPicker = makeDatePicker(
+        p, S(parent, 94), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y),
+        S(parent, 94), S(parent, 26), L"yyyy-MM-dd", &submitStart,
+        MICROBIOLOGY_IDC_SUBMIT_DATE_START);
+    st->rightSubmitRangeSeparator = makeStatic(
+        p, L"至", S(parent, 195), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y + 2),
+        S(parent, 18), S(parent, 24), SS_CENTER | SS_CENTERIMAGE);
+    st->rightSubmitEndPicker = makeDatePicker(
+        p, S(parent, 220), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y),
+        S(parent, 94), S(parent, 26), L"yyyy-MM-dd", &submitEnd,
+        MICROBIOLOGY_IDC_SUBMIT_DATE_END);
+    st->rightPendingRadio = CreateWindowExW(
+        0, L"BUTTON", L"未审",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_AUTORADIOBUTTON | WS_GROUP,
+        S(parent, 322), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y),
+        S(parent, 52), S(parent, 26), p,
+        win32_control_id(MICROBIOLOGY_IDC_REVIEW_PENDING), GetModuleHandleW(nullptr), nullptr);
+    st->rightReviewedRadio = CreateWindowExW(
+        0, L"BUTTON", L"已审",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_AUTORADIOBUTTON,
+        S(parent, 378), S(parent, MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y),
+        S(parent, 52), S(parent, 26), p,
+        win32_control_id(MICROBIOLOGY_IDC_REVIEWED), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(st->rightPendingRadio, BM_SETCHECK, BST_CHECKED, 0);
+
     st->rightSearchLabel = aI(makeStatic(p, L"按姓名查",
-        S(parent, REGULAR_PAD), S(parent, REGULAR_RIGHT_SEARCH_LABEL_Y),
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_RIGHT_SEARCH_LABEL_Y),
         S(parent, 70), S(parent, 24)));
     st->rightSearchEdit = aI(makeEdit(p, L"",
-        S(parent, 82), S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y),
+        S(parent, 82), S(parent, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y),
         S(parent, 84), S(parent, 26)));
     st->rightSearchIndexButton = aI(makeButton(p, 0, L"1",
-        S(parent, 174), S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y),
-        S(parent, 38), S(parent, REGULAR_COMPACT_BUTTON_H)));
-    st->rightSearchUpButton = aI(makeButton(p, REGULAR_IDC_REPORT_FIRST_BUTTON, L"⇧",
-        S(parent, 220), S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y),
-        S(parent, 38), S(parent, REGULAR_COMPACT_BUTTON_H)));
-    st->rightSearchDownButton = aI(makeButton(p, REGULAR_IDC_REPORT_LAST_BUTTON, L"⇩",
-        S(parent, 266), S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y),
-        S(parent, 38), S(parent, REGULAR_COMPACT_BUTTON_H)));
+        S(parent, 174), S(parent, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y),
+        S(parent, 38), S(parent, MICROBIOLOGY_COMPACT_BUTTON_H)));
+    st->rightSearchUpButton = aI(makeButton(p, MICROBIOLOGY_IDC_REPORT_FIRST_BUTTON, L"⇧",
+        S(parent, 220), S(parent, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y),
+        S(parent, 38), S(parent, MICROBIOLOGY_COMPACT_BUTTON_H)));
+    st->rightSearchDownButton = aI(makeButton(p, MICROBIOLOGY_IDC_REPORT_LAST_BUTTON, L"⇩",
+        S(parent, 266), S(parent, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y),
+        S(parent, 38), S(parent, MICROBIOLOGY_COMPACT_BUTTON_H)));
     st->rightSearchMenuButton = aI(makeButton(p, 0, L"▼",
-        S(parent, 548), S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y),
-        S(parent, 36), S(parent, REGULAR_COMPACT_BUTTON_H)));
+        S(parent, 548), S(parent, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y),
+        S(parent, 36), S(parent, MICROBIOLOGY_COMPACT_BUTTON_H)));
 
     st->reportList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-        S(parent, REGULAR_PAD), S(parent, REGULAR_RIGHT_LIST_Y),
+        S(parent, MICROBIOLOGY_PAD), S(parent, MICROBIOLOGY_RIGHT_LIST_Y),
         S(parent, 576), S(parent, 588),
-        p, win32_control_id(REGULAR_IDC_REPORT_LIST), GetModuleHandleW(nullptr), nullptr);
+        p, win32_control_id(MICROBIOLOGY_IDC_REPORT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->reportList,
         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES);
 
-    st->rightDateTodayButton = aI(makeButton(p, REGULAR_IDC_REPORT_DATE_TODAY_BUTTON, L"今天",
-        S(parent, REGULAR_PAD), S(parent, REGULAR_RIGHT_LIST_Y + 596),
-        S(parent, REGULAR_RIGHT_DATE_BUTTON_W), S(parent, REGULAR_RIGHT_DATE_BUTTON_H)));
-    st->rightDatePrevButton = aI(makeButton(p, REGULAR_IDC_REPORT_DATE_PREV_BUTTON, L"前一天",
-        S(parent, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_W + 8),
-        S(parent, REGULAR_RIGHT_LIST_Y + 596),
-        S(parent, REGULAR_RIGHT_DATE_BUTTON_W), S(parent, REGULAR_RIGHT_DATE_BUTTON_H)));
-    st->rightDateNextButton = aI(makeButton(p, REGULAR_IDC_REPORT_DATE_NEXT_BUTTON, L"后一天",
-        S(parent, REGULAR_PAD + (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 2),
-        S(parent, REGULAR_RIGHT_LIST_Y + 596),
-        S(parent, REGULAR_RIGHT_DATE_BUTTON_W), S(parent, REGULAR_RIGHT_DATE_BUTTON_H)));
-
-    st->rightAutoRefreshCheck = aI(CreateWindowExW(0, L"BUTTON", L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | BS_AUTOCHECKBOX,
-        S(parent, REGULAR_PAD + (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + 6),
-        S(parent, REGULAR_RIGHT_LIST_Y + 600), S(parent, 18), S(parent, 20),
-        p, win32_control_id(REGULAR_IDC_REPORT_AUTO_REFRESH_CHECK),
-        GetModuleHandleW(nullptr), nullptr));
-    st->rightAutoRefreshLabel = aI(makeStatic(p, L"自动刷新",
-        S(parent, REGULAR_PAD + (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + 26),
-        S(parent, REGULAR_RIGHT_LIST_Y + 598), S(parent, 66), S(parent, 24),
-        SS_LEFT | SS_CENTERIMAGE));
-    st->rightAutoRefreshEdit = aI(makeEdit(p, L"10",
-        S(parent, REGULAR_PAD + (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + 88),
-        S(parent, REGULAR_RIGHT_LIST_Y + 598), S(parent, 38), S(parent, 24),
-        ES_CENTER | ES_NUMBER));
-    st->rightAutoRefreshUnitLabel = aI(makeStatic(p, L"秒",
-        S(parent, REGULAR_PAD + (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + 130),
-        S(parent, REGULAR_RIGHT_LIST_Y + 598), S(parent, 24), S(parent, 24),
-        SS_LEFT | SS_CENTERIMAGE));
     showRightInfoPage(st);
 }
 
-void createBottomPanel(HWND parent, RegularReportState* st) {
+void createBottomPanel(HWND parent, MicrobiologyReportState* st) {
     HWND p = st->bottomPanel;
-    const ButtonDef row1[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_1, L"1"}, {REGULAR_IDC_BOTTOM_REFRESH, L"⟳ 刷新(F5)"},
+    const MicrobiologyButtonDef row1[] = {
+        {MICROBIOLOGY_IDC_BOTTOM_MACHINE_1, L"1"}, {MICROBIOLOGY_IDC_BOTTOM_REFRESH, L"⟳ 刷新(F5)"},
         {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"}, {5405, L"预览(V)"},
-        {REGULAR_IDC_BOTTOM_PRINT_BARCODE, L"打印条码"},
-        {5407, L"✕ 删除(D)"}, {REGULAR_IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"},
-        {REGULAR_IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印"},
+        {MICROBIOLOGY_IDC_BOTTOM_PRINT_BARCODE, L"打印条码"},
+        {5407, L"✕ 删除(D)"}, {MICROBIOLOGY_IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"},
+        {MICROBIOLOGY_IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印"},
     };
-    const ButtonDef row2[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"},
+    const MicrobiologyButtonDef row2[] = {
+        {MICROBIOLOGY_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"},
         {5414, L"批录入"}, {5415, L"批调整"},
-        {REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码"}, {5417, L"批删除"},
+        {MICROBIOLOGY_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码"}, {5417, L"批删除"},
         {5418, L"医嘱"}, {5419, L"汇总(F6)"},
     };
-    const ButtonDef row3[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"},
-        {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
+    const MicrobiologyButtonDef row3[] = {
+        {MICROBIOLOGY_IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"},
+        {5423, L"合并(U)"}, {MICROBIOLOGY_IDC_BOTTOM_GRAPH, L"图形(T)"}, {MICROBIOLOGY_IDC_BOTTOM_TREND, L"趋势图"},
         {5426, L"日统计"}, {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
     };
-    auto cr = [&](const ButtonDef* row, int cnt, int y) {
-        int x = S(parent, REGULAR_PAD);
+    auto cr = [&](const MicrobiologyButtonDef* row, int cnt, int y) {
+        int x = S(parent, MICROBIOLOGY_PAD);
         for (int i = 0; i < cnt; ++i) {
             int w = (i == 0) ? S(parent, 42) : S(parent, 98);
             makeButton(p, row[i].id, row[i].text, x, S(parent, y), w,
-                       S(parent, REGULAR_COMPACT_BUTTON_H));
-            x += w + S(parent, REGULAR_PAD);
+                       S(parent, MICROBIOLOGY_COMPACT_BUTTON_H));
+            x += w + S(parent, MICROBIOLOGY_PAD);
         }
     };
     cr(row1, static_cast<int>(sizeof(row1) / sizeof(row1[0])), 4);
     cr(row2, static_cast<int>(sizeof(row2) / sizeof(row2[0])), 36);
     cr(row3, static_cast<int>(sizeof(row3) / sizeof(row3[0])), 68);
-    regularUpdateQuickMachineButtonLabels(st);
+    microbiologyUpdateQuickMachineButtonLabels(st);
 }
 
 // ============================================================================
 // createControls + layout
 // ============================================================================
 
-void createControls(HWND hwnd, RegularReportState* st) {
+void createControls(HWND hwnd, MicrobiologyReportState* st) {
     st->leftPanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->leftPanel, leftPanelProc, REGULAR_LEFT_PANEL_SUBCLASS,
+    SetWindowSubclass(st->leftPanel, leftPanelProc, MICROBIOLOGY_LEFT_PANEL_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->leftContent = CreateWindowExW(0, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, 0, 0, st->leftPanel, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->leftContent, leftContentProc, REGULAR_LEFT_CONTENT_SUBCLASS,
+    SetWindowSubclass(st->leftContent, leftContentProc, MICROBIOLOGY_LEFT_CONTENT_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->leftScrollBar = CreateWindowExW(0, L"SCROLLBAR", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | SBS_VERT,
-        0, 0, 0, 0, st->leftPanel, win32_control_id(REGULAR_IDC_LEFT_SCROLL),
+        0, 0, 0, 0, st->leftPanel, win32_control_id(MICROBIOLOGY_IDC_LEFT_SCROLL),
         GetModuleHandleW(nullptr), nullptr);
     st->middlePanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->middlePanel, middlePanelProc, REGULAR_MIDDLE_PANEL_SUBCLASS,
+    SetWindowSubclass(st->middlePanel, middlePanelProc, MICROBIOLOGY_MIDDLE_PANEL_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->rightPanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->rightPanel, rightPanelProc, REGULAR_RIGHT_PANEL_SUBCLASS,
+    SetWindowSubclass(st->rightPanel, rightPanelProc, MICROBIOLOGY_RIGHT_PANEL_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     st->bottomPanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SetWindowSubclass(st->bottomPanel, bottomPanelProc, REGULAR_BOTTOM_PANEL_SUBCLASS,
+    SetWindowSubclass(st->bottomPanel, bottomPanelProc, MICROBIOLOGY_BOTTOM_PANEL_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
-    st->splitter = search::create_splitter(hwnd, REGULAR_IDC_SPLITTER, 0, 0, 0, 0, st->ctx.instance);
+    st->splitter = search::create_splitter(hwnd, MICROBIOLOGY_IDC_SPLITTER, 0, 0, 0, 0, st->ctx.instance);
     createLeftPanel(hwnd, st);
     createMiddlePanel(hwnd, st);
     createRightPanel(hwnd, st);
     createBottomPanel(hwnd, st);
     seedLists(st);
-    regularApplyFont(hwnd, st->ctx.uiFont);
-    regularRefreshLeftGroupTitleFont(st);
+    microbiologyApplyFont(hwnd, st->ctx.uiFont);
+    microbiologyRefreshLeftGroupTitleFont(st);
     updateLeftScrollBar(st);
 }
 
-void layout(HWND hwnd, RegularReportState* st) {
+void layout(HWND hwnd, MicrobiologyReportState* st) {
     if (!st) return;
     RECT rc{}; GetClientRect(hwnd, &rc);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    const int bottomH = S(hwnd, REGULAR_BOTTOM_PANEL_H);
-    const int gap = S(hwnd, REGULAR_GAP), splitterW = S(hwnd, REGULAR_SPLITTER_W);
-    const int leftW = std::min(std::max(S(hwnd, REGULAR_LEFT_PANEL_MIN_W), w * 21 / 100),
-                               S(hwnd, REGULAR_LEFT_PANEL_MAX_W));
+    const int bottomH = S(hwnd, MICROBIOLOGY_BOTTOM_PANEL_H);
+    const int gap = S(hwnd, MICROBIOLOGY_GAP), splitterW = S(hwnd, MICROBIOLOGY_SPLITTER_W);
+    const int leftW = std::min(std::max(S(hwnd, MICROBIOLOGY_LEFT_PANEL_MIN_W), w * 21 / 100),
+                               S(hwnd, MICROBIOLOGY_LEFT_PANEL_MAX_W));
     const int topH = std::max(S(hwnd, 420), h - bottomH - gap);
     const int centerX = leftW + gap;
-    const int minCW = S(hwnd, 460), minRW = S(hwnd, 360);
+    const int minCW = S(hwnd, 460), minRW = S(hwnd, 430);
     const int availW = std::max(S(hwnd, 760), w - centerX - gap);
     const int defCW = std::max(S(hwnd, 500), availW * 46 / 100);
     const int minSX = centerX + minCW;
@@ -1549,16 +1570,16 @@ void layout(HWND hwnd, RegularReportState* st) {
     MoveWindow(st->rightPanel, rightX, 0, rightW, topH, TRUE);
     MoveWindow(st->bottomPanel, centerX, topH + gap, w - centerX - gap, bottomH, TRUE);
 
-    MoveWindow(st->middleTab, S(hwnd, REGULAR_PAD), S(hwnd, 0),
-               centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_TAB_H), TRUE);
-    MoveWindow(st->resultList, S(hwnd, REGULAR_PAD), S(hwnd, REGULAR_MIDDLE_LIST_Y),
-               centerW - S(hwnd, REGULAR_PAD * 2),
-               topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN), TRUE);
-    const int phX = S(hwnd, REGULAR_PAD), phY = S(hwnd, REGULAR_MIDDLE_LIST_Y);
-    const int phW = centerW - S(hwnd, REGULAR_PAD * 2);
-    const int phH = topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN);
+    MoveWindow(st->middleTab, S(hwnd, MICROBIOLOGY_PAD), S(hwnd, 0),
+               centerW - S(hwnd, MICROBIOLOGY_PAD * 2), S(hwnd, MICROBIOLOGY_TAB_H), TRUE);
+    MoveWindow(st->resultList, S(hwnd, MICROBIOLOGY_PAD), S(hwnd, MICROBIOLOGY_MIDDLE_LIST_Y),
+               centerW - S(hwnd, MICROBIOLOGY_PAD * 2),
+               topH - S(hwnd, MICROBIOLOGY_MIDDLE_LIST_BOTTOM_MARGIN), TRUE);
+    const int phX = S(hwnd, MICROBIOLOGY_PAD), phY = S(hwnd, MICROBIOLOGY_MIDDLE_LIST_Y);
+    const int phW = centerW - S(hwnd, MICROBIOLOGY_PAD * 2);
+    const int phH = topH - S(hwnd, MICROBIOLOGY_MIDDLE_LIST_BOTTOM_MARGIN);
     const int pscW = GetSystemMetrics(SM_CXVSCROLL), pscH = GetSystemMetrics(SM_CYHSCROLL);
-    const int pcW = S(hwnd, REGULAR_PICTURE_FIXED_W), pcH = S(hwnd, REGULAR_PICTURE_FIXED_H);
+    const int pcW = S(hwnd, MICROBIOLOGY_PICTURE_FIXED_W), pcH = S(hwnd, MICROBIOLOGY_PICTURE_FIXED_H);
     bool nv = pcH > phH, nh = pcW > (phW - (nv ? pscW : 0));
     nv = pcH > (phH - (nh ? pscH : 0));
     const int pvW = std::max(1, phW - (nv ? pscW : 0));
@@ -1568,49 +1589,56 @@ void layout(HWND hwnd, RegularReportState* st) {
     MoveWindow(st->pictureVScroll, phX + pvW, phY, pscW, pvH, TRUE);
     ShowWindow(st->pictureHScroll, nh ? SW_SHOW : SW_HIDE);
     ShowWindow(st->pictureVScroll, nv ? SW_SHOW : SW_HIDE);
-    regularUpdatePictureViewport(st);
-    MoveWindow(st->status, S(hwnd, REGULAR_PAD), topH - S(hwnd, REGULAR_MIDDLE_STATUS_BOTTOM),
-               centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_MIDDLE_STATUS_H), TRUE);
+    microbiologyUpdatePictureViewport(st);
+    MoveWindow(st->status, S(hwnd, MICROBIOLOGY_PAD), topH - S(hwnd, MICROBIOLOGY_MIDDLE_STATUS_BOTTOM),
+               centerW - S(hwnd, MICROBIOLOGY_PAD * 2), S(hwnd, MICROBIOLOGY_MIDDLE_STATUS_H), TRUE);
 
-    const int riX = S(hwnd, REGULAR_PAD);
-    const int riW = std::max(S(hwnd, 80), rightW - S(hwnd, REGULAR_PAD * 2));
-    const auto rhdr = regularRightHeaderLayout(hwnd, st->ctx.uiFont, rightW,
-        regularRightSummaryLine1(st), regularRightSummaryLine2(st));
-    const int rtY = rhdr.bottom + S(hwnd, 6);
-    const int rslY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_LABEL_Y - REGULAR_RIGHT_TAB_Y);
-    const int rscY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_CONTROL_Y - REGULAR_RIGHT_TAB_Y);
-    const int rlY = rtY + S(hwnd, REGULAR_RIGHT_LIST_Y - REGULAR_RIGHT_TAB_Y);
-    MoveWindow(st->rightTab, riX, rtY, riW, S(hwnd, REGULAR_TAB_H), TRUE);
-    MoveWindow(st->rightSearchLabel, S(hwnd, REGULAR_PAD), rslY, S(hwnd, 70), S(hwnd, 24), TRUE);
+    const int riX = S(hwnd, MICROBIOLOGY_PAD);
+    const int riW = std::max(S(hwnd, 80), rightW - S(hwnd, MICROBIOLOGY_PAD * 2));
+    const auto rhdr = microbiologyRightHeaderLayout(hwnd, st->ctx.uiFont, rightW,
+        microbiologyRightSummaryLine1(st), microbiologyRightSummaryLine2(st));
+    const int rfY = rhdr.bottom + S(hwnd, 6);
+    const int rtY = rfY + S(hwnd, MICROBIOLOGY_RIGHT_TAB_Y - MICROBIOLOGY_RIGHT_FILTER_CONTROL_Y);
+    const int rslY = rtY + S(hwnd, MICROBIOLOGY_RIGHT_SEARCH_LABEL_Y - MICROBIOLOGY_RIGHT_TAB_Y);
+    const int rscY = rtY + S(hwnd, MICROBIOLOGY_RIGHT_SEARCH_CONTROL_Y - MICROBIOLOGY_RIGHT_TAB_Y);
+    const int rlY = rtY + S(hwnd, MICROBIOLOGY_RIGHT_LIST_Y - MICROBIOLOGY_RIGHT_TAB_Y);
+    MoveWindow(st->rightTab, riX, rtY, riW, S(hwnd, MICROBIOLOGY_TAB_H), TRUE);
+    const int filterLabelW = S(hwnd, 78);
+    const int filterSepW = S(hwnd, 18);
+    const int filterRadioW = S(hwnd, 48);
+    const int filterGap = S(hwnd, 7);
+    const int filterDateW = std::clamp(
+        (riW - filterLabelW - filterSepW - filterRadioW * 2 - filterGap * 5) / 2,
+        S(hwnd, 92), S(hwnd, 116));
+    int filterX = riX;
+    MoveWindow(st->rightSubmitTimeLabel, filterX, rfY + S(hwnd, 2),
+               filterLabelW, S(hwnd, 24), TRUE);
+    filterX += filterLabelW + filterGap;
+    MoveWindow(st->rightSubmitStartPicker, filterX, rfY,
+               filterDateW, S(hwnd, 26), TRUE);
+    filterX += filterDateW + filterGap;
+    MoveWindow(st->rightSubmitRangeSeparator, filterX, rfY + S(hwnd, 2),
+               filterSepW, S(hwnd, 24), TRUE);
+    filterX += filterSepW + filterGap;
+    MoveWindow(st->rightSubmitEndPicker, filterX, rfY,
+               filterDateW, S(hwnd, 26), TRUE);
+    filterX += filterDateW + filterGap;
+    MoveWindow(st->rightPendingRadio, filterX, rfY, filterRadioW, S(hwnd, 26), TRUE);
+    filterX += filterRadioW + filterGap;
+    MoveWindow(st->rightReviewedRadio, filterX, rfY, filterRadioW, S(hwnd, 26), TRUE);
+    MoveWindow(st->rightSearchLabel, S(hwnd, MICROBIOLOGY_PAD), rslY, S(hwnd, 70), S(hwnd, 24), TRUE);
     MoveWindow(st->rightSearchEdit, S(hwnd, 82), rscY, S(hwnd, 84), S(hwnd, 26), TRUE);
     MoveWindow(st->rightSearchIndexButton, S(hwnd, 174), rscY, S(hwnd, 38),
-               S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
+               S(hwnd, MICROBIOLOGY_COMPACT_BUTTON_H), TRUE);
     MoveWindow(st->rightSearchUpButton, S(hwnd, 220), rscY, S(hwnd, 38),
-               S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
+               S(hwnd, MICROBIOLOGY_COMPACT_BUTTON_H), TRUE);
     MoveWindow(st->rightSearchDownButton, S(hwnd, 266), rscY, S(hwnd, 38),
-               S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
-    MoveWindow(st->rightSearchMenuButton, rightW - S(hwnd, REGULAR_PAD + 36), rscY,
-               S(hwnd, 36), S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
+               S(hwnd, MICROBIOLOGY_COMPACT_BUTTON_H), TRUE);
+    MoveWindow(st->rightSearchMenuButton, rightW - S(hwnd, MICROBIOLOGY_PAD + 36), rscY,
+               S(hwnd, 36), S(hwnd, MICROBIOLOGY_COMPACT_BUTTON_H), TRUE);
 
-    const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H);
-    const int rdbG = S(hwnd, 8), rdbW = S(hwnd, REGULAR_RIGHT_DATE_BUTTON_W);
-    const int arX = riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
     MoveWindow(st->reportList, riX, rlY, riW,
-               std::max(S(hwnd, 80), rdbY - rlY - S(hwnd, REGULAR_GAP)), TRUE);
-    MoveWindow(st->rightDateTodayButton, riX, rdbY, rdbW,
-               S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
-    MoveWindow(st->rightDatePrevButton, riX + rdbW + rdbG, rdbY, rdbW,
-               S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
-    MoveWindow(st->rightDateNextButton, riX + (rdbW + rdbG) * 2, rdbY, rdbW,
-               S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
-    MoveWindow(st->rightAutoRefreshCheck, arX, rdbY + S(hwnd, 4), S(hwnd, 18),
-               S(hwnd, 20), TRUE);
-    MoveWindow(st->rightAutoRefreshLabel, arX + S(hwnd, 20), rdbY + S(hwnd, 2),
-               S(hwnd, 66), S(hwnd, 24), TRUE);
-    MoveWindow(st->rightAutoRefreshEdit, arX + S(hwnd, 82), rdbY + S(hwnd, 2),
-               S(hwnd, 38), S(hwnd, 24), TRUE);
-    MoveWindow(st->rightAutoRefreshUnitLabel, arX + S(hwnd, 124), rdbY + S(hwnd, 2),
-               S(hwnd, 24), S(hwnd, 24), TRUE);
+               std::max(S(hwnd, 80), topH - rlY - S(hwnd, MICROBIOLOGY_PAD)), TRUE);
     InvalidateRect(st->rightPanel, nullptr, TRUE);
 }
 
@@ -1618,19 +1646,26 @@ void layout(HWND hwnd, RegularReportState* st) {
 // Query orchestration
 // ============================================================================
 
-search::QueryInput buildReportQueryInput(RegularReportState* st) {
+search::QueryInput buildReportQueryInput(MicrobiologyReportState* st) {
     search::QueryInput input;
     if (!st) return input;
-    input.start_date = regularDatePickerValue(st->inspectDatePicker);
-    input.end_date = input.start_date;
+    input.start_date = microbiologyDatePickerValue(st->rightSubmitStartPicker);
+    input.end_date = microbiologyDatePickerValue(st->rightSubmitEndPicker);
+    input.report_status = st->rightReviewedRadio &&
+        SendMessageW(st->rightReviewedRadio, BM_GETCHECK, 0, 0) == BST_CHECKED
+        ? "已审" : "未审";
     input.room_code = st->selectedRoomCode;
     input.mach_code = st->selectedMachineCode;
     input.limit = 0;
     return input;
 }
 
-void runReportQuery(RegularReportState* st, bool preserveState) {
+void runReportQuery(MicrobiologyReportState* st, bool preserveState) {
     if (!st || search::trim(st->selectedMachineCode).empty()) return;
+    if (!microbiologyIsAllowedMachineCode(st->selectedMachineCode)) {
+        SetWindowTextW(st->status, L"微生物报告仅支持检验仪器 3001 和 7002。");
+        return;
+    }
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
         MessageBoxW(st->hwnd, L"请先在\"设置\"中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return;
@@ -1646,7 +1681,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         InvalidateRect(st->rightPanel, nullptr, TRUE);
         st->pictureQueryLoading = false; st->pictureRepNo.clear();
         ++st->pictureQueryGeneration;
-        regularClearPictureView(st, L"");
+        microbiologyClearPictureView(st, L"");
         st->selectedReportIndex = -1; st->contextReportIndex = -1;
     }
     SetWindowTextW(st->status, preserveState ? L"正在刷新样本列表..." : L"正在查询样本列表...");
@@ -1654,12 +1689,13 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
     const int gen = ++st->reportQueryGeneration;
     const auto settings = st->ctx.dbSettings;
     const auto input = buildReportQueryInput(st);
-    const std::string qd = input.start_date;
+    const std::string qd = input.start_date == input.end_date
+        ? input.start_date : input.start_date + " ~ " + input.end_date;
     const HWND hwnd = st->hwnd;
 
-    const bool queued = st->reportQueryTask.start<ReportLoadResult>(
+    const bool queued = st->reportQueryTask.start<MicrobiologyReportLoadResult>(
         [settings, input, gen, preserveState, qd] {
-            ReportLoadResult result;
+            MicrobiologyReportLoadResult result;
             result.generation = gen;
             result.preserveState = preserveState;
             result.queryDate = qd;
@@ -1667,18 +1703,18 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
                 settings, input, result.rows, result.connectionString, result.error);
             return result;
         },
-        [hwnd](std::optional<ReportLoadResult> result, std::exception_ptr error) {
-            auto* state = reinterpret_cast<RegularReportState*>(
-                GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+        [hwnd](std::optional<MicrobiologyReportLoadResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<MicrobiologyReportState*>(
+                GetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE));
             if (!state) return;
             if (error || !result) {
                 state->reportQueryLoading = false;
                 SetWindowTextW(state->status, L"样本列表后台任务异常");
-                LOG_ERROR("Regular report query task failed");
+                LOG_ERROR("Microbiology report query task failed");
                 return;
             }
             finishReportQuery(state, hwnd,
-                std::make_unique<ReportLoadResult>(std::move(*result)));
+                std::make_unique<MicrobiologyReportLoadResult>(std::move(*result)));
         });
     if (!queued) {
         st->reportQueryLoading = false;
@@ -1686,25 +1722,15 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
     }
 }
 
-void runAutoRefreshQuery(RegularReportState* st) {
-    if (!st || st->reportQueryLoading) return;
-    if (search::trim(st->selectedMachineCode).empty()) return;
-    if (search::build_connection_string_w(st->ctx.dbSettings).empty()) return;
-    runReportQuery(st, true);
-}
-
-bool inspectDateMatchesCurrentQuery(const RegularReportState* st) {
-    if (!st) return false;
-    const std::string d = regularDatePickerValue(st->inspectDatePicker);
-    return !d.empty() && d == st->reportQueryDate;
-}
-
-void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preserve) {
-    if (!st || !st->inspectDatePicker) return;
-    date = regularNormalizeDate(date);
-    st->suppressInspectDateQuery = true;
-    DateTime_SetSystemtime(st->inspectDatePicker, GDT_VALID, &date);
-    st->suppressInspectDateQuery = false;
+void setSubmitDateRangeAndQuery(MicrobiologyReportState* st, SYSTEMTIME start,
+                                SYSTEMTIME end, bool preserve) {
+    if (!st || !st->rightSubmitStartPicker || !st->rightSubmitEndPicker) return;
+    start = microbiologyNormalizeDate(start);
+    end = microbiologyNormalizeDate(end);
+    st->suppressRightFilterQuery = true;
+    DateTime_SetSystemtime(st->rightSubmitStartPicker, GDT_VALID, &start);
+    DateTime_SetSystemtime(st->rightSubmitEndPicker, GDT_VALID, &end);
+    st->suppressRightFilterQuery = false;
     if (!search::trim(st->selectedMachineCode).empty())
         runReportQuery(st, preserve && hasSelectedReportRow(st));
 }
@@ -1713,7 +1739,7 @@ void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preser
 // Selection helpers
 // ============================================================================
 
-void selectReportRow(RegularReportState* st, int index) {
+void selectReportRow(MicrobiologyReportState* st, int index) {
     if (!st || !st->reportList || index < 0 ||
         index >= static_cast<int>(st->reportRows.size())) return;
     ListView_SetItemState(st->reportList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1723,7 +1749,7 @@ void selectReportRow(RegularReportState* st, int index) {
     SetFocus(st->reportList);
 }
 
-void selectAdjacentReportRow(RegularReportState* st, int delta) {
+void selectAdjacentReportRow(MicrobiologyReportState* st, int delta) {
     if (!st || !st->reportList || st->reportRows.empty()) return;
     int cur = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
     if (cur < 0) cur = st->selectedReportIndex;
@@ -1734,7 +1760,7 @@ void selectAdjacentReportRow(RegularReportState* st, int delta) {
     if (next != cur) selectReportRow(st, next);
 }
 
-int currentReportIndex(const RegularReportState* st) {
+int currentReportIndex(const MicrobiologyReportState* st) {
     if (!st) return -1;
     if (st->reportList) {
         const int sel = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
@@ -1746,7 +1772,7 @@ int currentReportIndex(const RegularReportState* st) {
     return -1;
 }
 
-bool hasSelectedReportRow(const RegularReportState* st) {
+bool hasSelectedReportRow(const MicrobiologyReportState* st) {
     return st && st->reportList && ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED) >= 0;
 }
 
@@ -1754,11 +1780,11 @@ bool hasSelectedReportRow(const RegularReportState* st) {
 // Data display — report rows
 // ============================================================================
 
-std::array<std::wstring, REGULAR_REPORT_COLUMN_COUNT> reportDisplayValues(
+std::array<std::wstring, MICROBIOLOGY_REPORT_COLUMN_COUNT> reportDisplayValues(
     const search::ReportRow& d) {
     auto w = [](const std::string& s) { return search::utf8_to_wide(s); };
-    std::array<std::wstring, REGULAR_REPORT_COLUMN_COUNT> v{};
-    v[0] = regularReportHasBarcodeEmergencyLabel(d) ? L"急" : L"";
+    std::array<std::wstring, MICROBIOLOGY_REPORT_COLUMN_COUNT> v{};
+    v[0] = microbiologyReportHasBarcodeEmergencyLabel(d) ? L"急" : L"";
     v[1] = w(d.oper_no); v[2] = w(d.name); v[3] = w(d.sex); v[4] = w(d.age);
     v[5] = w(d.order_text); v[6] = w(d.dept_name); v[7] = w(d.bed_code);
     v[8] = w(search::display_binary_print_flag(d.zymz_print));
@@ -1766,10 +1792,10 @@ std::array<std::wstring, REGULAR_REPORT_COLUMN_COUNT> reportDisplayValues(
     v[12] = w(d.rep_no); v[13] = w(d.chk_flag); v[14] = w(d.conf);
     v[15] = w(d.txm_no); v[16] = w(d.group_name); v[17] = w(d.sample_name);
     v[18] = w(d.note); v[19] = w(d.dean_oper);
-    v[20] = w(regularSlashDateTimeMinute(d.chk_date));
-    v[21] = w(regularSlashDateTimeMinute(d.collection_time));
-    v[22] = w(regularSlashDate(d.inspect_date));
-    v[23] = w(regularSlashDateTimeMinute(d.rep_time));
+    v[20] = w(microbiologySlashDateTimeMinute(d.chk_date));
+    v[21] = w(microbiologySlashDateTimeMinute(d.collection_time));
+    v[22] = w(microbiologySlashDate(d.inspect_date));
+    v[23] = w(microbiologySlashDateTimeMinute(d.rep_time));
     v[24] = w(d.fee); v[25] = w(d.req_doctor); v[26] = w(d.diag_name);
     v[27] = w(d.reg_no); v[28] = w(d.create_time); v[29] = w(d.patient_phone);
     return v;
@@ -1784,13 +1810,13 @@ void insertReportRow(HWND list, int row, const search::ReportRow& d) {
     LVITEMW item{}; item.mask = LVIF_TEXT; item.iItem = row;
     item.pszText = const_cast<wchar_t*>(vals[0].c_str());
     ListView_InsertItem(list, &item);
-    for (int c = 1; c < REGULAR_REPORT_COLUMN_COUNT; ++c)
+    for (int c = 1; c < MICROBIOLOGY_REPORT_COLUMN_COUNT; ++c)
         setCell(list, row, c, vals[static_cast<size_t>(c)].c_str());
 }
 
 void updateReportRowCells(HWND list, int row, const search::ReportRow& d) {
     const auto vals = reportDisplayValues(d);
-    for (int c = 0; c < REGULAR_REPORT_COLUMN_COUNT; ++c)
+    for (int c = 0; c < MICROBIOLOGY_REPORT_COLUMN_COUNT; ++c)
         setCellIfChanged(list, row, c, vals[static_cast<size_t>(c)]);
 }
 
@@ -1834,7 +1860,7 @@ int compareReportSortValue(const search::ReportRow& a, const search::ReportRow& 
     const std::string lv = search::trim(reportSortValue(a, col));
     const std::string rv = search::trim(reportSortValue(b, col));
     if (col == 1) {
-        const int compared = regular_barcode::compare_sample_numbers(lv, rv);
+        const int compared = microbiology_barcode::compare_sample_numbers(lv, rv);
         if (compared != 0) return compared;
     }
     double ln = 0, rn = 0;
@@ -1847,12 +1873,12 @@ int compareReportSortValue(const search::ReportRow& a, const search::ReportRow& 
 
 bool reportSampleLess(const search::ReportRow& a, const search::ReportRow& b) {
     const std::string l = search::trim(a.oper_no), r = search::trim(b.oper_no);
-    const int compared = regular_barcode::compare_sample_numbers(l, r);
+    const int compared = microbiology_barcode::compare_sample_numbers(l, r);
     if (compared != 0) return compared < 0;
     return search::trim(a.id) < search::trim(b.id);
 }
 
-void sortReportRowsForDisplay(RegularReportState* st, std::vector<search::ReportRow>& rows,
+void sortReportRowsForDisplay(MicrobiologyReportState* st, std::vector<search::ReportRow>& rows,
                               bool preserveSort) {
     if (preserveSort && st && st->reportSortColumn >= 0) {
         const int col = st->reportSortColumn;
@@ -1871,7 +1897,7 @@ bool containsId(const std::vector<std::string>& ids, const std::string& id) {
     return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
-void presentReportRows(RegularReportState* st,
+void presentReportRows(MicrobiologyReportState* st,
                        const std::vector<search::ReportRow>* prev = nullptr) {
     if (!st || !st->reportList) return;
     if (prev && sameReportOrder(*prev, st->reportRows)) {
@@ -1892,7 +1918,7 @@ void presentReportRows(RegularReportState* st,
     InvalidateRect(st->rightPanel, nullptr, TRUE);
 }
 
-void sortReportRowsByColumn(RegularReportState* st, int col) {
+void sortReportRowsByColumn(MicrobiologyReportState* st, int col) {
     if (!st || !st->reportList || st->reportRows.empty() || col < 0) return;
     if (st->reportSortColumn == col) st->reportSortAscending = !st->reportSortAscending;
     else { st->reportSortColumn = col; st->reportSortAscending = true; }
@@ -1904,7 +1930,7 @@ void sortReportRowsByColumn(RegularReportState* st, int col) {
         selId = st->reportRows[static_cast<size_t>(sel)].id;
 
     std::vector<std::string> chkIds;
-    for (int idx : regularCheckedReportIndexes(st))
+    for (int idx : microbiologyCheckedReportIndexes(st))
         chkIds.push_back(st->reportRows[static_cast<size_t>(idx)].id);
 
     std::stable_sort(st->reportRows.begin(), st->reportRows.end(),
@@ -1964,7 +1990,7 @@ void insertResultRow(HWND list, int row, const search::ResultRow& d,
     setCell(list, row, 9, L"");
 }
 
-void presentResultRows(RegularReportState* st) {
+void presentResultRows(MicrobiologyReportState* st) {
     if (!st || !st->resultList) return;
     finishResultEdit(st, false);
     SendMessageW(st->resultList, WM_SETREDRAW, FALSE, 0);
@@ -1985,69 +2011,69 @@ void presentResultRows(RegularReportState* st) {
 // Left panel population from report
 // ============================================================================
 
-void populateLeftPanelFromReport(RegularReportState* st, int sel) {
+void populateLeftPanelFromReport(MicrobiologyReportState* st, int sel) {
     auto clr = [&]() {
-        regularSetControlText(st->groupEdit, "");  regularSetControlText(st->sampleEdit, "");
-        regularSetControlText(st->reportNoEdit, "");  regularSetControlText(st->operNoEdit, "");
-        regularSetComboSingleText(st->patientTypeCombo, "");
+        microbiologySetControlText(st->groupEdit, "");  microbiologySetControlText(st->sampleEdit, "");
+        microbiologySetControlText(st->reportNoEdit, "");  microbiologySetControlText(st->operNoEdit, "");
+        microbiologySetComboSingleText(st->patientTypeCombo, "");
         if (st->urgentCheck) SendMessageW(st->urgentCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-        regularSetControlText(st->urgentEdit, "");  regularSetControlText(st->barcodeEdit, "");
-        regularSetControlText(st->regNoEdit, "");  regularSetControlText(st->patientNameEdit, "");
-        regularSetControlText(st->sexEdit, "");  regularSetControlText(st->ageEdit, "");
-        regularFillAgeUnitCombo(st->ageUnitCombo);
-        regularSetControlText(st->bedEdit, "");  regularSetControlText(st->phoneEdit, "");
-        regularSetControlText(st->deptEdit, "");  regularSetControlText(st->diagEdit, "");
-        regularSetControlText(st->reqDoctorEdit, "");  regularSetControlText(st->feeEdit, "");
-        regularSetControlText(st->testerEdit, "");  regularSetControlText(st->auditEdit, "");
-        regularSetControlText(st->noteCodeEdit, "");  regularSetControlText(st->noteEdit, "");
-        regularClearDatePickerValue(st->applyDatePicker);
-        regularClearDatePickerValue(st->receiveDatePicker);
-        regularClearDatePickerValue(st->machineDatePicker);
-        regularClearDatePickerValue(st->reportDatePicker);
-        regularSetControlText(st->collectDateEdit, "");
+        microbiologySetControlText(st->urgentEdit, "");  microbiologySetControlText(st->barcodeEdit, "");
+        microbiologySetControlText(st->regNoEdit, "");  microbiologySetControlText(st->patientNameEdit, "");
+        microbiologySetControlText(st->sexEdit, "");  microbiologySetControlText(st->ageEdit, "");
+        microbiologyFillAgeUnitCombo(st->ageUnitCombo);
+        microbiologySetControlText(st->bedEdit, "");  microbiologySetControlText(st->phoneEdit, "");
+        microbiologySetControlText(st->deptEdit, "");  microbiologySetControlText(st->diagEdit, "");
+        microbiologySetControlText(st->reqDoctorEdit, "");  microbiologySetControlText(st->feeEdit, "");
+        microbiologySetControlText(st->testerEdit, "");  microbiologySetControlText(st->auditEdit, "");
+        microbiologySetControlText(st->noteCodeEdit, "");  microbiologySetControlText(st->noteEdit, "");
+        microbiologyClearDatePickerValue(st->applyDatePicker);
+        microbiologyClearDatePickerValue(st->receiveDatePicker);
+        microbiologyClearDatePickerValue(st->machineDatePicker);
+        microbiologyClearDatePickerValue(st->reportDatePicker);
+        microbiologySetControlText(st->collectDateEdit, "");
     };
     if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) { if (st) clr(); return; }
     const auto& r = st->reportRows[static_cast<size_t>(sel)];
-    regularSetControlText(st->groupEdit, r.group_name);
-    regularSetControlText(st->sampleEdit, r.sample_name);
-    regularSetControlText(st->reportNoEdit, r.rep_no);
-    regularSetControlText(st->operNoEdit, r.oper_no);
-    regularSetComboSingleText(st->patientTypeCombo, r.patient_type);
+    microbiologySetControlText(st->groupEdit, r.group_name);
+    microbiologySetControlText(st->sampleEdit, r.sample_name);
+    microbiologySetControlText(st->reportNoEdit, r.rep_no);
+    microbiologySetControlText(st->operNoEdit, r.oper_no);
+    microbiologySetComboSingleText(st->patientTypeCombo, r.patient_type);
     if (st->urgentCheck) SendMessageW(st->urgentCheck, BM_SETCHECK,
-        regularReportUsesEmergencyTextColor(r) ? BST_CHECKED : BST_UNCHECKED, 0);
-    regularSetControlText(st->urgentEdit, "");
-    regularSetControlText(st->barcodeEdit, r.txm_no);
-    regularSetControlText(st->regNoEdit, r.reg_no);
-    regularSetControlText(st->patientNameEdit, r.name);
-    regularSetControlText(st->sexEdit, r.sex);
-    const auto age = regularSplitAgeDisplayText(r.age);
-    regularSetControlText(st->ageEdit, age.value);
-    regularFillAgeUnitCombo(st->ageUnitCombo, age.unit);
-    regularSetControlText(st->bedEdit, r.bed_code);
-    regularSetControlText(st->phoneEdit, r.patient_phone);
-    regularSetControlText(st->deptEdit, r.dept_name);
-    regularSetControlText(st->diagEdit, r.diag_name);
-    regularSetControlText(st->reqDoctorEdit, r.req_doctor);
-    regularSetControlText(st->feeEdit, r.fee);
-    regularSetControlText(st->testerEdit, r.requester);
-    regularSetControlText(st->auditEdit, r.dean_oper);
-    regularSetControlText(st->noteCodeEdit, "");
-    regularSetControlText(st->noteEdit, r.note);
-    regularSetDatePickerValue(st->applyDatePicker, r.chk_date);
-    regularSetDatePickerValue(st->receiveDatePicker, r.collection_time);
-    regularSetDatePickerValue(st->machineDatePicker, r.create_time);
-    regularSetDatePickerValue(st->reportDatePicker, r.rep_time);
+        microbiologyReportUsesEmergencyTextColor(r) ? BST_CHECKED : BST_UNCHECKED, 0);
+    microbiologySetControlText(st->urgentEdit, "");
+    microbiologySetControlText(st->barcodeEdit, r.txm_no);
+    microbiologySetControlText(st->regNoEdit, r.reg_no);
+    microbiologySetControlText(st->patientNameEdit, r.name);
+    microbiologySetControlText(st->sexEdit, r.sex);
+    const auto age = microbiologySplitAgeDisplayText(r.age);
+    microbiologySetControlText(st->ageEdit, age.value);
+    microbiologyFillAgeUnitCombo(st->ageUnitCombo, age.unit);
+    microbiologySetControlText(st->bedEdit, r.bed_code);
+    microbiologySetControlText(st->phoneEdit, r.patient_phone);
+    microbiologySetControlText(st->deptEdit, r.dept_name);
+    microbiologySetControlText(st->diagEdit, r.diag_name);
+    microbiologySetControlText(st->reqDoctorEdit, r.req_doctor);
+    microbiologySetControlText(st->feeEdit, r.fee);
+    microbiologySetControlText(st->testerEdit, r.requester);
+    microbiologySetControlText(st->auditEdit, r.dean_oper);
+    microbiologySetControlText(st->noteCodeEdit, "");
+    microbiologySetControlText(st->noteEdit, r.note);
+    microbiologySetDatePickerValue(st->applyDatePicker, r.chk_date);
+    microbiologySetDatePickerValue(st->receiveDatePicker, r.collection_time);
+    microbiologySetDatePickerValue(st->machineDatePicker, r.create_time);
+    microbiologySetDatePickerValue(st->reportDatePicker, r.rep_time);
     st->suppressInspectDateQuery = true;
-    regularSetDatePickerValue(st->inspectDatePicker, r.inspect_date);
+    microbiologySetDatePickerValue(st->inspectDatePicker, r.inspect_date);
     st->suppressInspectDateQuery = false;
-    regularSetControlText(st->collectDateEdit, "");
+    microbiologySetControlText(st->collectDateEdit, "");
 }
 
 // ============================================================================
 // Result editing
 // ============================================================================
 
-void finishResultEdit(RegularReportState* st, bool commit, bool moveNext, bool restore) {
+void finishResultEdit(MicrobiologyReportState* st, bool commit, bool moveNext, bool restore) {
     if (!st || !st->resultEdit) return;
     const HWND ed = st->resultEdit;
     const int row = st->resultEditRow;
@@ -2056,7 +2082,7 @@ void finishResultEdit(RegularReportState* st, bool commit, bool moveNext, bool r
         wchar_t buf[512]{};
         GetWindowTextW(ed, buf, static_cast<int>(std::size(buf)));
         st->resultRows[static_cast<size_t>(row)].result = search::wide_to_utf8(buf);
-        setCell(st->resultList, row, REGULAR_RESULT_VALUE_COL, buf);
+        setCell(st->resultList, row, MICROBIOLOGY_RESULT_VALUE_COL, buf);
         ListView_RedrawItems(st->resultList, row, row);
     }
     DestroyWindow(ed);
@@ -2069,7 +2095,7 @@ void finishResultEdit(RegularReportState* st, bool commit, bool moveNext, bool r
 
 LRESULT CALLBACK resultEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                 UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_GETDLGCODE:
             return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTALLKEYS;
@@ -2083,12 +2109,12 @@ LRESULT CALLBACK resultEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
 
-void beginResultEdit(RegularReportState* st, int row) {
+void beginResultEdit(MicrobiologyReportState* st, int row) {
     if (!st || !st->resultList || row < 0 ||
         row >= static_cast<int>(st->resultRows.size())) return;
     finishResultEdit(st, false);
     RECT rc{};
-    if (!ListView_GetSubItemRect(st->resultList, row, REGULAR_RESULT_VALUE_COL,
+    if (!ListView_GetSubItemRect(st->resultList, row, MICROBIOLOGY_RESULT_VALUE_COL,
                                   LVIR_BOUNDS, &rc)) return;
     RECT cl{}; GetClientRect(st->resultList, &cl);
     if (rc.right <= cl.left || rc.left >= cl.right ||
@@ -2105,17 +2131,17 @@ void beginResultEdit(RegularReportState* st, int row) {
     if (!st->resultEdit) return;
     st->resultEditRow = row;
     SendMessageW(st->resultEdit, WM_SETFONT, reinterpret_cast<WPARAM>(st->ctx.uiFont), TRUE);
-    SetWindowSubclass(st->resultEdit, resultEditProc, REGULAR_RESULT_EDIT_SUBCLASS,
+    SetWindowSubclass(st->resultEdit, resultEditProc, MICROBIOLOGY_RESULT_EDIT_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     SendMessageW(st->resultEdit, EM_SETSEL, 0, -1);
     SetFocus(st->resultEdit);
 }
 
-bool beginResultEditFromPoint(RegularReportState* st, POINT pt) {
+bool beginResultEditFromPoint(MicrobiologyReportState* st, POINT pt) {
     if (!st || !st->resultList) return false;
     LVHITTESTINFO hit{}; hit.pt = pt;
     const int row = ListView_SubItemHitTest(st->resultList, &hit);
-    if (row >= 0 && hit.iSubItem == REGULAR_RESULT_VALUE_COL) {
+    if (row >= 0 && hit.iSubItem == MICROBIOLOGY_RESULT_VALUE_COL) {
         ListView_SetItemState(st->resultList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
         ListView_SetItemState(st->resultList, row, LVIS_SELECTED | LVIS_FOCUSED,
                               LVIS_SELECTED | LVIS_FOCUSED);
@@ -2128,7 +2154,7 @@ bool beginResultEditFromPoint(RegularReportState* st, POINT pt) {
 
 LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                 UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(data);
     switch (msg) {
         case WM_LBUTTONDOWN: {
             POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -2155,7 +2181,7 @@ std::string normalizeSampleNo(std::string v) {
     return nz == std::string::npos ? "0" : v.substr(nz);
 }
 
-int findReportIndexBySampleNo(const RegularReportState* st, const std::string& input) {
+int findReportIndexBySampleNo(const MicrobiologyReportState* st, const std::string& input) {
     if (!st) return -1;
     const std::string exact = search::trim(input);
     if (exact.empty()) return -1;
@@ -2167,7 +2193,7 @@ int findReportIndexBySampleNo(const RegularReportState* st, const std::string& i
     return -1;
 }
 
-int findReportIndexByRepNo(const RegularReportState* st, const std::string& repNo) {
+int findReportIndexByRepNo(const MicrobiologyReportState* st, const std::string& repNo) {
     if (!st) return -1;
     const std::string target = search::trim(repNo);
     if (target.empty()) return -1;
@@ -2181,7 +2207,7 @@ int findReportIndexByRepNo(const RegularReportState* st, const std::string& repN
 // Query results dispatch
 // ============================================================================
 
-void querySelectedResults(RegularReportState* st, int sel) {
+void querySelectedResults(MicrobiologyReportState* st, int sel) {
     if (st && (sel < 0 || sel >= static_cast<int>(st->reportRows.size()) ||
                search::trim(st->reportRows[static_cast<size_t>(sel)].rep_no) !=
                    st->highlightReportRepNo)) {
@@ -2200,7 +2226,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
             st->pictureQueryLoading = false; st->pictureRepNo.clear();
             st->pictureQueryTask.cancel();
             ++st->pictureQueryGeneration;
-            regularClearPictureView(st, L"");
+            microbiologyClearPictureView(st, L"");
         }
         return;
     }
@@ -2208,8 +2234,8 @@ void querySelectedResults(RegularReportState* st, int sel) {
     st->pictureQueryLoading = false; st->pictureRepNo.clear();
     st->pictureQueryTask.cancel();
     ++st->pictureQueryGeneration;
-    regularClearPictureView(st, L"");
-    regularQuerySelectedPicture(st, sel);
+    microbiologyClearPictureView(st, L"");
+    microbiologyQuerySelectedPicture(st, sel);
     if (st->resultQueryLoading && st->selectedReportIndex == sel) return;
     finishResultEdit(st, false);
     ListView_DeleteAllItems(st->resultList);
@@ -2220,25 +2246,25 @@ void querySelectedResults(RegularReportState* st, int sel) {
     const HWND hwnd = st->hwnd;
     const std::string conn = st->reportConnectionString;
     const std::string repNo = st->reportRows[static_cast<size_t>(sel)].rep_no;
-    const bool queued = st->resultQueryTask.start<ResultLoadResult>(
+    const bool queued = st->resultQueryTask.start<MicrobiologyResultLoadResult>(
         [conn, repNo, gen] {
-            ResultLoadResult result;
+            MicrobiologyResultLoadResult result;
             result.generation = gen;
             result.ok = search::load_result_rows(conn, repNo, result.rows, result.error);
             return result;
         },
-        [hwnd](std::optional<ResultLoadResult> result, std::exception_ptr error) {
-            auto* state = reinterpret_cast<RegularReportState*>(
-                GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+        [hwnd](std::optional<MicrobiologyResultLoadResult> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<MicrobiologyReportState*>(
+                GetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE));
             if (!state) return;
             if (error || !result) {
                 state->resultQueryLoading = false;
                 SetWindowTextW(state->status, L"项目明细后台任务异常");
-                LOG_ERROR("Regular report result task failed");
+                LOG_ERROR("Microbiology report result task failed");
                 return;
             }
             finishResultQuery(state, hwnd,
-                std::make_unique<ResultLoadResult>(std::move(*result)));
+                std::make_unique<MicrobiologyResultLoadResult>(std::move(*result)));
         });
     if (!queued) {
         st->resultQueryLoading = false;
@@ -2250,8 +2276,8 @@ void querySelectedResults(RegularReportState* st, int sel) {
 // Query completion
 // ============================================================================
 
-void finishReportQuery(RegularReportState* st, HWND hwnd,
-                       std::unique_ptr<ReportLoadResult> result) {
+void finishReportQuery(MicrobiologyReportState* st, HWND hwnd,
+                       std::unique_ptr<MicrobiologyReportLoadResult> result) {
     if (!st || !result || result->generation != st->reportQueryGeneration) return;
     st->reportQueryLoading = false;
     if (!result->ok) {
@@ -2268,7 +2294,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
 
     std::vector<std::string> chkIds;
     if (ps) {
-        for (int idx : regularCheckedReportIndexes(st))
+        for (int idx : microbiologyCheckedReportIndexes(st))
             if (idx >= 0 && idx < static_cast<int>(prev.size()))
                 chkIds.push_back(search::trim(prev[static_cast<size_t>(idx)].id));
     }
@@ -2311,8 +2337,8 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
             querySelectedResults(st, pendingTarget);
         } else {
             querySelectedResults(st, -1);
-            MessageBoxW(hwnd, L"已打开常规报告，但未在当前日期和仪器下找到目标报告。",
-                        L"常规报告", MB_ICONINFORMATION);
+            MessageBoxW(hwnd, L"已打开微生物报告，但未在当前日期和仪器下找到目标报告。",
+                        L"微生物报告", MB_ICONINFORMATION);
         }
         st->pendingOpenRepNo.clear();
         st->pendingOpenOperNo.clear();
@@ -2334,8 +2360,8 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         search::utf8_to_wide(search::make_query_count_status(st->reportRows.size())).c_str());
 }
 
-void finishResultQuery(RegularReportState* st, HWND hwnd,
-                       std::unique_ptr<ResultLoadResult> result) {
+void finishResultQuery(MicrobiologyReportState* st, HWND hwnd,
+                       std::unique_ptr<MicrobiologyResultLoadResult> result) {
     if (!st || !result || result->generation != st->resultQueryGeneration) return;
     st->resultQueryLoading = false;
     if (!result->ok) {
@@ -2354,13 +2380,13 @@ void finishResultQuery(RegularReportState* st, HWND hwnd,
 // Barcode printing
 // ============================================================================
 
-const search::ReportRow* contextReportRow(const RegularReportState* st) {
+const search::ReportRow* contextReportRow(const MicrobiologyReportState* st) {
     if (!st || st->contextReportIndex < 0 ||
         st->contextReportIndex >= static_cast<int>(st->reportRows.size())) return nullptr;
     return &st->reportRows[static_cast<size_t>(st->contextReportIndex)];
 }
 
-std::string barcodeGroupNameForReport(RegularReportState* st, int idx, std::string& err) {
+std::string barcodeGroupNameForReport(MicrobiologyReportState* st, int idx, std::string& err) {
     err.clear();
     if (!st || idx < 0 || idx >= static_cast<int>(st->reportRows.size())) {
         err = "invalid report row"; return "";
@@ -2371,65 +2397,99 @@ std::string barcodeGroupNameForReport(RegularReportState* st, int idx, std::stri
 search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
                                                     const std::string& gn) {
     search::BarcodeLabelPayload p;
-    p.sample_no = r.oper_no; p.test_item = gn; p.barcode_value = r.txm_no;
+    p.sample_no = r.oper_no;
+    p.test_item = microbiology_barcode::label_group_name(gn, r.group_code);
+    p.barcode_value = r.txm_no;
     p.patient_name = r.name; p.specimen_type = r.sample_name;
     p.department = r.dept_name; p.patient_id = r.reg_no;
-    p.timestamp = regularSlashDate(r.chk_date);
+    p.timestamp = microbiologySlashDate(r.chk_date);
+    p.label_template = search::BarcodeLabelTemplate::Microbiology;
+    p.order_text = r.order_text;
+    p.sex = r.sex;
+    p.age = r.age;
     return p;
 }
 
 }  // namespace
 
 // ============================================================================
-// Exported wrappers (regular* functions declared in state.h)
+// Exported wrappers (microbiology* functions declared in state.h)
 // ============================================================================
 
-bool applyQuickMachineSlot(RegularReportState* st, int slot, bool showMissingMessage) {
-    if (!st || slot < 0 || slot >= REGULAR_QUICK_MACHINE_COUNT) return false;
-    const std::wstring name = search::load_module_str(
-        L"RegularReport", regularQuickMachineNameKey(slot), L"");
-    const std::wstring code = search::load_module_str(
-        L"RegularReport", regularQuickMachineCodeKey(slot), L"");
-    const std::wstring room = search::load_module_str(
-        L"RegularReport", regularQuickMachineRoomKey(slot), L"");
+bool applyQuickMachineSlot(MicrobiologyReportState* st, int slot, bool showMissingMessage) {
+    if (!st || slot < 0 || slot >= MICROBIOLOGY_QUICK_MACHINE_COUNT) return false;
+    const auto configured = search::load_microbiology_quick_machine(slot);
+    const std::wstring code = search::utf8_to_wide(configured.code);
     if (search::trim(search::wide_to_utf8(code)).empty()) {
         if (showMissingMessage)
-            MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
+            MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"微生物报告", MB_ICONINFORMATION);
         return false;
     }
     const std::string nextCode = search::wide_to_utf8(code);
-    const std::string nextRoom = search::wide_to_utf8(room);
+    if (!microbiologyIsAllowedMachineCode(nextCode)) {
+        if (showMissingMessage)
+            MessageBoxW(st->hwnd,
+                        L"微生物报告仅支持检验仪器 3001 和 7002。",
+                        L"微生物报告", MB_ICONINFORMATION);
+        return false;
+    }
+    std::vector<search::MachineOption> machines;
+    std::string error;
+    if (!search::load_microbiology_report_machine_picker_machine_options(
+            st->ctx.dbSettings, "", machines, error)) {
+        const std::wstring message = L"快捷检验仪器加载失败：" + search::utf8_to_wide(error);
+        SetWindowTextW(st->status, message.c_str());
+        if (showMissingMessage) MessageBoxW(st->hwnd, message.c_str(), L"微生物报告", MB_ICONERROR);
+        return false;
+    }
+    const auto* found = search::find_microbiology_quick_machine(
+        machines, nextCode, configured.room_code);
+    if (!found) {
+        const std::wstring message = L"未找到有效的微生物快捷检验仪器 " + code +
+            L"，请检查数据库仪器配置和系统设置。";
+        SetWindowTextW(st->status, message.c_str());
+        if (showMissingMessage) MessageBoxW(st->hwnd, message.c_str(), L"微生物报告", MB_ICONWARNING);
+        return false;
+    }
+    const std::wstring name = search::utf8_to_wide(found->mach_name);
+    const std::string nextRoom = search::trim(found->room_code);
     const bool sameMachine = search::trim(st->selectedMachineCode) == search::trim(nextCode) &&
                              search::trim(st->selectedRoomCode) == search::trim(nextRoom);
     SetWindowTextW(st->machineEdit, name.empty() ? code.c_str() : name.c_str());
     st->selectedMachineCode = nextCode;
     st->selectedRoomCode = nextRoom;
-    regularUpdateQuickMachineButtonLabels(st);
+    microbiologyUpdateQuickMachineButtonLabels(st);
     runReportQuery(st, sameMachine && hasSelectedReportRow(st));
     return true;
 }
 
-void regularApplyQuickMachine(RegularReportState* st, int slot) {
+void microbiologyApplyQuickMachine(MicrobiologyReportState* st, int slot) {
     applyQuickMachineSlot(st, slot, true);
 }
 
-void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarget& target) {
+void microbiologyOpenReportTarget(MicrobiologyReportState* st, const MicrobiologyReportOpenTarget& target) {
     if (!st) return;
     const std::string machCode = search::trim(target.mach_code);
     const std::string repNo = search::trim(target.rep_no);
     if (machCode.empty() || repNo.empty()) {
         MessageBoxW(st->hwnd,
-                    L"目标报告缺少检验仪器或报告号，无法跳转到常规报告。",
-                    L"常规报告", MB_ICONWARNING);
+                    L"目标报告缺少检验仪器或报告号，无法跳转到微生物报告。",
+                    L"微生物报告", MB_ICONWARNING);
+        return;
+    }
+    if (!microbiologyIsAllowedMachineCode(machCode)) {
+        MessageBoxW(st->hwnd,
+                    L"目标报告的检验仪器不属于微生物报告范围（仅支持 3001、7002）。",
+                    L"微生物报告", MB_ICONINFORMATION);
         return;
     }
 
     SYSTEMTIME date{};
     const std::string dateText = search::trim(target.inspect_date);
-    if (!regularParseDateTimeText(dateText, date)) {
+    if (!microbiologyParseDateTimeText(dateText, date)) {
         MessageBoxW(st->hwnd,
-                    L"目标报告缺少有效检验日期，无法跳转到常规报告。",
-                    L"常规报告", MB_ICONWARNING);
+                    L"目标报告缺少有效检验日期，无法跳转到微生物报告。",
+                    L"微生物报告", MB_ICONWARNING);
         return;
     }
 
@@ -2444,16 +2504,22 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     const std::wstring machineText = search::utf8_to_wide(
         search::trim(target.mach_name).empty() ? machCode : search::trim(target.mach_name));
     SetWindowTextW(st->machineEdit, machineText.c_str());
-    regularUpdateQuickMachineButtonLabels(st);
+    microbiologyUpdateQuickMachineButtonLabels(st);
 
     st->suppressInspectDateQuery = true;
     DateTime_SetSystemtime(st->inspectDatePicker, GDT_VALID, &date);
     st->suppressInspectDateQuery = false;
+    st->suppressRightFilterQuery = true;
+    const SYSTEMTIME rangeStart = microbiologyAddDays(
+        date, -MICROBIOLOGY_REPORT_DEFAULT_DAYS + 1);
+    DateTime_SetSystemtime(st->rightSubmitStartPicker, GDT_VALID, &rangeStart);
+    DateTime_SetSystemtime(st->rightSubmitEndPicker, GDT_VALID, &date);
+    st->suppressRightFilterQuery = false;
     SetWindowTextW(st->status, L"正在跳转到目标报告...");
     runReportQuery(st, false);
 }
 
-void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* item) {
+void microbiologyShowReportContextMenu(MicrobiologyReportState* st, const NMITEMACTIVATE* item) {
     if (!st || !st->reportList || !item || item->iItem < 0 ||
         item->iItem >= static_cast<int>(st->reportRows.size())) return;
 
@@ -2468,19 +2534,19 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
     if (!menu) return;
     const bool printing = st->barcodePrintTask.active();
     AppendMenuW(menu, printing ? (MF_STRING | MF_GRAYED) : MF_STRING,
-                REGULAR_IDM_REPORT_PRINT_BARCODE, L"打印条码");
+                MICROBIOLOGY_IDM_REPORT_PRINT_BARCODE, L"打印条码");
     AppendMenuW(menu,
-                (printing || regularCheckedReportIndexes(st).empty())
+                (printing || microbiologyCheckedReportIndexes(st).empty())
                     ? (MF_STRING | MF_GRAYED) : MF_STRING,
-                REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
+                MICROBIOLOGY_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_TREND, L"趋势图");
+    AppendMenuW(menu, MF_STRING, MICROBIOLOGY_IDM_REPORT_TREND, L"趋势图");
     TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
                    pt.x, pt.y, 0, st->hwnd, nullptr);
     DestroyMenu(menu);
 }
 
-std::vector<int> regularCheckedReportIndexes(const RegularReportState* st) {
+std::vector<int> microbiologyCheckedReportIndexes(const MicrobiologyReportState* st) {
     std::vector<int> indexes;
     if (!st || !st->reportList) return indexes;
     const int count = ListView_GetItemCount(st->reportList);
@@ -2490,13 +2556,13 @@ std::vector<int> regularCheckedReportIndexes(const RegularReportState* st) {
     return indexes;
 }
 
-void regularClearReportChecks(RegularReportState* st) {
+void microbiologyClearReportChecks(MicrobiologyReportState* st) {
     if (!st || !st->reportList) return;
     const int count = ListView_GetItemCount(st->reportList);
     for (int i = 0; i < count; ++i) ListView_SetCheckState(st->reportList, i, FALSE);
 }
 
-std::wstring regularPrintBarcodeForContext(RegularReportState* st) {
+std::wstring microbiologyPrintBarcodeForContext(MicrobiologyReportState* st) {
     if (st && st->barcodePrintTask.active())
         return L"已有批量条码正在提交到打印队列。";
     const search::ReportRow* row = contextReportRow(st);
@@ -2528,7 +2594,7 @@ std::wstring regularPrintBarcodeForContext(RegularReportState* st) {
         std::wstring msg = L"打印条码失败：";
         msg += search::utf8_to_wide(ex.what());
         msg += L"\n打印机：" + search::configured_barcode_printer_name();
-        msg += L"\n请在系统设置页重新选择条码打印机。\n\n" + details;
+        msg += L"\n请检查标签内容和系统设置中的条码打印机。\n\n" + details;
         return msg;
     }
 }
@@ -2542,13 +2608,13 @@ struct BarcodeBatchResult {
     std::string error;
 };
 
-void setBarcodePrintControlsEnabled(RegularReportState* st, bool enabled) {
+void setBarcodePrintControlsEnabled(MicrobiologyReportState* st, bool enabled) {
     if (!st || !st->bottomPanel) return;
-    EnableWindow(GetDlgItem(st->bottomPanel, REGULAR_IDC_BOTTOM_PRINT_BARCODE), enabled);
-    EnableWindow(GetDlgItem(st->bottomPanel, REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE), enabled);
+    EnableWindow(GetDlgItem(st->bottomPanel, MICROBIOLOGY_IDC_BOTTOM_PRINT_BARCODE), enabled);
+    EnableWindow(GetDlgItem(st->bottomPanel, MICROBIOLOGY_IDC_BOTTOM_BATCH_PRINT_BARCODE), enabled);
 }
 
-std::wstring startBarcodeBatch(RegularReportState* st,
+std::wstring startBarcodeBatch(MicrobiologyReportState* st,
                                std::vector<search::BarcodeLabelPayload> payloads) {
     if (!st || payloads.empty()) return L"没有可打印的条码记录。";
     if (st->barcodePrintTask.active()) return L"已有批量条码正在提交到打印队列。";
@@ -2574,8 +2640,8 @@ std::wstring startBarcodeBatch(RegularReportState* st,
                     const int sent = result.sent;
                     const int count = result.total;
                     task.post([hwnd, sent, count] {
-                        auto* state = reinterpret_cast<RegularReportState*>(
-                            GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+                        auto* state = reinterpret_cast<MicrobiologyReportState*>(
+                            GetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE));
                         if (state && state->status)
                             SetWindowTextW(state->status,
                                 (L"正在提交条码到打印队列：" +
@@ -2592,13 +2658,13 @@ std::wstring startBarcodeBatch(RegularReportState* st,
         },
         [hwnd, printer](std::optional<BarcodeBatchResult> result,
                         std::exception_ptr error) {
-            auto* state = reinterpret_cast<RegularReportState*>(
-                GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+            auto* state = reinterpret_cast<MicrobiologyReportState*>(
+                GetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE));
             if (!state) return;
             setBarcodePrintControlsEnabled(state, true);
             if (error || !result) {
                 SetWindowTextW(state->status, L"批量条码打印任务异常终止。");
-                MessageBoxW(hwnd, L"批量条码打印任务异常终止。", L"常规报告",
+                MessageBoxW(hwnd, L"批量条码打印任务异常终止。", L"微生物报告",
                             MB_ICONERROR);
                 return;
             }
@@ -2617,7 +2683,7 @@ std::wstring startBarcodeBatch(RegularReportState* st,
             SetWindowTextW(state->status,
                            result->error.empty() ? L"批量条码已全部提交到打印队列。"
                                                  : L"批量条码在中途停止。");
-            MessageBoxW(hwnd, message.c_str(), L"常规报告",
+            MessageBoxW(hwnd, message.c_str(), L"微生物报告",
                         result->error.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
         });
     if (!started) {
@@ -2629,8 +2695,8 @@ std::wstring startBarcodeBatch(RegularReportState* st,
 
 }  // namespace
 
-std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
-    const std::vector<int> indexes = regularCheckedReportIndexes(st);
+std::wstring microbiologyPrintCheckedBarcodes(MicrobiologyReportState* st) {
+    const std::vector<int> indexes = microbiologyCheckedReportIndexes(st);
     if (indexes.empty()) return L"请先勾选需要打印条码的报告记录。";
     if (indexes.size() > 50) {
         const std::wstring warning = L"即将向打印队列提交 " +
@@ -2657,13 +2723,13 @@ std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
         payloads.push_back(barcodePayloadForReport(report, gn));
     }
     std::wstring error = startBarcodeBatch(st, std::move(payloads));
-    if (error.empty()) regularClearReportChecks(st);
+    if (error.empty()) microbiologyClearReportChecks(st);
     return error;
 }
 
 namespace {
 
-constexpr const wchar_t* BATCH_BARCODE_DIALOG_CLASS = L"RegularReportBatchBarcodeDialog";
+constexpr const wchar_t* BATCH_BARCODE_DIALOG_CLASS = L"MicrobiologyReportBatchBarcodeDialog";
 constexpr int IDC_BATCH_RANGE_START = 5460;
 constexpr int IDC_BATCH_RANGE_END = 5461;
 constexpr int IDC_BATCH_LIST = 5463;
@@ -2673,7 +2739,7 @@ constexpr int IDC_BATCH_CLEAR = 5465;
 struct BatchBarcodeDialogState {
     HFONT font = nullptr;
     std::vector<search::ReportRow> rows;
-    regular_barcode::RangeSelection selection;
+    microbiology_barcode::RangeSelection selection;
     std::vector<search::BarcodeLabelPayload> payloads;
     std::wstring context_text;
     std::wstring printer_text;
@@ -2724,10 +2790,10 @@ void updateBatchSummary(BatchBarcodeDialogState* state) {
 void populateBatchPreview(BatchBarcodeDialogState* state) {
     if (!state) return;
     state->preview_first = search::trim(
-        search::wide_to_utf8(regularWindowText(state->start)));
+        search::wide_to_utf8(microbiologyWindowText(state->start)));
     state->preview_last = search::trim(
-        search::wide_to_utf8(regularWindowText(state->end)));
-    state->selection = regular_barcode::select_range(
+        search::wide_to_utf8(microbiologyWindowText(state->end)));
+    state->selection = microbiology_barcode::select_range(
         state->rows, state->preview_first, state->preview_last);
     state->syncing = true;
     ListView_DeleteAllItems(state->list);
@@ -2753,7 +2819,8 @@ void populateBatchPreview(BatchBarcodeDialogState* state) {
         ListView_InsertItem(state->list, &item);
         setCell(state->list, static_cast<int>(i), 1, report.name);
         setCell(state->list, static_cast<int>(i), 2, report.txm_no);
-        setCell(state->list, static_cast<int>(i), 3, report.group_name);
+        setCell(state->list, static_cast<int>(i), 3,
+                microbiology_barcode::label_group_name(report.group_name, report.group_code));
         const wchar_t* status = !candidate.printable
             ? L"不可打印：条码号为空"
             : candidate.duplicate ? L"疑似重复（默认不选）" : L"可打印";
@@ -2926,9 +2993,9 @@ LRESULT CALLBACK batchBarcodeDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             }
             if (LOWORD(wp) == IDOK) {
                 const std::string first = search::trim(
-                    search::wide_to_utf8(regularWindowText(state->start)));
+                    search::wide_to_utf8(microbiologyWindowText(state->start)));
                 const std::string last = search::trim(
-                    search::wide_to_utf8(regularWindowText(state->end)));
+                    search::wide_to_utf8(microbiologyWindowText(state->end)));
                 if (first != state->preview_first || last != state->preview_last) {
                     populateBatchPreview(state);
                 }
@@ -3011,7 +3078,7 @@ void ensureBatchBarcodeDialogClass() {
     registered = true;
 }
 
-bool showBatchBarcodeDialog(RegularReportState* st,
+bool showBatchBarcodeDialog(MicrobiologyReportState* st,
                             std::vector<search::BarcodeLabelPayload>& payloads) {
     ensureBatchBarcodeDialogClass();
     const HWND ownerHwnd = st->hwnd;
@@ -3023,7 +3090,7 @@ bool showBatchBarcodeDialog(RegularReportState* st,
         state.initial_sample = search::utf8_to_wide(
             state.rows[static_cast<std::size_t>(current)].oper_no);
     const std::wstring date = search::utf8_to_wide(st->reportQueryDate);
-    const std::wstring machine = regularWindowText(st->machineEdit);
+    const std::wstring machine = microbiologyWindowText(st->machineEdit);
     state.context_text = L"当前范围：检验日期 " +
                          (date.empty() ? L"-" : date) + L"    检验仪器 " +
                          (machine.empty() ? L"-" : machine);
@@ -3082,36 +3149,36 @@ bool showBatchBarcodeDialog(RegularReportState* st,
 
 }  // namespace
 
-void regularShowBatchBarcodeDialog(RegularReportState* st) {
+void microbiologyShowBatchBarcodeDialog(MicrobiologyReportState* st) {
     if (!st) return;
     if (st->barcodePrintTask.active()) {
         MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
-                    L"常规报告", MB_ICONINFORMATION);
+                    L"微生物报告", MB_ICONINFORMATION);
         return;
     }
     if (st->reportQueryLoading) {
         MessageBoxW(st->hwnd, L"报告列表正在刷新，请等待查询完成后再批量打印。",
-                    L"常规报告", MB_ICONINFORMATION);
+                    L"微生物报告", MB_ICONINFORMATION);
         return;
     }
     if (st->reportRows.empty()) {
-        MessageBoxW(st->hwnd, L"当前页面没有可用的报告记录。", L"常规报告",
+        MessageBoxW(st->hwnd, L"当前页面没有可用的报告记录。", L"微生物报告",
                     MB_ICONINFORMATION);
         return;
     }
     if (!search::barcode_label_printing_available()) {
         MessageBoxW(st->hwnd, L"打印条码功能不可用：构建时未找到 LabelPrint 项目。",
-                    L"常规报告", MB_ICONWARNING);
+                    L"微生物报告", MB_ICONWARNING);
         return;
     }
     std::vector<search::BarcodeLabelPayload> payloads;
     if (!showBatchBarcodeDialog(st, payloads)) return;
     const std::wstring error = startBarcodeBatch(st, std::move(payloads));
     if (!error.empty())
-        MessageBoxW(st->hwnd, error.c_str(), L"常规报告", MB_ICONWARNING);
+        MessageBoxW(st->hwnd, error.c_str(), L"微生物报告", MB_ICONWARNING);
 }
 
-void regularShowTrendForContext(RegularReportState* st) {
+void microbiologyShowTrendForContext(MicrobiologyReportState* st) {
     const search::ReportRow* row = contextReportRow(st);
     if (!st || !row) {
         MessageBoxW(st ? st->hwnd : nullptr, L"请先右键选择一条报告记录。",
@@ -3131,16 +3198,16 @@ void regularShowTrendForContext(RegularReportState* st) {
         return;
     }
 
-    SYSTEMTIME endDate = regularReportTrendEndDate(*row);
-    SYSTEMTIME startDate = regularAddDays(endDate, -REGULAR_TREND_DEFAULT_DAYS + 1);
+    SYSTEMTIME endDate = microbiologyReportTrendEndDate(*row);
+    SYSTEMTIME startDate = microbiologyAddDays(endDate, -MICROBIOLOGY_TREND_DEFAULT_DAYS + 1);
 
     search::QueryInput input;
     input.patient_id = patientId;
     input.patient_name = patientName;
     input.room_code = st->selectedRoomCode;
     input.mach_code = st->selectedMachineCode;
-    input.start_date = regularDateText(startDate);
-    input.end_date = regularDateText(endDate);
+    input.start_date = microbiologyDateText(startDate);
+    input.end_date = microbiologyDateText(endDate);
     input.limit = 0;
 
     if (patientId.empty()) {
@@ -3154,12 +3221,12 @@ void regularShowTrendForContext(RegularReportState* st) {
                               st->ctx.dbSettings, input);
 }
 
-void regularSelectReportRowBySampleInput(RegularReportState* st) {
+void microbiologySelectReportRowBySampleInput(MicrobiologyReportState* st) {
     if (!st || !st->operNoEdit) return;
-    const std::string input = search::wide_to_utf8(regularWindowText(st->operNoEdit));
+    const std::string input = search::wide_to_utf8(microbiologyWindowText(st->operNoEdit));
     const int index = findReportIndexBySampleNo(st, input);
     if (index < 0) {
-        MessageBoxW(st->hwnd, L"当前右侧列表中未找到该样本号。", L"常规报告", MB_ICONINFORMATION);
+        MessageBoxW(st->hwnd, L"当前右侧列表中未找到该样本号。", L"微生物报告", MB_ICONINFORMATION);
         return;
     }
     const int current = st->reportList ?
@@ -3175,39 +3242,39 @@ namespace {
 // ============================================================================
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* st = reinterpret_cast<RegularReportState*>(
-        GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+    auto* st = reinterpret_cast<MicrobiologyReportState*>(
+        GetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE));
     switch (msg) {
         case WM_CREATE: {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             auto* mcs = reinterpret_cast<MDICREATESTRUCTW*>(cs->lpCreateParams);
-            st = reinterpret_cast<RegularReportState*>(mcs->lParam);
+            st = reinterpret_cast<MicrobiologyReportState*>(mcs->lParam);
             if (!st) {
-                LOG_ERROR("WM_CREATE: lpCreateParams is null (RegularReportState)");
+                LOG_ERROR("WM_CREATE: lpCreateParams is null (MicrobiologyReportState)");
                 return -1;
             }
-            SetPropW(hwnd, REGULAR_REPORT_PROP_STATE, reinterpret_cast<HANDLE>(st));
+            SetPropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE, reinterpret_cast<HANDLE>(st));
             st->hwnd = hwnd;
             st->bgBrush = CreateSolidBrush(RGB(0xB8, 0xB8, 0xB8));
             st->panelBrush = CreateSolidBrush(RGB(0xEF, 0xEF, 0xEF));
             st->blackBrush = CreateSolidBrush(RGB(0, 0, 0));
-            st->pendingSplitterX = search::load_module_int(L"RegularReport", L"SplitterX", 0);
+            st->pendingSplitterX = search::load_module_int(L"MicrobiologyReport", L"SplitterX", 0);
             createControls(hwnd, st);
             layout(hwnd, st);
             st->initialQuickMachineTimerActive =
-                SetTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE, 1, nullptr) != 0;
+                SetTimer(hwnd, IDT_MICROBIOLOGY_REPORT_INITIAL_QUICK_MACHINE, 1, nullptr) != 0;
             return 0;
         }
 
-        case WM_REGULAR_OPEN_REPORT: {
+        case WM_MICROBIOLOGY_OPEN_REPORT: {
             if (st && st->initialQuickMachineTimerActive) {
-                KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+                KillTimer(hwnd, IDT_MICROBIOLOGY_REPORT_INITIAL_QUICK_MACHINE);
                 st->initialQuickMachineTimerActive = false;
             }
             if (st) st->skipInitialQuickMachineLoad = true;
-            std::unique_ptr<RegularReportOpenTarget> target(
-                reinterpret_cast<RegularReportOpenTarget*>(lp));
-            if (st && target) regularOpenReportTarget(st, *target);
+            std::unique_ptr<MicrobiologyReportOpenTarget> target(
+                reinterpret_cast<MicrobiologyReportOpenTarget*>(lp));
+            if (st && target) microbiologyOpenReportTarget(st, *target);
             return 0;
         }
 
@@ -3219,18 +3286,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             layout(hwnd, st); return 0;
 
         case WM_TIMER:
-            if (st && wp == IDT_REPORT_INITIAL_QUICK_MACHINE) {
-                KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+            if (st && wp == IDT_MICROBIOLOGY_REPORT_INITIAL_QUICK_MACHINE) {
+                KillTimer(hwnd, IDT_MICROBIOLOGY_REPORT_INITIAL_QUICK_MACHINE);
                 st->initialQuickMachineTimerActive = false;
                 if (!st->skipInitialQuickMachineLoad &&
                     search::trim(st->selectedMachineCode).empty()) {
                     applyQuickMachineSlot(st, 0, false);
                 }
-                return 0;
-            }
-            if (st && wp == IDT_REPORT_AUTO_REFRESH) {
-                if (regularIsAutoRefreshChecked(st)) runAutoRefreshQuery(st);
-                else regularStopAutoRefreshTimer(st);
                 return 0;
             }
             break;
@@ -3246,25 +3308,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (st && reinterpret_cast<HWND>(lp) == st->splitter) {
                 st->splitterX = static_cast<int>(wp); st->splitterUserSet = true;
                 layout(hwnd, st);
-                search::save_module_int(L"RegularReport", L"SplitterX", st->splitterX);
+                search::save_module_int(L"MicrobiologyReport", L"SplitterX", st->splitterX);
             }
             return 0;
 
         case WM_COMMAND:
-            if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_BARCODE) {
-                MessageBoxW(hwnd, regularPrintBarcodeForContext(st).c_str(),
-                            L"常规报告", MB_ICONINFORMATION);
+            if (LOWORD(wp) == MICROBIOLOGY_IDM_REPORT_PRINT_BARCODE) {
+                MessageBoxW(hwnd, microbiologyPrintBarcodeForContext(st).c_str(),
+                            L"微生物报告", MB_ICONINFORMATION);
                 return 0;
             }
-            if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES) {
-                const std::wstring message = regularPrintCheckedBarcodes(st);
+            if (LOWORD(wp) == MICROBIOLOGY_IDM_REPORT_PRINT_CHECKED_BARCODES) {
+                const std::wstring message = microbiologyPrintCheckedBarcodes(st);
                 if (!message.empty())
-                    MessageBoxW(hwnd, message.c_str(), L"常规报告",
+                    MessageBoxW(hwnd, message.c_str(), L"微生物报告",
                                 MB_ICONINFORMATION);
                 return 0;
             }
-            if (LOWORD(wp) == REGULAR_IDM_REPORT_TREND) {
-                regularShowTrendForContext(st);
+            if (LOWORD(wp) == MICROBIOLOGY_IDM_REPORT_TREND) {
+                microbiologyShowTrendForContext(st);
                 return 0;
             }
             break;
@@ -3274,24 +3336,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
                 clearLeftPanel(st); createControls(hwnd, st);
-                regularApplyFont(hwnd, st->ctx.uiFont);
-                regularRefreshLeftGroupTitleFont(st);
+                microbiologyApplyFont(hwnd, st->ctx.uiFont);
+                microbiologyRefreshLeftGroupTitleFont(st);
                 layout(hwnd, st);
             }
             return 0;
 
         case app::WM_APP_SETTINGS_CHANGED:
-            if (st) regularUpdateQuickMachineButtonLabels(st);
+            if (st) microbiologyUpdateQuickMachineButtonLabels(st);
             return 0;
 
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             HWND ctl = reinterpret_cast<HWND>(lp);
-            if (GetPropW(ctl, L"RegularEmergencyLabel")) {
+            if (GetPropW(ctl, L"MicrobiologyEmergencyLabel")) {
                 SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0xE6, 0, 0));
                 return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
             }
-            if (GetPropW(ctl, L"RegularLeftLabel")) {
+            if (GetPropW(ctl, L"MicrobiologyLeftLabel")) {
                 SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(0x00, 0x00, 0xC4));
                 return reinterpret_cast<LRESULT>(st ? st->panelBrush : nullptr);
             }
@@ -3303,17 +3365,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return reinterpret_cast<LRESULT>(st ? st->bgBrush : nullptr);
 
         case WM_DESTROY:
-            RemovePropW(hwnd, REGULAR_REPORT_PROP_STATE);
+            RemovePropW(hwnd, MICROBIOLOGY_REPORT_PROP_STATE);
             if (st) {
                 st->reportQueryTask.cancel();
                 st->resultQueryTask.cancel();
                 st->pictureQueryTask.cancel();
                 st->barcodePrintTask.cancel();
                 if (st->initialQuickMachineTimerActive) {
-                    KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
+                    KillTimer(hwnd, IDT_MICROBIOLOGY_REPORT_INITIAL_QUICK_MACHINE);
                     st->initialQuickMachineTimerActive = false;
                 }
-                regularStopAutoRefreshTimer(st);
                 finishResultEdit(st, false);
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
                 if (IsWindow(st->picturePopup)) DestroyWindow(st->picturePopup);
@@ -3340,21 +3401,21 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // Public entry point
 // ============================================================================
 
-HWND create_regular_report_module(const ModuleContext& ctx) {
+HWND create_microbiology_report_module(const ModuleContext& ctx) {
     if (HWND ex = activate_existing_mdi_child_by_title(
-            ctx.mdiClient, REGULAR_REPORT_WINDOW_TITLE))
+            ctx.mdiClient, MICROBIOLOGY_REPORT_WINDOW_TITLE))
         return ex;
 
     static bool reg = false;
     if (!reg) {
-        REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, REGULAR_REPORT_WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
+        REGISTER_MDI_CHILD_CLASS(ctx.instance, wndProc, MICROBIOLOGY_REPORT_WND_CLASS, reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1));
         reg = true;
     }
 
-    auto* st = new RegularReportState; st->ctx = ctx;
+    auto* st = new MicrobiologyReportState; st->ctx = ctx;
     MDICREATESTRUCTW mcs{};
-    mcs.szClass = REGULAR_REPORT_WND_CLASS;
-    mcs.szTitle = REGULAR_REPORT_WINDOW_TITLE;
+    mcs.szClass = MICROBIOLOGY_REPORT_WND_CLASS;
+    mcs.szTitle = MICROBIOLOGY_REPORT_WINDOW_TITLE;
     mcs.hOwner = ctx.instance;
     mcs.x = mcs.y = mcs.cx = mcs.cy = CW_USEDEFAULT;
 

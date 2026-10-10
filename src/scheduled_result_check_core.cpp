@@ -68,6 +68,34 @@ bool compare_numbers(double left, const std::string &op, double right) {
   return false;
 }
 
+bool compare_with_tolerance(double left, const std::string &op, double target,
+                            double percent) {
+  if (!std::isfinite(left) || !std::isfinite(target) ||
+      !std::isfinite(percent) || percent < 0.0 || percent > 100.0)
+    return false;
+  if (percent == 0.0)
+    return compare_numbers(left, op, target);
+  const double delta = std::fabs(target) * (percent / 100.0);
+  const double lower = target - delta, upper = target + delta;
+  if (!std::isfinite(lower) || !std::isfinite(upper))
+    return false;
+  const bool below = compare_numbers(left, "<", lower);
+  const bool above = compare_numbers(left, ">", upper);
+  if (op == "=")
+    return !below && !above;
+  if (op == "!=")
+    return below || above;
+  if (op == ">")
+    return above;
+  if (op == "<")
+    return below;
+  if (op == ">=")
+    return !below;
+  if (op == "<=")
+    return !above;
+  return false;
+}
+
 std::string item_display_name(const std::string &english,
                               const std::string &chinese,
                               const std::string &code) {
@@ -78,101 +106,286 @@ std::string item_display_name(const std::string &english,
   return name.empty() ? trim(code) : name;
 }
 
+bool validate_condition(const Condition &c, std::string &error) {
+  double value = 0.0;
+  if (c.join != ConditionJoin::legacy && c.join != ConditionJoin::all && c.join != ConditionJoin::any) {
+    error = "无效的条件连接关系";
+    return false;
+  }
+  if (c.left_item_code.empty() ||
+      (c.op != ">" && c.op != ">=" && c.op != "<" && c.op != "<=" &&
+       c.op != "=" && c.op != "!=")) {
+    error = "请选择项目和比较关系";
+  } else if (c.compare_with_value) {
+    if (parse_number(c.right_value_text, value)) {
+      error.clear();
+      return true;
+    }
+    error = "固定值必须是有效数字";
+  } else if (c.right_item_code.empty() || c.left_item_code == c.right_item_code) {
+    error = "请选择两个不同的项目";
+  } else if (!parse_number(c.right_multiplier_text, value) || value <= 0.0) {
+    error = "项目 B 倍数必须是大于 0 的有效数字";
+  } else if (!parse_number(c.tolerance_percent_text, value) ||
+             value < 0.0 || value > 100.0) {
+    error = "允许误差必须是 0 至 100 的有效百分数";
+  } else {
+    error.clear();
+    return true;
+  }
+  return false;
+}
+
+std::string condition_description(const Condition &c) {
+  const auto name = [](const std::string &label, const std::string &code) {
+    return label.empty() ? code : label;
+  };
+  std::string result = name(c.left_item_name, c.left_item_code) + " " + c.op + " ";
+  if (c.compare_with_value) {
+    result += c.right_value_text;
+  } else {
+    result += name(c.right_item_name, c.right_item_code);
+    double value = 0.0;
+    if (!parse_number(c.right_multiplier_text, value) || value != 1.0)
+      result += " × " + c.right_multiplier_text;
+    if (parse_number(c.tolerance_percent_text, value) && value != 0.0)
+      result += "（±" + c.tolerance_percent_text + "%）";
+  }
+  return c.negate ? "非（" + result + "）" : result;
+}
+
+std::vector<Condition> rule_conditions(const Rule &rule) {
+  std::vector<Condition> result{static_cast<const Condition &>(rule)};
+  result.insert(result.end(), rule.extra_conditions.begin(), rule.extra_conditions.end());
+  return result;
+}
+
+std::vector<std::string> rule_item_codes(const Rule &rule) {
+  std::vector<std::string> result;
+  for (const auto &c : rule_conditions(rule)) {
+    if (!c.left_item_code.empty()) result.push_back(c.left_item_code);
+    if (!c.compare_with_value && !c.right_item_code.empty())
+      result.push_back(c.right_item_code);
+  }
+  std::sort(result.begin(), result.end());
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+bool joins_with_or(const Rule &rule, const Condition &condition) {
+  return condition.join == ConditionJoin::any ||
+         (condition.join == ConditionJoin::legacy && rule.match_any);
+}
+
+std::string rule_description(const Rule &rule) {
+  std::string result;
+  const auto conditions = rule_conditions(rule);
+  for (size_t i = 0; i < conditions.size(); ++i) {
+    if (i) result += joins_with_or(rule, conditions[i]) ? " 或 " : " 并 ";
+    result += condition_description(conditions[i]);
+  }
+  return result;
+}
+
+std::string serialize_condition_group(const Rule &rule) {
+  if (!rule.negate && !rule.match_any && rule.extra_conditions.empty()) return {};
+  std::ostringstream out;
+  out << "2:" << rule.match_any << ':' << rule.negate << ':' << rule.extra_conditions.size() << ':';
+  const auto field = [&out](const std::string &value) {
+    out << value.size() << ':' << value;
+  };
+  for (const auto &c : rule.extra_conditions) {
+    field(c.left_item_code); field(c.left_item_name); field(c.left_item_unit);
+    field(c.op); field(c.right_item_code); field(c.right_item_name); field(c.right_item_unit);
+    field(c.compare_with_value ? "1" : "0"); field(c.right_value_text);
+    field(c.right_multiplier_text); field(c.tolerance_percent_text); field(c.negate ? "1" : "0");
+    field(std::to_string(static_cast<int>(c.join)));
+  }
+  return out.str();
+}
+
+bool deserialize_condition_group(const std::string &data, Rule &rule) {
+  Rule decoded = rule;
+  decoded.match_any = false;
+  decoded.negate = false;
+  decoded.join = ConditionJoin::legacy;
+  decoded.extra_conditions.clear();
+  if (data.empty()) { rule = std::move(decoded); return true; }
+  size_t pos = 0;
+  const auto number = [&data, &pos](size_t &n) {
+    n = 0;
+    const size_t start = pos;
+    while (pos < data.size() && data[pos] >= '0' && data[pos] <= '9') {
+      if (n > 100000) return false;
+      n = n * 10 + static_cast<size_t>(data[pos++] - '0');
+    }
+    if (pos == start || pos >= data.size() || data[pos++] != ':' || n > 1000000) return false;
+    return true;
+  };
+  const auto field = [&data, &pos, &number](std::string &value) {
+    size_t n = 0;
+    if (!number(n) || n > data.size() - pos) return false;
+    value = data.substr(pos, n); pos += n; return true;
+  };
+  size_t version = 0, any = 0, negate = 0, count = 0;
+  if (!number(version) || (version != 1 && version != 2) || !number(any) || any > 1 ||
+      !number(negate) || negate > 1 || !number(count) || count > 63) return false;
+  decoded.match_any = any != 0; decoded.negate = negate != 0;
+  for (size_t i = 0; i < count; ++i) {
+    Condition c;
+    std::string literal, inverted;
+    if (!field(c.left_item_code) || !field(c.left_item_name) || !field(c.left_item_unit) ||
+        !field(c.op) || !field(c.right_item_code) || !field(c.right_item_name) ||
+        !field(c.right_item_unit) || !field(literal) || !field(c.right_value_text) ||
+        !field(c.right_multiplier_text) || !field(c.tolerance_percent_text) || !field(inverted) ||
+        (literal != "0" && literal != "1") || (inverted != "0" && inverted != "1")) return false;
+    if (version == 2) {
+      std::string join;
+      if (!field(join) || (join != "0" && join != "1" && join != "2")) return false;
+      c.join = static_cast<ConditionJoin>(join[0] - '0');
+    }
+    c.compare_with_value = literal == "1"; c.negate = inverted == "1";
+    decoded.extra_conditions.push_back(std::move(c));
+  }
+  if (pos != data.size()) return false;
+  rule = std::move(decoded);
+  return true;
+}
+
+namespace {
+using Results = std::map<std::string, ResultRow>;
+enum class Truth { unknown, no, yes };
+Truth conjunction(Truth a, Truth b) {
+  if (a == Truth::no || b == Truth::no) return Truth::no;
+  return a == Truth::yes && b == Truth::yes ? Truth::yes : Truth::unknown;
+}
+Truth disjunction(Truth a, Truth b) {
+  if (a == Truth::yes || b == Truth::yes) return Truth::yes;
+  return a == Truth::no && b == Truth::no ? Truth::no : Truth::unknown;
+}
+
+void select_result(Results &results, const ResultRow &row) {
+  auto &selected = results[row.item_code];
+  const bool selectedEmpty = trim(selected.result).empty();
+  const bool candidateEmpty = trim(row.result).empty();
+  if (selected.entry_id.empty() || (selectedEmpty && !candidateEmpty) ||
+      (selectedEmpty == candidateEmpty && newer_entry_id(row.entry_id, selected.entry_id)))
+    selected = row;
+}
+
+Truth evaluate_condition(const Condition &c, const Rule &rule, const Results &results,
+                         Match &match, int *skipped) {
+  const auto left = results.find(c.left_item_code);
+  const auto right = c.compare_with_value ? results.end() : results.find(c.right_item_code);
+  const auto in_scope = [&rule](const ResultRow &row) {
+    return rule.mach_code.empty() || (row.mach_code == rule.mach_code && row.room_code == rule.room_code);
+  };
+  if (left == results.end() || !in_scope(left->second) ||
+      (!c.compare_with_value && (right == results.end() || !in_scope(right->second)))) return Truth::unknown;
+  double leftValue = 0.0, rightValue = 0.0, multiplier = 1.0, percent = 0.0;
+  if (!parse_number(left->second.result, leftValue) ||
+      !parse_number(c.compare_with_value ? c.right_value_text : right->second.result, rightValue)) {
+    if (skipped) ++*skipped;
+    return Truth::unknown;
+  }
+  if (!c.compare_with_value) {
+    parse_number(c.right_multiplier_text, multiplier);
+    parse_number(c.tolerance_percent_text, percent);
+  }
+  const double target = rightValue * multiplier;
+  const double delta = std::fabs(target) * (percent / 100.0);
+  if (!std::isfinite(target) || !std::isfinite(target - delta) || !std::isfinite(target + delta))
+    return Truth::unknown;
+  match.rule_id = rule.id; match.rule_name = rule.name;
+  match.rep_no = left->second.rep_no; match.oper_no = left->second.oper_no;
+  match.room_code = left->second.room_code; match.mach_code = left->second.mach_code;
+  match.mach_name = left->second.mach_name; match.inspect_date = left->second.inspect_date;
+  match.left_entry_id = left->second.entry_id; match.left_item_code = c.left_item_code;
+  match.left_item_name = c.left_item_name.empty() ? left->second.item_name : c.left_item_name;
+  match.left_item_eng = left->second.item_eng;
+  match.left_result_text = trim(left->second.result); match.left_value = leftValue;
+  match.op = c.op; match.compare_with_value = c.compare_with_value;
+  match.right_result_text = trim(c.compare_with_value ? c.right_value_text : right->second.result);
+  match.right_value = rightValue;
+  if (!c.compare_with_value) {
+    match.right_multiplier_text = trim(c.right_multiplier_text);
+    match.tolerance_percent_text = trim(c.tolerance_percent_text);
+    match.right_entry_id = right->second.entry_id; match.right_item_code = c.right_item_code;
+    match.right_item_name = c.right_item_name.empty() ? right->second.item_name : c.right_item_name;
+    match.right_item_eng = right->second.item_eng;
+  }
+  const bool satisfied = compare_with_tolerance(leftValue, c.op, target, percent);
+  return (c.negate ? !satisfied : satisfied) ? Truth::yes : Truth::no;
+}
+} // namespace
+
 std::vector<Match> evaluate(const std::vector<Rule> &rules,
                             const std::vector<ResultRow> &rows,
                             int *skipped_non_numeric) {
-  if (skipped_non_numeric)
-    *skipped_non_numeric = 0;
-  std::map<std::string, std::map<std::string, ResultRow>> reports;
-  for (const auto &row : rows) {
-    auto &selected = reports[row.rep_no][row.item_code];
-    const bool selectedEmpty = trim(selected.result).empty();
-    const bool candidateEmpty = trim(row.result).empty();
-    const bool replace = selected.entry_id.empty() ||
-                         (selectedEmpty && !candidateEmpty) ||
-                         (selectedEmpty == candidateEmpty &&
-                          newer_entry_id(row.entry_id, selected.entry_id));
-    if (replace)
-      selected = row;
-  }
-
+  if (skipped_non_numeric) *skipped_non_numeric = 0;
+  std::map<std::string, Results> reports;
+  for (const auto &row : rows) select_result(reports[row.rep_no], row);
   std::vector<Match> matches;
   for (const auto &rule : rules) {
-    if (!rule.enabled || rule.left_item_code.empty())
-      continue;
-    double threshold = 0.0;
-    if (rule.compare_with_value) {
-      if (!parse_number(rule.right_value_text, threshold))
-        continue;
-    } else if (rule.right_item_code.empty()) {
-      continue;
-    }
+    if (!rule.enabled) continue;
+    const auto conditions = rule_conditions(rule);
+    std::string error;
+    if (conditions.size() > 64 || std::any_of(conditions.begin(), conditions.end(),
+        [&error](const Condition &c) { return !validate_condition(c, error); })) continue;
     for (const auto &report : reports) {
-      const auto leftIt = report.second.find(rule.left_item_code);
-      if (leftIt == report.second.end())
-        continue;
-      if (!rule.mach_code.empty() &&
-          (leftIt->second.mach_code != rule.mach_code ||
-           leftIt->second.room_code != rule.room_code))
-        continue;
-      double leftValue = 0.0, rightValue = threshold;
-      if (!parse_number(leftIt->second.result, leftValue)) {
-        if (skipped_non_numeric)
-          ++*skipped_non_numeric;
-        continue;
-      }
-      const auto rightIt = rule.compare_with_value
-                               ? report.second.end()
-                               : report.second.find(rule.right_item_code);
-      if (!rule.compare_with_value) {
-        if (rightIt == report.second.end())
-          continue;
-        if (!rule.mach_code.empty() &&
-            (rightIt->second.mach_code != rule.mach_code ||
-             rightIt->second.room_code != rule.room_code))
-          continue;
-        if (!parse_number(rightIt->second.result, rightValue)) {
-          if (skipped_non_numeric)
-            ++*skipped_non_numeric;
-          continue;
+      bool hasRepresentative = false;
+      Truth completed = Truth::no, term = Truth::unknown;
+      Match representative;
+      std::ostringstream summary, groupFingerprint;
+      summary << "条件：";
+      for (size_t i = 0; i < conditions.size(); ++i) {
+        Match m;
+        const auto state = evaluate_condition(conditions[i], rule, report.second, m, skipped_non_numeric);
+        // AND (including AND NOT) binds more tightly than OR.
+        if (!i) {
+          term = state;
+        } else if (joins_with_or(rule, conditions[i])) {
+          completed = disjunction(completed, term);
+          term = state;
+          if (completed != Truth::yes) hasRepresentative = false;
+        } else {
+          term = conjunction(term, state);
+        }
+        if (state == Truth::yes && !hasRepresentative) {
+          representative = m;
+          hasRepresentative = true;
+        }
+        if (i) summary << (joins_with_or(rule, conditions[i]) ? "；或 " : "；并 ");
+        summary << condition_description(conditions[i]) << " ["
+                << (state == Truth::unknown ? "无法判断" : state == Truth::yes ? "满足" : "不满足");
+        const auto raw = [&report](const std::string &code) {
+          const auto it = report.second.find(code);
+          return it == report.second.end() || trim(it->second.result).empty()
+                     ? std::string("缺失") : trim(it->second.result);
+        };
+        summary << "，" << raw(conditions[i].left_item_code);
+        if (!conditions[i].compare_with_value) summary << " / " << raw(conditions[i].right_item_code);
+        summary << ']';
+        // Include all participating raw results (also unresolved OR branches).
+        groupFingerprint << static_cast<int>(state) << ':';
+        for (const auto &code : {conditions[i].left_item_code,
+                                conditions[i].compare_with_value ? std::string{} : conditions[i].right_item_code}) {
+          const auto it = report.second.find(code);
+          const std::string value = it == report.second.end() ? "" : it->second.entry_id + "|" + it->second.result;
+          groupFingerprint << value.size() << ':' << value;
         }
       }
-      if (!compare_numbers(leftValue, rule.op, rightValue))
-        continue;
-      Match match;
-      match.rule_id = rule.id;
-      match.rule_name = rule.name;
-      match.rep_no = report.first;
-      match.oper_no = leftIt->second.oper_no;
-      match.room_code = leftIt->second.room_code;
-      match.mach_code = leftIt->second.mach_code;
-      match.mach_name = leftIt->second.mach_name;
-      match.inspect_date = leftIt->second.inspect_date;
-      match.left_entry_id = leftIt->second.entry_id;
-      match.left_item_code = rule.left_item_code;
-      match.left_item_name = rule.left_item_name.empty()
-                                 ? leftIt->second.item_name
-                                 : rule.left_item_name;
-      match.left_item_eng = leftIt->second.item_eng;
-      match.left_result_text = trim(leftIt->second.result);
-      match.left_value = leftValue;
-      match.op = rule.op;
-      match.compare_with_value = rule.compare_with_value;
-      if (rule.compare_with_value) {
-        match.right_result_text = trim(rule.right_value_text);
-        match.right_value = threshold;
-      } else {
-        match.right_entry_id = rightIt->second.entry_id;
-        match.right_item_code = rule.right_item_code;
-        match.right_item_name = rule.right_item_name.empty()
-                                    ? rightIt->second.item_name
-                                    : rule.right_item_name;
-        match.right_item_eng = rightIt->second.item_eng;
-        match.right_result_text = trim(rightIt->second.result);
-        match.right_value = rightValue;
+      if (disjunction(completed, term) != Truth::yes) continue;
+      representative.fingerprint = fingerprint(representative);
+      if (conditions.size() > 1 || rule.negate || rule.match_any) {
+        representative.condition_summary = summary.str();
+        for (const auto &code : rule_item_codes(rule)) {
+          if (!representative.condition_item_codes.empty()) representative.condition_item_codes += '\n';
+          representative.condition_item_codes += code;
+        }
+        representative.fingerprint += "|group:" + groupFingerprint.str();
       }
-      match.fingerprint = fingerprint(match);
-      matches.push_back(std::move(match));
+      matches.push_back(std::move(representative));
     }
   }
   return matches;
@@ -180,33 +393,26 @@ std::vector<Match> evaluate(const std::vector<Rule> &rules,
 
 bool needs_result_followup(const std::vector<Rule> &rules,
                            const std::vector<ResultRow> &rows) {
-  std::map<std::string, ResultRow> results;
-  for (const auto &row : rows) {
-    if (row.item_code.empty())
-      continue;
-    auto &selected = results[row.item_code];
-    const bool selected_empty = trim(selected.result).empty();
-    const bool candidate_empty = trim(row.result).empty();
-    if (selected.entry_id.empty() || (selected_empty && !candidate_empty) ||
-        (selected_empty == candidate_empty &&
-         newer_entry_id(row.entry_id, selected.entry_id)))
-      selected = row;
-  }
+  // Group by report so values from separate reports never complete a condition.
+  std::map<std::string, Results> reports;
+  for (const auto &row : rows) select_result(reports[row.rep_no], row);
   for (const auto &rule : rules) {
-    if (!rule.enabled || rule.left_item_code.empty())
-      continue;
-    const auto left = results.find(rule.left_item_code);
-    const auto right = rule.compare_with_value
-                           ? results.end()
-                           : results.find(rule.right_item_code);
-    if (left == results.end() && right == results.end())
-      continue;
-    double value = 0.0;
-    if (left == results.end() || !parse_number(left->second.result, value))
-      return true;
-    if (!rule.compare_with_value &&
-        (right == results.end() || !parse_number(right->second.result, value)))
-      return true;
+    if (!rule.enabled) continue;
+    const auto codes = rule_item_codes(rule);
+    for (const auto &report : reports) {
+      if (std::none_of(codes.begin(), codes.end(), [&](const std::string &code) {
+            const auto it = report.second.find(code);
+            return it != report.second.end() && (rule.mach_code.empty() ||
+                (it->second.mach_code == rule.mach_code && it->second.room_code == rule.room_code));
+          })) continue;
+      for (const auto &code : codes) {
+        const auto it = report.second.find(code);
+        double value = 0.0;
+        if (it == report.second.end() || !parse_number(it->second.result, value) ||
+            (!rule.mach_code.empty() && (it->second.mach_code != rule.mach_code ||
+                                        it->second.room_code != rule.room_code))) return true;
+      }
+    }
   }
   return false;
 }
