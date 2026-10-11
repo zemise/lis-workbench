@@ -48,9 +48,9 @@ std::wstring regularRightSummaryLine1(const RegularReportState* st) {
             if (search::trim(row.conf) == "S") ++sentCount;
         }
     }
-    return L"样本数(" + std::to_wstring(sampleCount) + L"):上机数(" +
-           std::to_wstring(machineCount) + L"):审核数(" + std::to_wstring(reviewedCount) +
-           L"):发送数(" + std::to_wstring(sentCount) + L")";
+    return L"样本(" + std::to_wstring(sampleCount) + L"):上机(" +
+           std::to_wstring(machineCount) + L"):审核(" + std::to_wstring(reviewedCount) +
+           L"):发送(" + std::to_wstring(sentCount) + L")";
 }
 
 std::wstring regularRightSummaryLine2(const RegularReportState* st) {
@@ -72,10 +72,10 @@ std::wstring regularRightSummaryLine2(const RegularReportState* st) {
             }
         }
     }
-    return L"危急报告数:" + std::to_wstring(criticalCount) +
-           L"；危急报告已审:" + std::to_wstring(reviewedCriticalCount) +
-           L"；急诊报告数:" + std::to_wstring(emergencyCount) +
-           L"；急诊报告已审:" + std::to_wstring(reviewedEmergencyCount) + L"；";
+    return L"危急:" + std::to_wstring(criticalCount) +
+           L"；危急已审:" + std::to_wstring(reviewedCriticalCount) +
+           L"；急诊:" + std::to_wstring(emergencyCount) +
+           L"；急诊已审:" + std::to_wstring(reviewedEmergencyCount) + L"；";
 }
 
 // ============================================================================

@@ -182,6 +182,8 @@ add_executable(main_app WIN32
     src/regular_report_barcode_range.cpp
     src/regular_report_comparison.cpp
     src/regular_report_module.cpp
+    src/regular_report_tracking.cpp
+    src/regular_report_tracking_window.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
     src/scheduled_result_check_core.cpp
@@ -246,6 +248,13 @@ if(BUILD_TESTING)
     )
     target_include_directories(regular_report_comparison_tests PRIVATE src)
     add_test(NAME regular_report_comparison_tests COMMAND regular_report_comparison_tests)
+
+    add_executable(regular_report_tracking_tests
+        tests/regular_report_tracking_test.cpp
+        src/regular_report_tracking.cpp
+    )
+    target_include_directories(regular_report_tracking_tests PRIVATE src)
+    add_test(NAME regular_report_tracking_tests COMMAND regular_report_tracking_tests)
 
     add_executable(microbiology_quick_machine_tests
         tests/microbiology_quick_machine_test.cpp

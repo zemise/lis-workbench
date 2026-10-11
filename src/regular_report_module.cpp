@@ -8,6 +8,7 @@
 #include "main_app.h"
 #include "log.h"
 #include "regular_report_barcode_range.h"
+#include "regular_report_tracking_window.h"
 #include "resource.h"
 #include "search_controller.h"
 #include "search_splitter.h"
@@ -1265,6 +1266,17 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_GRAPH) {
                 regularOpenPicturePopupForSelection(st); return 0;
             }
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TRACKING) {
+                const int index = currentReportIndex(st);
+                if (index < 0) {
+                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"追踪", MB_ICONINFORMATION);
+                } else {
+                    regularShowTrackingWindow(st->hwnd, st->ctx.uiFont, st->reportConnectionString,
+                        st->reportRows[static_cast<size_t>(index)],
+                        st->selectedRoomCode, st->selectedMachineCode);
+                }
+                return 0;
+            }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TREND) {
                 const int index = currentReportIndex(st);
                 if (index < 0) {
@@ -1721,7 +1733,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
         {5418, L"医嘱"}, {5419, L"汇总(F6)"},
     };
     const ButtonDef row3[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"},
+        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {REGULAR_IDC_BOTTOM_TRACKING, L"追踪(Z)"}, {5422, L"计算(F8)"},
         {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
         {5426, L"日统计"}, {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
     };
