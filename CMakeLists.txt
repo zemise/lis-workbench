@@ -180,6 +180,7 @@ add_executable(main_app WIN32
     src/quality_control_store.cpp
     src/query_module.cpp
     src/regular_report_barcode_range.cpp
+    src/regular_report_comparison.cpp
     src/regular_report_module.cpp
     src/regular_report_utils.cpp
     src/regular_report_picture.cpp
@@ -239,6 +240,13 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(regular_report_comparison_tests
+        tests/regular_report_comparison_test.cpp
+        src/regular_report_comparison.cpp
+    )
+    target_include_directories(regular_report_comparison_tests PRIVATE src)
+    add_test(NAME regular_report_comparison_tests COMMAND regular_report_comparison_tests)
+
     add_executable(microbiology_quick_machine_tests
         tests/microbiology_quick_machine_test.cpp
         src/search_text.cpp

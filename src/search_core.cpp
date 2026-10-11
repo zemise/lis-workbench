@@ -1667,15 +1667,88 @@ bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_
 #endif
 }
 
-bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log) {
+bool query_regular_comparison_history(const std::string& connection_string,
+                                     const ReportRow& current,
+                                     std::vector<ReportRow>& rows, std::string& error) {
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
-    (void)rep_no;
-    (void)log;
-    error = "query_results is only available on Windows";
+    (void)current;
+    error = "comparison history is only available on Windows";
     return false;
 #else
+    if (trim(current.reg_no).empty() || trim(current.mach_code).empty() ||
+        trim(current.rep_no).empty()) {
+        error = "当前报告缺少病人号、仪器代码或检验单号，无法比较。";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, {})) return false;
+    std::ostringstream sql;
+    sql << "SELECT TOP 3 CAST(r.REP_NO AS varchar(20)),"
+        << "CONVERT(varchar(19),r.CHK_DATE,120) FROM LS_AS_REPORT r"
+        << " WHERE r.DELETE_BIT=0 AND r.CHK_FLAG='T'";
+    add_eq(sql, "r.REG_NO", current.reg_no);
+    add_eq(sql, "r.MACH_CODE", current.mach_code);
+    add_eq(sql, "r.ROOM_CODE", current.room_code);
+    // Read the anchor timestamp in SQL to retain sub-second precision.
+    sql << " AND EXISTS (SELECT 1 FROM LS_AS_REPORT anchor"
+        << " WHERE anchor.DELETE_BIT=0 AND anchor.REP_NO=" << sql_escape(trim(current.rep_no))
+        << " AND (r.CHK_DATE<anchor.CHK_DATE OR"
+        << " (r.CHK_DATE=anchor.CHK_DATE AND r.REP_NO<anchor.REP_NO)))"
+        << " ORDER BY r.CHK_DATE DESC,r.REP_NO DESC";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql.str(), stmt, error)) return false;
+    SQLRETURN fetched;
+    while ((fetched = SQLFetch(stmt)) == SQL_SUCCESS || fetched == SQL_SUCCESS_WITH_INFO) {
+        ReportRow row;
+        row.rep_no = fetch_column(stmt, 1);
+        row.inspect_date = fetch_column(stmt, 2);
+        rows.push_back(std::move(row));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    if (fetched != SQL_NO_DATA) {
+        rows.clear();
+        error = "历史报告读取失败。";
+        return false;
+    }
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_results(const std::string& connection_string, const std::string& rep_no,
+                   std::vector<ResultRow>& rows, std::string& error, LogFn log) {
+    rows.clear();
+    std::vector<std::vector<ResultRow>> reports;
+    if (!query_results_batch(connection_string, {rep_no}, reports, error, log)) return false;
+    if (!reports.empty()) rows = std::move(reports.front());
+    return true;
+}
+
+bool query_results_batch(const std::string& connection_string,
+                         const std::vector<std::string>& rep_nos,
+                         std::vector<std::vector<ResultRow>>& rows,
+                         std::string& error, LogFn log) {
+    rows.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_nos;
+    (void)log;
+    error = "query_results_batch is only available on Windows";
+    return false;
+#else
+    if (rep_nos.empty()) { error.clear(); return true; }
+    std::unordered_map<std::string, size_t> report_indexes;
+    for (size_t i = 0; i < rep_nos.size(); ++i) {
+        const auto code = trim(rep_nos[i]);
+        if (code.empty() || !std::all_of(code.begin(), code.end(),
+                [](unsigned char ch) { return ch >= '0' && ch <= '9'; }) ||
+            !report_indexes.emplace(code, i).second) {
+            error = "invalid or duplicate report number";
+            return false;
+        }
+    }
     DbContext db;
     if (!connect(connection_string, db, error, log)) {
         return false;
@@ -1686,7 +1759,7 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         << " isnull(e.DOWNBOUND,''),isnull(RTRIM(i.UNIT),''),isnull(i.ENG_NAME,''),"
         << " isnull(e.NORMAL,''),CAST(e.ITEM_CODE AS varchar(20)),"
         << " isnull(CAST(e.NORMAL_WJ AS varchar(20)),''),"
-        << " isnull(scope.UPBOUND1,''),isnull(scope.DNBOUND1,'')"
+        << " isnull(scope.UPBOUND1,''),isnull(scope.DNBOUND1,''),CAST(e.REP_NO AS varchar(20))"
         << " FROM LS_AS_REPENTRY e"
         << " LEFT JOIN LS_AS_ITEM i ON e.ITEM_CODE = i.ITEM_CODE AND i.DELETE_BIT=0"
         << " OUTER APPLY ("
@@ -1716,8 +1789,8 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         << " ELSE 2 END,"
         << " CASE WHEN isnull(s.DEF_FLAG,'')='1' THEN 0 ELSE 1 END,s.ID"
         << " ) scope"
-        << " WHERE e.DELETE_BIT=0 AND e.REP_NO=" << sql_escape(rep_no)
-        << " ORDER BY e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
+        << " WHERE e.DELETE_BIT=0 AND e.REP_NO IN (" << sql_string_list(rep_nos) << ")"
+        << " ORDER BY e.REP_NO ASC,e.GROUP_CODE ASC,e.ITEM_CODE ASC,e.ID ASC";
 
     if (log) {
         log(std::string("query=") + __func__ + " event=execute\n");
@@ -1728,7 +1801,9 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         return false;
     }
 
-    while (SQLFetch(stmt) == SQL_SUCCESS) {
+    rows.resize(rep_nos.size());
+    SQLRETURN fetched;
+    while ((fetched = SQLFetch(stmt)) == SQL_SUCCESS || fetched == SQL_SUCCESS_WITH_INFO) {
         ResultRow row;
         row.group_name = fetch_column(stmt, 1);
         row.item_name = fetch_column(stmt, 2);
@@ -1742,10 +1817,16 @@ bool query_results(const std::string& connection_string, const std::string& rep_
         row.normal_wj = fetch_column(stmt, 10);
         row.critical_low_bound = fetch_column(stmt, 11);
         row.critical_high_bound = fetch_column(stmt, 12);
-        rows.push_back(row);
+        const auto report = report_indexes.find(fetch_column(stmt, 13));
+        if (report != report_indexes.end()) rows[report->second].push_back(std::move(row));
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    if (fetched != SQL_NO_DATA) {
+        rows.clear();
+        error = "项目明细读取失败。";
+        return false;
+    }
     error.clear();
     return true;
 #endif

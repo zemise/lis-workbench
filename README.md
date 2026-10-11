@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前源码版本：`v2026.10.10`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本：`v2026.10.11`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 2026-09-15 的阶段性交接记录见 [持续优化路线图](PROJECT_OPTIMIZATION_ROADMAP.md#2026-09-15-暂停与恢复交接)；其中的版本与发布状态属于当时的历史记录。当前版本发布内容以 [CHANGELOG.md](CHANGELOG.md) 和 GitHub 同名 Release 为准。
 
@@ -90,6 +90,7 @@
 - 系统设置支持配置 LIS 摘要项目代码和输血摘要仪器过滤，`ABO 代码`、`RhD 代码`、`Hb 代码`、`PLT 代码`、`不规则代码`、`直抗代码` 均以分号分隔保存到 `ClientConfig.ini` 的 `[LisSummary]`，默认不规则抗体筛查代码为 `11106;91966`，直接抗人球蛋白试验代码为 `11105;91965`；`血型仪器`、`血常规仪器` 使用 `ROOM:MACH1,MACH2;ROOM:MACH` 成对格式，默认分别为 `11:11101;64:626` 和 `1:1002,1011,1012;61:613,615`，清空则不限制仪器；`输血排除仪器` 保存为 `BloodLisExcludeMachines`，支持 `ROOM:;ROOM:MACH1,MACH2`，默认 `3:;71:;8:8004`，清空则不排除。
 - 系统设置支持选择常规报告条码打印机，保存到 `ClientConfig.ini` 的 `[RegularReport] BarcodePrinterName`；条码打印机区域的 `Zebra 字体` 下拉框仅在识别到 Zebra/ZD888t 时生效，保存到 `[RegularReport] ZebraChineseFont`，可在 `E:SIMSUN.TTF` 与 `E:CSONG.TTF` 间选择。
 - 系统设置支持配置常规报告底部 `1 / 2 / 3` 快捷检验仪器，选择器复用常规报告仪器弹窗的数据范围，仅显示 `LS_AS_ROOM.Dept_Code IN (102,401)` 对应房间下的启用仪器，并展示主项目代码、项目名称和样本，保存到 `ClientConfig.ini` 的 `[RegularReport] QuickMachine*`。
+- `常规报告` 右侧“结果比较”已支持当前报告＋此前最近 3 份已审核报告，按病人号和同科室仪器匹配，展示日期、检验单号、异常标记及参考范围；历史独有项目追加显示，缺项留空。页签切换复用已加载结果及在途任务，比较页跳转以一次批量明细查询同步更新两侧。具体口径及缓存策略见 [常规报告结果比较](QUERY_DESIGN.md#右侧结果比较)。
 - 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
 - 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。

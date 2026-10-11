@@ -5,6 +5,7 @@
 #include "module_registry.h"
 #include "search_app.h"
 #include "search_core.h"
+#include "regular_report_comparison.h"
 #include "window_task.h"
 
 #include <windows.h>
@@ -258,6 +259,13 @@ struct RegularReportState {
     HWND splitter = nullptr;
     HWND middleTab = nullptr;
     HWND rightTab = nullptr;
+    HWND comparisonMode = nullptr;
+    HWND comparisonTitle = nullptr;
+    HWND comparisonStatus = nullptr;
+    HWND comparisonList = nullptr;
+    app::WindowTask comparisonTask;
+    regular_comparison::ViewCache resultCache;
+    std::vector<regular_comparison::Item> comparisonItems;
     HWND rightSearchLabel = nullptr;
     HWND rightSearchEdit = nullptr;
     HWND rightSearchIndexButton = nullptr;
