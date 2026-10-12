@@ -5,7 +5,7 @@
 
 namespace lis_update {
 
-inline constexpr const char* kUpdaterProtocolVersion = "1.0.0";
+inline constexpr const char* kUpdaterProtocolVersion = "1.1.0";
 inline constexpr std::uint64_t kMaxUpdatePackageSize = 100ULL * 1024 * 1024;
 
 struct UpdatePackageInfo {
@@ -30,6 +30,8 @@ bool parse_update_manifest_json(const std::string& json, UpdateManifest& manifes
                                 std::string& error);
 
 bool is_supported_manifest(const UpdateManifest& manifest, std::string& error);
+
+bool is_valid_release_version(const std::string& version);
 
 int compare_version_strings(const std::string& left, const std::string& right);
 

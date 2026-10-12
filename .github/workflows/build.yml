@@ -191,13 +191,17 @@ jobs:
             }
           }
 
-          $notes = "LIS Workbench $version`n`nWindows 7-11 installer, automatic-update manifest, and automatic-update zip package."
+          $notes = "LIS Workbench $version`n`nWindows 7-11 installer, update manifest, and update zip package. Upgrade older clients with the complete installer once to support date-revision versions and updater protocol 1.1.0."
           & gh release view $version --json tagName *> $null
           if ($LASTEXITCODE -eq 0) {
             & gh release upload $version $installer $manifest $package --clobber
           } else {
-            & gh release create $version $installer $manifest $package --title "LIS Workbench $version" --notes $notes --verify-tag
+            & gh release create $version $installer $manifest $package --title "LIS Workbench $version" --notes $notes --verify-tag --latest
           }
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub Release publish failed"
+          }
+          & gh release edit $version --latest
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release latest marker failed"
           }

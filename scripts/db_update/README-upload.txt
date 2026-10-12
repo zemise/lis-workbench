@@ -42,3 +42,12 @@ Existing explicit settings are preserved. Trust does not validate server identit
 Old clients must first use the complete installer to obtain the capable Updater.exe.
 The database version must be newer than the installed client to test an actual update;
 equal or older database versions produce no installation prompt.
+
+Release versions: vYYYY.MM.DD, then vYYYY.MM.DD.1, .2, etc. on the same day.
+Revision is a positive integer without leading zeros (maximum 999999999).
+This tool accepts updater protocols 1.0.0 and 1.1.0; new packages use 1.1.0.
+Existing clients must run the complete installer once for date-revision support.
+The exact legacy tags v2026.10.13, v2026.10.14, v2026.10.15 compare as
+v2026.10.12.1, .2, .3; package identities and stored data are not rewritten.
+Always regenerate and copy the whole upload directory with the new tool.
+No database schema migration is needed; the existing update table is reused.

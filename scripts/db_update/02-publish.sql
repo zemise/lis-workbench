@@ -31,16 +31,29 @@ BEGIN TRY
     IF @State<>'staged' THROW 51004, 'Retired packages cannot be republished by this tool.', 1;
     SELECT @Current=Version FROM dbo.LS_AS_LISWORK WITH (UPDLOCK, HOLDLOCK)
         WHERE AppId='lis-workbench' AND Channel='stable' AND IsCurrent=1;
-    IF LEN(@Version)<>11 OR @Version NOT LIKE 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]'
-        THROW 51005, 'Invalid target version.', 1;
-    IF @Current IS NOT NULL
-    BEGIN
-        IF LEN(@Current)<>11 OR @Current NOT LIKE 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]'
-            THROW 51006, 'Invalid current version; manual inspection required.', 1;
-        IF CONVERT(bigint, REPLACE(SUBSTRING(@Version,2,10),'.','')) <=
-           CONVERT(bigint, REPLACE(SUBSTRING(@Current,2,10),'.',''))
-            THROW 51007, 'Version downgrade is not allowed.', 1;
-    END;
+    -- SQL Server 2012-compatible validation and numeric comparison. No schema changes.
+    DECLARE @Versions TABLE (RoleName varchar(8), Version varchar(64), DateKey int, Revision int);
+    INSERT INTO @Versions (RoleName, Version) VALUES ('target', @Version);
+    IF @Current IS NOT NULL INSERT INTO @Versions (RoleName, Version) VALUES ('current', @Current);
+    IF EXISTS (SELECT 1 FROM @Versions WHERE
+        DATALENGTH(Version) NOT BETWEEN 11 AND 21 OR
+        LEFT(Version,11) COLLATE Latin1_General_BIN2 NOT LIKE 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]' OR
+        TRY_CONVERT(date, REPLACE(SUBSTRING(Version,2,10),'.','-'),23) IS NULL OR
+        (DATALENGTH(Version)>11 AND
+            (SUBSTRING(Version,12,1)<>'.' OR DATALENGTH(Version)<13 OR
+             SUBSTRING(Version,13,1) COLLATE Latin1_General_BIN2 NOT LIKE '[1-9]' OR
+             SUBSTRING(Version,13,9) COLLATE Latin1_General_BIN2 LIKE '%[^0-9]%')))
+        THROW 51005, 'Invalid release version; expected vYYYY.MM.DD or vYYYY.MM.DD.N.', 1;
+    UPDATE @Versions SET
+        DateKey=CASE WHEN Version IN ('v2026.10.13','v2026.10.14','v2026.10.15') THEN 20261012
+            ELSE CONVERT(int,REPLACE(SUBSTRING(Version,2,10),'.','')) END,
+        Revision=CASE Version WHEN 'v2026.10.13' THEN 1 WHEN 'v2026.10.14' THEN 2 WHEN 'v2026.10.15' THEN 3
+            ELSE CASE WHEN DATALENGTH(Version)=11 THEN 0 ELSE CONVERT(int,SUBSTRING(Version,13,9)) END END;
+    IF EXISTS (SELECT 1 FROM @Versions AS target CROSS JOIN @Versions AS currentVersion
+        WHERE target.RoleName='target' AND currentVersion.RoleName='current' AND
+        (target.DateKey<currentVersion.DateKey OR
+         (target.DateKey=currentVersion.DateKey AND target.Revision<=currentVersion.Revision)))
+        THROW 51007, 'Version downgrade is not allowed.', 1;
     UPDATE dbo.LS_AS_LISWORK SET State='retired', IsCurrent=0, RetiredAtUtc=SYSUTCDATETIME()
         WHERE AppId='lis-workbench' AND Channel='stable' AND IsCurrent=1;
     IF @@ROWCOUNT > 1 THROW 51008, 'Unexpected current-package count.', 1;

@@ -42,6 +42,24 @@ class PackageTests(unittest.TestCase):
     def test_valid_package(self):
         packager.validate_zip(self.zip, packager.validate_manifest(self.manifest))
 
+    def test_release_versions(self):
+        for version in ('v2026.10.12', 'v2026.10.12.1', 'v2026.10.12.10', 'v2024.02.29', 'v2026.10.12.999999999'):
+            with self.subTest(version=version):
+                m = copy.deepcopy(self.manifest)
+                m['version'] = version
+                m['package']['file'] = f'LISWorkbench-{version}-win7-win11.zip'
+                m['minUpdaterVersion'] = '1.1.0'
+                packager.validate_manifest(m)
+        for version in ('v2026.02.29', 'v0000.01.01', 'v2026.10.12.0', 'v2026.10.12.01',
+                        'v2026.10.12.1000000000', 'v2026.10.12.1.1', 'v2026.10.12.1\n'):
+            self.assertFalse(packager.valid_version(version), version)
+
+    def test_revision_offline_materials(self):
+        self.manifest['version'] = 'v2026.10.12.4'
+        self.manifest['minUpdaterVersion'] = '1.1.0'
+        self.manifest['package']['file'] = 'LISWorkbench-v2026.10.12.4-win7-win11.zip'
+        self.test_offline_materials_and_sql_size()
+
     def test_bad_metadata(self):
         for key, value in [("appId", "other"), ("channel", "preview"),
                            ("version", "../bad"), ("minUpdaterVersion", "2.0.0"), ("notes", "bad")]:

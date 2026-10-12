@@ -95,10 +95,16 @@ function Assert-IndexDefinitions($Rows) {
 function Get-LocalHash([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+function Test-ReleaseVersion([string]$Version) {
+    if ($Version -cnotmatch '\Av[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[1-9][0-9]{0,8})?\z') { return $false }
+    $date = [datetime]::MinValue
+    return [datetime]::TryParseExact($Version.Substring(1,10), 'yyyy.MM.dd',
+        [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)
+}
 function Assert-Package($Manifest, [string]$Path) {
     if ($Manifest.appId -cne 'lis-workbench' -or $Manifest.channel -cne 'stable' -or
-        $Manifest.version -cnotmatch '^v\d{4}\.\d{2}\.\d{2}$' -or
-        $Manifest.minUpdaterVersion -cne '1.0.0' -or
+        (-not (Test-ReleaseVersion $Manifest.version)) -or
+        ($Manifest.minUpdaterVersion -cne '1.0.0' -and $Manifest.minUpdaterVersion -cne '1.1.0') -or
         $Manifest.package.file -cne "LISWorkbench-$($Manifest.version)-win7-win11.zip" -or
         $Manifest.package.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid update manifest.' }
     $length = (Get-Item -LiteralPath $Path).Length

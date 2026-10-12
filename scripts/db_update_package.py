@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fetch one Release and prepare offline upload materials. Never connects to SQL."""
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -14,18 +15,30 @@ import zipfile
 
 REPO = "zemise/lis-workbench"
 MAX_SIZE = 100 * 1024 * 1024
-VERSION = re.compile(r"v\d{4}\.\d{2}\.\d{2}\Z")
 PROTECTED = {"clientconfig.ini", "log", "backup", "templates", "documents"}
+VERSION = re.compile(r"v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[1-9][0-9]{0,8})?\Z")
+
+
+def valid_version(version):
+    if not isinstance(version, str) or not VERSION.fullmatch(version):
+        return False
+    try:
+        datetime.date(*map(int, version[1:11].split(".")))
+    except ValueError:
+        return False
+    return True
+
+
 
 
 def validate_manifest(manifest):
     if manifest.get("appId") != "lis-workbench" or manifest.get("channel") != "stable":
         raise ValueError("Unsupported application or channel")
     version = manifest.get("version", "")
-    if not VERSION.fullmatch(version):
+    if not valid_version(version):
         raise ValueError("Invalid release version")
-    if manifest.get("minUpdaterVersion") != "1.0.0":
-        raise ValueError("This upload tool supports updater protocol 1.0.0 only")
+    if manifest.get("minUpdaterVersion") not in ("1.0.0", "1.1.0"):
+        raise ValueError("This upload tool supports updater protocols 1.0.0 and 1.1.0")
     package = manifest.get("package", {})
     if package.get("file") != f"LISWorkbench-{version}-win7-win11.zip":
         raise ValueError("Unexpected package filename")
@@ -116,7 +129,7 @@ def prepare(output, tag=None):
     if release.get("draft") or release.get("prerelease"):
         raise ValueError("Only published stable Releases are supported")
     version = release["tag_name"]
-    if not VERSION.fullmatch(version):
+    if not valid_version(version):
         raise ValueError("Invalid Release tag")
     names = ["manifest.json", f"LISWorkbench-{version}-win7-win11.zip"]
     listing = assets(release)
@@ -162,8 +175,8 @@ def main():
     parser.add_argument("--release")
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / "out/db-update")
     args = parser.parse_args()
-    if args.release and not VERSION.fullmatch(args.release):
-        parser.error("release must have form vYYYY.MM.DD")
+    if args.release and not valid_version(args.release):
+        parser.error("release must have form vYYYY.MM.DD or vYYYY.MM.DD.N (1-999999999)")
     try:
         print(prepare(args.output, args.release))
     except Exception as exc:

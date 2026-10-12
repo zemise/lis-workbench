@@ -18,6 +18,16 @@ if (-not $Version) {
     }
 }
 
+# Reject malformed versions before touching output files.
+if ($Version -cnotmatch '\Av[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[1-9][0-9]{0,8})?\z') {
+    throw 'Version must be vYYYY.MM.DD or vYYYY.MM.DD.N (1-999999999).'
+}
+$date = [datetime]::MinValue
+if (-not [datetime]::TryParseExact($Version.Substring(1,10), 'yyyy.MM.dd',
+    [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) {
+    throw 'Version contains an invalid calendar date.'
+}
+
 $appExe = Join-Path $BuildDir "lis_workbench.exe"
 $updaterExe = Join-Path $BuildDir "Updater.exe"
 if (-not (Test-Path $appExe)) {
@@ -52,7 +62,7 @@ $manifest = [ordered]@{
     appId = "lis-workbench"
     version = $Version
     channel = $Channel
-    minUpdaterVersion = "1.0.0"
+    minUpdaterVersion = "1.1.0"
     publishedAt = $publishedAt
     package = [ordered]@{
         file = $packageName

@@ -10,11 +10,44 @@ $function=$ast.Find({param($node) $node -is [System.Management.Automation.Langua
 if ($null -eq $function) { throw 'Index validator missing.' }
 Invoke-Expression $function.Extent.Text
 
-foreach ($name in @('Test-PublishConfirmation','Get-UploadFailureMessage','Resolve-CertificateTrust')) {
+foreach ($name in @('Test-PublishConfirmation','Get-UploadFailureMessage','Resolve-CertificateTrust','Test-ReleaseVersion')) {
     $helper=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
     if ($null -eq $helper) { throw "Missing helper: $name" }
     Invoke-Expression $helper.Extent.Text
 }
+foreach ($version in @('v2026.10.12','v2026.10.12.1','v2026.10.12.10','v2024.02.29','v2026.10.12.999999999')) {
+    if (-not (Test-ReleaseVersion $version)) { throw "Valid release rejected: $version" }
+}
+foreach ($version in @('v2026.02.29','v0000.01.01','v2026.10.12.0','v2026.10.12.01','v2026.10.12.1000000000','v2026.10.12.1.1',"v2026.10.12.1`n")) {
+    if (Test-ReleaseVersion $version) { throw "Invalid release accepted: $version" }
+}
+# Validate a real local archive through the upload validator, never opening SQL.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+foreach ($name in @('Get-LocalHash','Assert-Package')) {
+    $helper=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
+    Invoke-Expression $helper.Extent.Text
+}
+$fixturePath=Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString())+'.zip')
+try {
+    $archive=[IO.Compression.ZipFile]::Open($fixturePath,[IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in @('lis_workbench.exe','Updater.exe')) {
+            $entry=$archive.CreateEntry($file)
+            $stream=$entry.Open()
+            try { $stream.WriteByte(1) } finally { $stream.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+    $manifest=[pscustomobject]@{
+        appId='lis-workbench'; channel='stable'; version='v2026.10.12.4'; minUpdaterVersion='1.1.0'
+        package=[pscustomobject]@{file='LISWorkbench-v2026.10.12.4-win7-win11.zip'; size=(Get-Item $fixturePath).Length; sha256=(Get-LocalHash $fixturePath)}
+    }
+    Assert-Package $manifest $fixturePath
+    $manifest.package.sha256='0'*64
+    $rejected=$false
+    try { Assert-Package $manifest $fixturePath } catch { $rejected=$true }
+    if (-not $rejected) { throw 'Tampered package accepted.' }
+} finally { Remove-Item -LiteralPath $fixturePath -Force -ErrorAction SilentlyContinue }
+
 $parameter=$ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TrustServerCertificate' }
 if ($null -eq $parameter -or $parameter.DefaultValue.Extent.Text -cne '$true') { throw 'Uploader must default to trusted LAN certificates.' }
 if (-not (Resolve-CertificateTrust $true $false) -or

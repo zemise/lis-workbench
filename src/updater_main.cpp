@@ -510,7 +510,8 @@ int run_update(const Options& options) {
 int wmain(int argc, wchar_t** argv) {
     // A read-only capability probe; old updaters reject this option.
     if (argc == 3 && std::wstring(argv[1]) == L"--check-protocol") {
-        return std::wstring(argv[2]) == L"1.0.0" ? 0x4c4953 : 1;
+        return (std::wstring(argv[2]) == L"1.0.0" ||
+                wide_to_utf8(argv[2]) == lis_update::kUpdaterProtocolVersion) ? 0x4c4953 : 1;
     }
     Options options;
     std::wstring error;

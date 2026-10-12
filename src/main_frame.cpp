@@ -455,7 +455,7 @@ std::wstring programDataUpdateCacheDir() {
 
 bool hasCompatibleUpdater() {
   const auto path = lis_update::join_update_path(search::module_dir(), UPDATE_UPDATER_EXE_NAME);
-  auto command = quoteProcessArg(path) + L" --check-protocol 1.0.0";
+  auto command = quoteProcessArg(path) + L" --check-protocol " + search::utf8_to_wide(lis_update::kUpdaterProtocolVersion);
   STARTUPINFOW startup{}; startup.cb = sizeof(startup);
   PROCESS_INFORMATION process{};
   if (!CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
@@ -498,8 +498,8 @@ bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path,
   const std::wstring app_dir = search::module_dir();
   const std::wstring updater_path =
       lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
-  if (!manifest_path.empty() && !hasCompatibleUpdater()) {
-    MessageBoxW(hwnd, L"本机更新器版本不支持 LIS 更新，请先使用完整安装包升级。", L"安装更新", MB_ICONERROR);
+  if (!hasCompatibleUpdater()) {
+    MessageBoxW(hwnd, L"本机更新器不支持当前更新协议，请先使用完整安装包升级。", L"安装更新", MB_ICONERROR);
     return false;
   }
   if (!manifest_path.empty() && !enoughInstallSpace(package_path)) {
