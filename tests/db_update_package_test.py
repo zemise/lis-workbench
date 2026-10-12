@@ -98,7 +98,7 @@ class PackageTests(unittest.TestCase):
         self.assertNotIn("__", sql)
         self.assertIn(str(self.manifest["package"]["size"]), sql)
         self.assertLess((result / "02-publish.sql").stat().st_size, 16384)
-        info = json.loads((result / "release-info.json").read_text())
+        info = json.loads((result / "release-info.json").read_text(encoding="utf-8"))
         self.assertEqual(info["releaseId"], 42)
         self.assertEqual((result / self.manifest["package"]["file"]).read_bytes(), self.zip.read_bytes())
 
@@ -115,10 +115,10 @@ class PackageTests(unittest.TestCase):
 
     def test_existing_materials_preserved(self):
         destination = self.root / "output" / self.manifest["version"]; destination.mkdir(parents=True)
-        (destination / "keep").write_text("keep")
+        (destination / "keep").write_text("keep", encoding="utf-8")
         with patch.object(packager, "api", return_value=self.release()):
             with self.assertRaises(ValueError): packager.prepare(self.root / "output")
-        self.assertEqual((destination / "keep").read_text(), "keep")
+        self.assertEqual((destination / "keep").read_text(encoding="utf-8"), "keep")
 
 
 class DatabaseBoundaryTests(unittest.TestCase):
@@ -127,13 +127,13 @@ class DatabaseBoundaryTests(unittest.TestCase):
         paths = list((ROOT / "scripts/db_update").glob("*.sql")) + [ROOT / "scripts/db_update/upload.ps1", ROOT / "src/update_database.cpp"]
         for path in paths:
             with self.subTest(path=path.name):
-                text = path.read_text()
+                text = path.read_text(encoding="utf-8")
                 self.assertEqual(set(re.findall(r"dbo\.\w+", text)), {"dbo.LS_AS_LISWORK"})
                 self.assertFalse(re.search(r"\b(?:CREATE TABLE|ALTER DATABASE|DROP TABLE|TRUNCATE TABLE|DBCC|KILL|GRANT|REVOKE|BACKUP DATABASE|RESTORE DATABASE)\b", text, re.I))
 
     def test_runtime_cpp_is_read_only(self):
         import re
-        text = (ROOT / "src/update_database.cpp").read_text()
+        text = (ROOT / "src/update_database.cpp").read_text(encoding="utf-8")
         self.assertNotRegex(text, r'(?i)\b(?:INSERT INTO|UPDATE dbo\.|DELETE FROM|CREATE TABLE)')
         self.assertIn("SQL_MODE_READ_ONLY", text)
         query = re.search(r'L"SELECT PackageId.*?";', text).group()
@@ -142,19 +142,19 @@ class DatabaseBoundaryTests(unittest.TestCase):
 
     def test_cleanup_cannot_delete_current_or_staged(self):
         for path in [ROOT / "scripts/db_update/03-cleanup.sql", ROOT / "scripts/db_update/upload.ps1"]:
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             self.assertIn("State='retired'", text)
             self.assertIn("IsCurrent=0", text)
             self.assertIn("DATEADD(hour,-24", text)
 
     def test_mutations_refuse_cross_table_dependencies(self):
         for name in ("upload.ps1", "02-publish.sql", "03-cleanup.sql"):
-            text = (ROOT / "scripts/db_update" / name).read_text()
+            text = (ROOT / "scripts/db_update" / name).read_text(encoding="utf-8")
             self.assertIn("sys.triggers", text)
             self.assertIn("sys.foreign_keys", text)
 
     def test_password_never_enters_command_line_or_materials(self):
-        text = (ROOT / "scripts/db_update/upload.ps1").read_text()
+        text = (ROOT / "scripts/db_update/upload.ps1").read_text(encoding="utf-8")
         self.assertIn("-AsSecureString", text)
         self.assertIn("$password.MakeReadOnly()", text)
         self.assertIn("SqlCredential", text)
