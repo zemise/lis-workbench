@@ -610,32 +610,38 @@ void populateUpdateSourceCombo(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
     if (!combo) return;
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(lis_update::kSourceFolderLabel));
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(lis_update::kSourceHttpLabel));
-
-    const std::wstring saved = search::load_module_str(
-        lis_update::kConfigSection, L"SourceType", lis_update::kSourceFolder);
-    selectComboText(combo,
-                    saved == lis_update::kSourceHttp
-                        ? lis_update::kSourceHttpLabel
-                        : lis_update::kSourceFolderLabel,
-                    0);
+    for (const wchar_t* label : {lis_update::kSourceLisLabel, lis_update::kSourceFolderLabel, lis_update::kSourceHttpLabel})
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    const auto saved = lis_update::normalize_source_type(search::load_module_str(
+        lis_update::kConfigSection, L"SourceType", lis_update::kSourceLis));
+    selectComboText(combo, saved == lis_update::kSourceHttp ? lis_update::kSourceHttpLabel :
+                          saved == lis_update::kSourceFolder ? lis_update::kSourceFolderLabel : lis_update::kSourceLisLabel);
 }
 
 std::wstring selectedUpdateSourceType(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, IDC_SET_UPDATE_SOURCE);
     const int index = combo ? static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0)) : 0;
-    return index == 1 ? lis_update::kSourceHttp : lis_update::kSourceFolder;
+    return index == 2 ? lis_update::kSourceHttp : index == 1 ? lis_update::kSourceFolder : lis_update::kSourceLis;
 }
 
 void updateSourceFieldVisibility(HWND hwnd) {
     auto* st = reinterpret_cast<SettingsState*>(GetPropW(hwnd, PROP_STATE));
     const bool update_page = st ? st->currentTab == UpdateTab : true;
-    const bool is_http = selectedUpdateSourceType(hwnd) == lis_update::kSourceHttp;
+    const auto source = selectedUpdateSourceType(hwnd);
+    const bool is_http = source == lis_update::kSourceHttp;
+    const bool is_folder = source == lis_update::kSourceFolder;
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_LABEL), update_page && is_http ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_MANIFEST_URL), update_page && is_http ? SW_SHOW : SW_HIDE);
-    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER_LABEL), update_page && !is_http ? SW_SHOW : SW_HIDE);
-    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER), update_page && !is_http ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER_LABEL), update_page && is_folder ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER), update_page && is_folder ? SW_SHOW : SW_HIDE);
+    if (st && st->updateAutoCheck) EnableWindow(st->updateAutoCheck, source != lis_update::kSourceLis);
+    if (HWND hint = GetDlgItem(hwnd, IDC_TEXT_UPDATE_HINT)) {
+        SetWindowTextW(hint, source == lis_update::kSourceLis
+            ? L"LIS 使用现有数据库连接；通过系统菜单手动检查更新。"
+            : L"设置共享目录或 HTTP manifest，并控制启动后自动检查。");
+        // Erase the complete old text area when the source changes.
+        InvalidateRect(hint, nullptr, TRUE);
+    }
 }
 
 SettingsUpdateConfig collectUpdateConfig(HWND hwnd) {
@@ -1206,6 +1212,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
+            if (id == IDC_TEXT_UPDATE_HINT) {
+                // This label changes in place; a hollow brush leaves the previous
+                // source's glyphs underneath the new text. Match the white card.
+                SetBkMode(dc, OPAQUE);
+                SetBkColor(dc, COLOR_CARD_BG);
+                SetTextColor(dc, COLOR_MUTED_TEXT);
+                return reinterpret_cast<LRESULT>(st && st->editBrush ? st->editBrush : GetStockObject(WHITE_BRUSH));
+            }
             if (isReadOnlyEditId(id)) {
                 SetBkMode(dc, OPAQUE);
                 SetBkColor(dc, RGB(0xFF, 0xFF, 0xFF));

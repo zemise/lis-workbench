@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <commctrl.h>
 #include <exception>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <iphlpapi.h>
 #include <memory>
 #include <optional>
@@ -46,6 +49,8 @@
 #include "transfusion_order_statistics_module.h"
 #include "update_config.h"
 #include "update_source.h"
+#include "update_database.h"
+#include "update_package.h"
 #include "version.h"
 #include "win32_control_id.h"
 #include "window_task.h"
@@ -92,6 +97,7 @@ constexpr const wchar_t *UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 
 app::Context g_ctx;
 bool g_manualUpdateChecking = false;
+std::shared_ptr<std::atomic<bool>> g_updateCancelled;
 app::WindowTask g_manualUpdateTask;
 app::WindowTask g_autoUpdateTask;
 
@@ -117,6 +123,8 @@ struct UpdateSourceConfig {
   std::wstring sourceType;
   std::wstring manifestUrl;
   std::wstring folderPath;
+  search::DbSettings db;
+  bool trustServerCertificate = lis_update::kDefaultTrustServerCertificate;
 };
 
 void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone &done);
@@ -393,10 +401,11 @@ void setMainStatusText(const wchar_t *text) {
 UpdateSourceConfig loadUpdateSourceConfig() {
   UpdateSourceConfig cfg;
   cfg.sourceType = search::load_module_str(
-      lis_update::kConfigSection, L"SourceType", lis_update::kSourceFolder);
-  if (cfg.sourceType != lis_update::kSourceHttp) {
-    cfg.sourceType = lis_update::kSourceFolder;
-  }
+      lis_update::kConfigSection, L"SourceType", lis_update::kSourceLis);
+  cfg.sourceType = lis_update::normalize_source_type(cfg.sourceType);
+  cfg.db = search::load_settings(search::default_ini_path()).db;
+  cfg.trustServerCertificate = search::load_module_int(lis_update::kConfigSection,
+      L"TrustServerCertificate", lis_update::kDefaultTrustServerCertificate ? 1 : 0) != 0;
 
   cfg.manifestUrl =
       search::load_module_str(lis_update::kConfigSection, L"ManifestUrl",
@@ -444,10 +453,59 @@ std::wstring programDataUpdateCacheDir() {
   return lis_update::join_update_path(base, UPDATE_CACHE_DIR_NAME);
 }
 
-bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path) {
+bool hasCompatibleUpdater() {
+  const auto path = lis_update::join_update_path(search::module_dir(), UPDATE_UPDATER_EXE_NAME);
+  auto command = quoteProcessArg(path) + L" --check-protocol " + search::utf8_to_wide(lis_update::kUpdaterProtocolVersion);
+  STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                      nullptr, nullptr, &startup, &process)) return false;
+  bool ok = false;
+  if (WaitForSingleObject(process.hProcess, 3000) == WAIT_OBJECT_0) {
+    DWORD code=0; ok = GetExitCodeProcess(process.hProcess, &code) && code == 0x4c4953;
+  } else {
+    TerminateProcess(process.hProcess, 1);
+  }
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  return ok;
+}
+
+bool enoughInstallSpace(const std::wstring& package_path) {
+  lis_update::UpdateZipInfo zip;
+  std::string error;
+  if (!lis_update::validate_update_zip(package_path, zip, error)) return false;
+  std::uint64_t backup_bytes=0;
+  std::error_code ec;
+  std::filesystem::recursive_directory_iterator it(std::filesystem::path(search::module_dir()), ec), end;
+  if (ec) return false;
+  for (; it!=end; it.increment(ec)) {
+    if (ec) return false;
+    const auto name=it->path().filename().wstring();
+    if (it->is_directory(ec) && (_wcsicmp(name.c_str(),L"backup")==0 || _wcsicmp(name.c_str(),L"log")==0)) {
+      it.disable_recursion_pending(); continue;
+    }
+    if (ec || it->is_symlink(ec)) return false;
+    if (it->is_regular_file(ec)) backup_bytes+=it->file_size(ec);
+    if (ec) return false;
+  }
+  ULARGE_INTEGER free{};
+  return !ec && GetDiskFreeSpaceExW(search::module_dir().c_str(),&free,nullptr,nullptr) &&
+         free.QuadPart>=backup_bytes+zip.expanded_bytes+1024*1024;
+}
+
+bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path,
+                             const std::wstring &manifest_path = {}) {
   const std::wstring app_dir = search::module_dir();
   const std::wstring updater_path =
       lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
+  if (!hasCompatibleUpdater()) {
+    MessageBoxW(hwnd, L"本机更新器不支持当前更新协议，请先使用完整安装包升级。", L"安装更新", MB_ICONERROR);
+    return false;
+  }
+  if (!manifest_path.empty() && !enoughInstallSpace(package_path)) {
+    MessageBoxW(hwnd,L"安装目录空间不足或无法完整备份，请检查磁盘空间及文件访问权限。",L"安装更新",MB_ICONERROR);
+    return false;
+  }
   if (!localFileExists(updater_path)) {
     MessageBoxW(hwnd, L"安装目录中未找到 Updater.exe。", L"安装更新",
                 MB_ICONERROR);
@@ -459,6 +517,7 @@ bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path) {
   args += L" --app-exe " + quoteProcessArg(UPDATE_APP_EXE_NAME);
   args += L" --package-file " + quoteProcessArg(package_path);
   args += L" --pid " + std::to_wstring(GetCurrentProcessId());
+  if (!manifest_path.empty()) args += L" --manifest " + quoteProcessArg(manifest_path);
 
   HINSTANCE started =
       ShellExecuteW(nullptr, L"open", updater_path.c_str(), args.c_str(),
@@ -472,14 +531,183 @@ bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path) {
   return true;
 }
 
+bool sameLisConfig(const UpdateSourceConfig& a, const UpdateSourceConfig& b) {
+  return a.sourceType == b.sourceType && a.db.server == b.db.server &&
+         a.db.initial_database == b.db.initial_database && a.db.user == b.db.user &&
+         a.db.password == b.db.password && a.trustServerCertificate == b.trustServerCertificate;
+}
+
+// Fixed phase/outcome labels and validated package identifiers only: no connection data.
+struct LisUpdateActivity {
+  ULONGLONG started=GetTickCount64();
+  std::string phase, outcome="failed", version;
+  std::int64_t id=0;
+  std::uint64_t bytes=0;
+  explicit LisUpdateActivity(std::string stage):phase(std::move(stage)) {}
+  void capture(const lis_update::UpdateManifest& m) {
+    id=m.database_package_id; version=m.version; bytes=m.package.size;
+  }
+  ~LisUpdateActivity() {
+    const std::string message="LIS update phase="+phase+" outcome="+outcome+
+        " package_id="+std::to_string(id)+" version="+version+" bytes="+std::to_string(bytes)+
+        " elapsed_ms="+std::to_string(GetTickCount64()-started);
+    if(outcome=="failed") LOG_WARN(message); else LOG_INFO(message);
+  }
+};
+
+void startLisUpdateCheck(HWND hwnd, const UpdateSourceConfig& cfg) {
+  if (cfg.db.server.empty() || cfg.db.initial_database.empty() || cfg.db.user.empty()) {
+    MessageBoxW(hwnd, L"请先在系统设置中配置 LIS 数据库连接。", L"检查更新", MB_ICONWARNING);
+    return;
+  }
+  g_manualUpdateChecking = true;
+  g_updateCancelled = std::make_shared<std::atomic<bool>>(false);
+  const auto cancel = g_updateCancelled;
+  setMainStatusText(L"正在检查 LIS 版本；再次点击检查更新可取消...");
+  bool queued = g_manualUpdateTask.start<ManualUpdateCheckDone>(
+      [cfg, cancel] {
+        ManualUpdateCheckDone done;
+        LisUpdateActivity activity("updater_protocol");
+        if (!hasCompatibleUpdater()) {
+          done.error = "updater capability is missing; upgrade using the complete installer first";
+          return done;
+        }
+        lis_update::DatabaseUpdateSource source(cfg.db, cfg.trustServerCertificate, [cancel]{return cancel->load();});
+        activity.phase="metadata";
+        done.ok = source.fetch_manifest(done.result.manifest, done.error);
+        if(done.ok) activity.capture(done.result.manifest);
+        activity.outcome=cancel->load()?"cancelled":(done.ok?"success":"failed");
+        done.result.update_available = done.ok && lis_update::compare_version_strings(
+            done.result.manifest.version, search::kVersion) > 0;
+        return done;
+      },
+      [hwnd, cfg, cancel](std::optional<ManualUpdateCheckDone> done, std::exception_ptr exception) {
+        g_manualUpdateChecking = false;
+        setMainStatusText(L"就绪");
+        if (!IsWindow(hwnd) || cancel->load()) return;
+        if (!sameLisConfig(cfg, loadUpdateSourceConfig())) {
+          MessageBoxW(hwnd, L"数据库或更新源配置已改变，请重新检查更新。", L"检查更新", MB_ICONINFORMATION);
+          return;
+        }
+        if (exception || !done || !done->ok) {
+          const auto error = done ? done->error : "update task failed";
+          MessageBoxW(hwnd, search::utf8_to_wide(error).c_str(), L"LIS 检查失败", MB_ICONERROR);
+          return;
+        }
+        if (!done->result.update_available) {
+          MessageBoxW(hwnd, L"当前已是最新版本。", L"检查更新", MB_ICONINFORMATION);
+          return;
+        }
+        const auto manifest = done->result.manifest;
+        std::wstring message = L"当前版本：" + search::utf8_to_wide(search::kVersion) +
+            L"\r\n新版本：" + search::utf8_to_wide(manifest.version) + L"\r\n更新包：" +
+            std::to_wstring((manifest.package.size + 1024*1024-1)/(1024*1024)) + L" MB";
+        if (!manifest.release_notes.empty()) message += L"\r\n" + search::utf8_to_wide(manifest.release_notes);
+        message += L"\r\n\r\n是否下载此版本？";
+        if (MessageBoxW(hwnd, message.c_str(), L"LIS 更新", MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) != IDYES) return;
+        if (!sameLisConfig(cfg, loadUpdateSourceConfig())) return;
+        g_manualUpdateChecking = true;
+        setMainStatusText(L"正在下载 LIS 更新；再次点击检查更新可取消...");
+        const auto root = programDataUpdateCacheDir();
+        bool downloading = g_manualUpdateTask.start<ManualUpdateCheckDone>(
+            [cfg, manifest, cancel, root] {
+              ManualUpdateCheckDone downloaded;
+              downloaded.result.manifest = manifest;
+              LisUpdateActivity activity("cache_prepare");
+              activity.capture(manifest);
+              GUID guid{};
+              if (FAILED(CoCreateGuid(&guid))) { downloaded.error="cannot create cache identity"; return downloaded; }
+              wchar_t guidText[40]{}; StringFromGUID2(guid, guidText, 40);
+              const auto sharedDir = lis_update::join_update_path(root, L"db\\" + std::to_wstring(manifest.database_package_id) +
+                  L"-" + search::utf8_to_wide(manifest.package.sha256));
+              const auto packageDir = lis_update::join_update_path(sharedDir, guidText);
+              std::error_code ec;
+              std::filesystem::create_directories(std::filesystem::path(packageDir), ec);
+              if (ec) { downloaded.error="cannot create update cache"; return downloaded; }
+              ULARGE_INTEGER free{};
+              if (!GetDiskFreeSpaceExW(packageDir.c_str(),&free,nullptr,nullptr) || free.QuadPart<manifest.package.size+1024*1024) {
+                downloaded.error="insufficient update cache disk space";
+                std::filesystem::remove_all(std::filesystem::path(packageDir),ec);
+                return downloaded;
+              }
+              const auto target = lis_update::join_update_path(packageDir, search::utf8_to_wide(manifest.package.file));
+              lis_update::DatabaseUpdateSource source(cfg.db, cfg.trustServerCertificate, [cancel]{return cancel->load();});
+              const auto reusable = lis_update::join_update_path(sharedDir, search::utf8_to_wide(manifest.package.file));
+              lis_update::UpdateZipInfo zip;
+              std::string cacheError;
+              if (!cancel->load() && lis_update::verify_update_package(reusable, manifest, cacheError) &&
+                  lis_update::validate_update_zip(reusable, zip, cacheError) && CopyFileW(reusable.c_str(), target.c_str(), TRUE)) {
+                downloaded.ok = lis_update::verify_update_package(target, manifest, cacheError) &&
+                                lis_update::validate_update_zip(target, zip, cacheError);
+                if (!downloaded.ok) DeleteFileW(target.c_str());
+              }
+              activity.phase="download";
+              if (!downloaded.ok) downloaded.ok = source.fetch_package(manifest, target, downloaded.error);
+              if (downloaded.ok) {
+                activity.phase="snapshot_write";
+                // Never overwrite another process's reusable cache; each installer uses its own copy.
+                CopyFileW(target.c_str(), reusable.c_str(), TRUE);
+                std::ofstream metadata(std::filesystem::path(target+L".json"), std::ios::binary);
+                metadata << lis_update::serialize_update_manifest(manifest);
+                metadata.close();
+                if (!metadata) { downloaded.ok=false; downloaded.error="cannot save update snapshot"; }
+              }
+              if (!downloaded.ok || cancel->load()) std::filesystem::remove_all(std::filesystem::path(packageDir), ec);
+              downloaded.result.package_path=target;
+              activity.outcome=cancel->load()?"cancelled":(downloaded.ok?"success":"failed");
+              if(downloaded.ok) activity.phase="download_verified";
+              return downloaded;
+            },
+            [hwnd, cfg, cancel](std::optional<ManualUpdateCheckDone> downloaded, std::exception_ptr exception) {
+              g_manualUpdateChecking=false; setMainStatusText(L"就绪");
+              // This path belongs to this task's GUID directory; shared complete caches remain reusable.
+              const auto discardSession = [&] {
+                if (downloaded && !downloaded->result.package_path.empty()) {
+                  std::error_code ec;
+                  std::filesystem::remove_all(std::filesystem::path(downloaded->result.package_path).parent_path(),ec);
+                }
+              };
+              if (!IsWindow(hwnd) || cancel->load()) { discardSession(); return; }
+              if (!sameLisConfig(cfg,loadUpdateSourceConfig())) {
+                discardSession();
+                LOG_INFO("LIS update phase=install_confirmation outcome=config_changed");
+                MessageBoxW(hwnd,L"数据库或更新源配置已改变，请重新检查更新。",L"LIS 更新",MB_ICONINFORMATION); return;
+              }
+              if (exception || !downloaded || !downloaded->ok) {
+                const auto error=downloaded ? downloaded->error : "download task failed";
+                MessageBoxW(hwnd,search::utf8_to_wide(error).c_str(),L"LIS 下载失败",MB_ICONERROR); return;
+              }
+              if (MessageBoxW(hwnd,L"更新包已下载并校验。是否立即安装并重启？",L"LIS 更新",
+                              MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDYES && sameLisConfig(cfg,loadUpdateSourceConfig())) {
+                const auto& path=downloaded->result.package_path;
+                const bool launched=launchUpdaterForPackage(hwnd,path,path+L".json");
+                LOG_INFO(std::string("LIS update phase=updater_launch outcome=")+(launched?"success":"failed"));
+                if(!launched) discardSession();
+              } else {
+                LOG_INFO("LIS update phase=install_confirmation outcome=declined_or_config_changed");
+                discardSession();
+              }
+            });
+        if (!downloading) {g_manualUpdateChecking=false;setMainStatusText(L"无法启动下载任务");}
+      });
+  if (!queued) {g_manualUpdateChecking=false;setMainStatusText(L"无法启动检查任务");}
+}
+
 void startManualUpdateCheck(HWND hwnd) {
   if (g_manualUpdateChecking) {
+    if (g_updateCancelled && !g_updateCancelled->load()) {
+      g_updateCancelled->store(true);
+      setMainStatusText(L"正在取消更新任务...");
+      return;
+    }
     MessageBoxW(hwnd, L"正在检查更新，请稍候。", L"检查更新",
                 MB_ICONINFORMATION);
     return;
   }
 
   const UpdateSourceConfig cfg = loadUpdateSourceConfig();
+  if (cfg.sourceType == lis_update::kSourceLis) { startLisUpdateCheck(hwnd, cfg); return; }
+  g_updateCancelled.reset();
   if (cfg.sourceType == lis_update::kSourceHttp) {
     if (cfg.manifestUrl.empty()) {
       MessageBoxW(hwnd, L"请先在系统设置中填写 HTTP manifest URL。",
@@ -570,6 +798,7 @@ std::wstring todayUpdateStamp() {
 }
 
 bool shouldAutoCheckUpdateToday() {
+  if (loadUpdateSourceConfig().sourceType == lis_update::kSourceLis) return false;
   if (!search::load_module_int(lis_update::kConfigSection, L"AutoCheck", 0)) {
     return false;
   }
@@ -585,6 +814,7 @@ void markAutoCheckUpdateToday() {
 }
 
 void startAutoUpdateCheck(HWND hwnd) {
+  if (loadUpdateSourceConfig().sourceType == lis_update::kSourceLis) return;
   const UpdateSourceConfig cfg = loadUpdateSourceConfig();
 
   if (cfg.sourceType == lis_update::kSourceHttp && cfg.manifestUrl.empty())
@@ -964,6 +1194,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     DestroyWindow(hwnd);
     return 0;
   case WM_DESTROY:
+    if (g_updateCancelled) g_updateCancelled->store(true);
     KillTimer(hwnd, ID_TIMER);
     KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
     KillTimer(hwnd, ID_SCHEDULED_CHECK_TIMER);

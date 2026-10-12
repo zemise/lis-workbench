@@ -156,12 +156,25 @@ bool is_supported_manifest(const UpdateManifest& manifest, std::string& error) {
         error = "manifest appId is not lis-workbench";
         return false;
     }
-    if (manifest.version.empty()) {
-        error = "manifest version is empty";
+    if (!is_valid_release_version(manifest.version)) {
+        error = "manifest version must have form vYYYY.MM.DD or vYYYY.MM.DD.N (1-999999999)";
         return false;
     }
     if (manifest.package.file.empty()) {
         error = "manifest package.file is empty";
+        return false;
+    }
+    if (manifest.channel != "stable") {
+        error = "unsupported update channel";
+        return false;
+    }
+    if (manifest.min_updater_version != "1.0.0" &&
+        manifest.min_updater_version != kUpdaterProtocolVersion) {
+        error = "updater protocol is too old; upgrade using the installer";
+        return false;
+    }
+    if (manifest.package.size == 0 || manifest.package.size > kMaxUpdatePackageSize) {
+        error = "invalid update package size (maximum 100 MiB)";
         return false;
     }
     if (manifest.package.sha256.size() != 64) {
@@ -178,9 +191,36 @@ bool is_supported_manifest(const UpdateManifest& manifest, std::string& error) {
     return true;
 }
 
+bool is_valid_release_version(const std::string& version) {
+    if (version.size() < 11 || version.size() > 21) return false;
+    for (size_t i = 0; i < 11; ++i) {
+        const char c = version[i];
+        if (!(i == 0 ? c == 'v' : i == 5 || i == 8 ? c == '.' : c >= '0' && c <= '9')) return false;
+    }
+    const int year = std::stoi(version.substr(1, 4));
+    const int month = std::stoi(version.substr(6, 2));
+    const int day = std::stoi(version.substr(9, 2));
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    const int days[] = {0,31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31};
+    if (year == 0 || month < 1 || month > 12 || day < 1 || day > days[month]) return false;
+    if (version.size() == 11) return true;
+    if (version.size() < 13 || version[11] != '.' || version[12] < '1' || version[12] > '9') return false;
+    for (size_t i = 13; i < version.size(); ++i) if (version[i] < '0' || version[i] > '9') return false;
+    return true;
+}
+
+// These three releases used future dates for updates actually published on Oct 12.
+// Normalize only these exact legacy identifiers; never change stored package identity.
+static std::string normalize_legacy_release(const std::string& version) {
+    if (version == "v2026.10.13") return "v2026.10.12.1";
+    if (version == "v2026.10.14") return "v2026.10.12.2";
+    if (version == "v2026.10.15") return "v2026.10.12.3";
+    return version;
+}
+
 int compare_version_strings(const std::string& left, const std::string& right) {
-    const auto a = version_parts(left);
-    const auto b = version_parts(right);
+    const auto a = version_parts(normalize_legacy_release(left));
+    const auto b = version_parts(normalize_legacy_release(right));
     const size_t count = a.size() > b.size() ? a.size() : b.size();
     for (size_t i = 0; i < count; ++i) {
         const int av = i < a.size() ? a[i] : 0;

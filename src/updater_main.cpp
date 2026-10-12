@@ -1,4 +1,6 @@
 #include "update_manifest.h"
+#include "update_source.h"
+#include "update_package.h"
 
 #ifdef _WIN32
 
@@ -245,6 +247,12 @@ bool extract_zip_with_shell(const std::wstring& zip_path, const std::wstring& ta
         error = L"package file does not exist";
         return false;
     }
+    lis_update::UpdateZipInfo expected;
+    std::string zip_error;
+    if (!lis_update::validate_update_zip(zip_path, expected, zip_error)) {
+        error = std::wstring(zip_error.begin(), zip_error.end());
+        return false;
+    }
     if (!delete_tree(target_dir, error) || !ensure_directory(target_dir, error)) {
         return false;
     }
@@ -329,7 +337,8 @@ bool extract_zip_with_shell(const std::wstring& zip_path, const std::wstring& ta
     for (int i = 0; i < 180; ++i) {
         std::uint64_t files = 0;
         std::uint64_t bytes = 0;
-        if (file_exists(required_path) && directory_snapshot(target_dir, files, bytes)) {
+        if (file_exists(required_path) && directory_snapshot(target_dir, files, bytes) &&
+            files == expected.files && bytes == expected.expanded_bytes) {
             if (files == last_files && bytes == last_bytes) {
                 ++stable_ticks;
             } else {
@@ -416,11 +425,28 @@ bool validate_manifest_if_present(const Options& options, std::wstring& error) {
         error = L"manifest parse failed: " + std::wstring(parse_error.begin(), parse_error.end());
         return false;
     }
+    if (!options.package_file.empty() &&
+        !lis_update::verify_update_package(options.package_file, manifest, parse_error)) {
+        error = L"package integrity check failed";
+        return false;
+    }
     return true;
 }
 
 int run_update(const Options& options) {
     append_log(options.app_dir, L"updater started");
+    struct PackageLock {
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        ~PackageLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } package_lock;
+    if (!options.package_file.empty()) {
+        package_lock.handle = CreateFileW(options.package_file.c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (package_lock.handle == INVALID_HANDLE_VALUE) {
+            append_log(options.app_dir, L"cannot lock update package");
+            return 2;
+        }
+    }
     std::wstring error;
     if (!validate_manifest_if_present(options, error)) {
         append_log(options.app_dir, error);
@@ -482,6 +508,11 @@ int run_update(const Options& options) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    // A read-only capability probe; old updaters reject this option.
+    if (argc == 3 && std::wstring(argv[1]) == L"--check-protocol") {
+        return (std::wstring(argv[2]) == L"1.0.0" ||
+                wide_to_utf8(argv[2]) == lis_update::kUpdaterProtocolVersion) ? 0x4c4953 : 1;
+    }
     Options options;
     std::wstring error;
     if (!parse_args(argc, argv, options, error)) {

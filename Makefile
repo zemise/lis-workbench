@@ -34,6 +34,7 @@ help:
 	@echo "   make compile    Cross-compile lis_workbench.exe + Updater.exe (MinGW)"
 	@echo "   make test       Run tests (placeholder)"
 	@echo "   make package    Create NSIS installer + update zip + manifest.json"
+	@echo "   make db-update-package  Fetch Release and prepare offline LIS upload materials"
 	@echo "   make verify     Verify binaries and version consistency"
 	@echo "   make install    Copy artifacts to out/windows/dist/"
 	@echo "   make run        Show run instructions (macOS cannot run .exe)"
@@ -117,6 +118,11 @@ package: compile
 	@echo "==> Installer  : $(PACKAGE_WORK)/LISWorkbench-Setup-$(VERSION)-win7-win11.exe"
 	@echo "==> Update zip : $(ZIP_PATH)"
 	@echo "==> Manifest   : $(MANIFEST_PATH)"
+
+# Independent of compilation; never connects to a database.
+.PHONY: db-update-package
+db-update-package:
+	python3 scripts/db_update_package.py $(if $(RELEASE),--release "$(RELEASE)",)
 
 # ── verify ─────────────────────────────────────────────────────
 .PHONY: verify

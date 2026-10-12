@@ -5,6 +5,9 @@
 
 namespace lis_update {
 
+inline constexpr const char* kUpdaterProtocolVersion = "1.1.0";
+inline constexpr std::uint64_t kMaxUpdatePackageSize = 100ULL * 1024 * 1024;
+
 struct UpdatePackageInfo {
     std::string file;
     std::string sha256;
@@ -17,6 +20,9 @@ struct UpdateManifest {
     std::string channel;
     std::string min_updater_version;
     std::string published_at;
+    std::string release_notes;
+    // Database identity belongs to the snapshot, not the lifetime of a source object.
+    std::int64_t database_package_id = 0;
     UpdatePackageInfo package;
 };
 
@@ -24,6 +30,8 @@ bool parse_update_manifest_json(const std::string& json, UpdateManifest& manifes
                                 std::string& error);
 
 bool is_supported_manifest(const UpdateManifest& manifest, std::string& error);
+
+bool is_valid_release_version(const std::string& version);
 
 int compare_version_strings(const std::string& left, const std::string& right);
 

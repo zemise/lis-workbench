@@ -69,7 +69,6 @@ mkdir -p "${STAGE_DIR}"
 
 cp -f "${GUI_EXE}" "${STAGE_DIR}/result_search.exe"
 cp -f "${ROOT_DIR}/README.md" "${STAGE_DIR}/README.md"
-cp -f "${ROOT_DIR}/QUERY_DESIGN.md" "${STAGE_DIR}/QUERY_DESIGN.md"
 
 echo "==> Stage ready: ${STAGE_DIR}"
 ls -1 "${STAGE_DIR}"

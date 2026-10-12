@@ -5,6 +5,7 @@
 #include "module_registry.h"
 #include "search_app.h"
 #include "search_core.h"
+#include "regular_report_comparison.h"
 #include "window_task.h"
 
 #include <windows.h>
@@ -53,6 +54,7 @@ constexpr int REGULAR_IDC_BOTTOM_PRINT_BARCODE = 5406;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_2 = 5411;
 constexpr int REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE = 5416;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_3 = 5420;
+constexpr int REGULAR_IDC_BOTTOM_TRACKING = 5421;
 constexpr int REGULAR_IDC_BOTTOM_GRAPH = 5424;
 constexpr int REGULAR_IDC_BOTTOM_PREV_REPORT = 5408;
 constexpr int REGULAR_IDC_BOTTOM_NEXT_REPORT = 5409;
@@ -258,6 +260,13 @@ struct RegularReportState {
     HWND splitter = nullptr;
     HWND middleTab = nullptr;
     HWND rightTab = nullptr;
+    HWND comparisonMode = nullptr;
+    HWND comparisonTitle = nullptr;
+    HWND comparisonStatus = nullptr;
+    HWND comparisonList = nullptr;
+    app::WindowTask comparisonTask;
+    regular_comparison::ViewCache resultCache;
+    std::vector<regular_comparison::Item> comparisonItems;
     HWND rightSearchLabel = nullptr;
     HWND rightSearchEdit = nullptr;
     HWND rightSearchIndexButton = nullptr;

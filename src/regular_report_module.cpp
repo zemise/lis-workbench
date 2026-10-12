@@ -8,6 +8,7 @@
 #include "main_app.h"
 #include "log.h"
 #include "regular_report_barcode_range.h"
+#include "regular_report_tracking_window.h"
 #include "resource.h"
 #include "search_controller.h"
 #include "search_splitter.h"
@@ -62,10 +63,16 @@ inline HWND makeDatePicker(HWND p, int x, int y, int w, int h,
 // ============================================================================
 
 // Forward decls for functions defined later in this file
+constexpr int REGULAR_IDC_COMPARISON_LIST = 5230;
+void resetComparison(RegularReportState* st);
+void loadComparison(RegularReportState* st);
+void setCell(HWND list, int row, int col, const wchar_t* text);
+void setCell(HWND list, int row, int col, const std::string& text);
 void runReportQuery(RegularReportState* st, bool preserveState = false);
 void querySelectedResults(RegularReportState* st, int selected);
 void finishReportQuery(RegularReportState* st, HWND hwnd,
                        std::unique_ptr<ReportLoadResult> result);
+void presentResultRows(RegularReportState* st, bool redraw = true);
 void finishResultQuery(RegularReportState* st, HWND hwnd,
                        std::unique_ptr<ResultLoadResult> result);
 void sortReportRowsByColumn(RegularReportState* st, int column);
@@ -741,12 +748,227 @@ LRESULT CALLBACK leftContentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // Right panel — summary paint + tab switching
 // ============================================================================
 
+regular_comparison::CacheKey reportCacheKey(const RegularReportState* st, int index) {
+    const auto& report = st->reportRows[static_cast<size_t>(index)];
+    return {st->reportConnectionString, report.rep_no, report.reg_no,
+            report.room_code, report.mach_code, report.inspect_date};
+}
+
+struct ComparisonLoad {
+    bool ok = false;
+    bool currentOk = false;
+    std::string error;
+    std::string currentError;
+    std::vector<search::ResultRow> currentRows;
+    std::vector<search::ReportRow> reports;
+    std::vector<regular_comparison::Item> items;
+};
+
+void resetComparison(RegularReportState* st) {
+    if (!st) return;
+    st->comparisonTask.cancel();
+    st->resultCache.comparison = regular_comparison::LoadPhase::Empty;
+    st->comparisonItems.clear();
+    if (st->comparisonList) ListView_DeleteAllItems(st->comparisonList);
+    if (st->comparisonStatus)
+        SetWindowTextW(st->comparisonStatus, L"请在信息列表中选择报告。");
+}
+
+void presentComparison(RegularReportState* st, ComparisonLoad result, bool redraw = true) {
+    st->comparisonItems = std::move(result.items);
+    HWND list = st->comparisonList;
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    auto addRow = [&](int row, const wchar_t* title) {
+        LVITEMW item{};
+        item.mask = LVIF_TEXT; item.iItem = row;
+        item.pszText = const_cast<wchar_t*>(title);
+        ListView_InsertItem(list, &item);
+    };
+    addRow(0, L"日期");
+    for (size_t col = 0; col < result.reports.size(); ++col)
+        setCell(list, 0, static_cast<int>(col + 1),
+                regularSlashDate(result.reports[col].inspect_date));
+    for (size_t i = 0; i < st->comparisonItems.size(); ++i) {
+        const auto& item = st->comparisonItems[i];
+        const int row = static_cast<int>(i + 1);
+        const auto title = search::utf8_to_wide(item.reference.item_name);
+        addRow(row, title.c_str());
+        for (size_t col = 0; col < 4; ++col) {
+            if (!item.results[col]) continue;
+            const auto& value = *item.results[col];
+            std::string text = value.result;
+            const auto normal = search::trim(value.normal);
+            if (normal == "1") text += " ↑";
+            else if (normal == "5") text += " ↓";
+            setCell(list, row, static_cast<int>(col + 1), text);
+        }
+        const auto& ref = item.reference;
+        std::string range = search::trim(ref.downbound);
+        const std::string upper = search::trim(ref.upbound);
+        if (!range.empty() && !upper.empty()) range += "~";
+        range += upper;
+        if (!ref.unit.empty()) range += " " + ref.unit;
+        setCell(list, row, 5, range);
+    }
+    const int last = static_cast<int>(st->comparisonItems.size() + 1);
+    addRow(last, L"检验单号");
+    for (size_t col = 0; col < result.reports.size(); ++col)
+        setCell(list, last, static_cast<int>(col + 1), result.reports[col].rep_no);
+    if (redraw) {
+        SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(list, nullptr, TRUE);
+    }
+    const std::wstring status = L"当前报告及此前已审核报告，共 " +
+        std::to_wstring(result.reports.size()) + L" 份";
+    SetWindowTextW(st->comparisonStatus, status.c_str());
+}
+
+// Data loading is kept separate from control updates and cache transitions.
+ComparisonLoad loadComparisonData(const search::ReportRow& current, const std::string& conn,
+                                  bool reuseCurrent, const std::vector<search::ResultRow>& currentRows,
+                                  app::WindowTaskContext task) {
+    ComparisonLoad result;
+    result.currentOk = reuseCurrent;
+    result.reports.push_back(current);
+    std::vector<search::ReportRow> history;
+    bool historyOk = false;
+    if (search::trim(current.reg_no).empty())
+        result.error = "当前报告缺少病人号，无法比较。";
+    else if (search::trim(current.inspect_date).empty())
+        result.error = "当前报告缺少检验日期，无法比较。";
+    else
+        historyOk = search::query_regular_comparison_history(conn, current, history, result.error);
+    if (task.cancelled()) return result;
+    if (historyOk) result.reports.insert(result.reports.end(), history.begin(), history.end());
+    std::vector<std::string> reportNos;
+    const size_t offset = reuseCurrent ? 1 : 0;
+    for (size_t col = offset; col < result.reports.size(); ++col)
+        reportNos.push_back(result.reports[col].rep_no);
+    std::vector<std::vector<search::ResultRow>> batches;
+    if (!reportNos.empty() &&
+        !search::query_results_batch(conn, reportNos, batches, result.currentError)) {
+        if (reuseCurrent) result.error = result.currentError;
+        return result;
+    }
+    if (task.cancelled()) return result;
+    std::array<std::vector<search::ResultRow>, regular_comparison::kReportCount> details;
+    if (reuseCurrent) details[0] = currentRows;
+    for (size_t col = 0; col < batches.size(); ++col)
+        details[col + offset] = std::move(batches[col]);
+    result.currentOk = true;
+    if (historyOk) {
+        result.items = regular_comparison::merge_items(details);
+        result.ok = true;
+    }
+    if (!reuseCurrent) result.currentRows = std::move(details[0]);
+    return result;
+}
+
+void loadComparison(RegularReportState* st) {
+    using Phase = regular_comparison::LoadPhase;
+    if (!st || TabCtrl_GetCurSel(st->rightTab) != 1) return;
+    const int index = currentReportIndex(st);
+    if (index < 0) return;
+    if (st->resultCache.select(reportCacheKey(st, index))) resetComparison(st);
+    // Ready includes a successfully loaded empty report. Failed comparisons also
+    // stay visible until a report refresh, rather than retrying on every tab click.
+    if (st->resultCache.comparison != Phase::Empty) return;
+    if (st->resultCache.current == Phase::Loading) {
+        SetWindowTextW(st->comparisonStatus, L"等待当前项目结果加载完成...");
+        return;
+    }
+    if (st->resultCache.current == Phase::Failed) {
+        st->resultCache.comparison = Phase::Failed;
+        SetWindowTextW(st->comparisonStatus, L"当前项目结果加载失败，请刷新后重试。");
+        return;
+    }
+    const bool reuseCurrent = st->resultCache.current == Phase::Ready;
+    const auto currentRows = reuseCurrent ? st->resultRows : std::vector<search::ResultRow>{};
+    const auto current = st->reportRows[static_cast<size_t>(index)];
+    const auto conn = st->reportConnectionString;
+    const HWND hwnd = st->hwnd;
+    if (!reuseCurrent) {
+        st->resultQueryTask.cancel();
+        ++st->resultQueryGeneration;
+        finishResultEdit(st, false);
+        st->resultRows.clear();
+        ListView_DeleteAllItems(st->resultList);
+        st->selectedReportIndex = index;
+        st->resultQueryLoading = true;
+        st->resultCache.current = Phase::Loading;
+        SetWindowTextW(st->status, L"正在查询项目及历史结果...");
+    }
+    st->resultCache.comparison = Phase::Loading;
+    SetWindowTextW(st->comparisonStatus, L"正在查询历史结果...");
+    const bool queued = st->comparisonTask.start<ComparisonLoad>(
+        [current, conn, reuseCurrent, currentRows](app::WindowTaskContext task) {
+            return loadComparisonData(current, conn, reuseCurrent, currentRows, task);
+        },
+        [hwnd, reuseCurrent](std::optional<ComparisonLoad> result, std::exception_ptr error) {
+            auto* state = reinterpret_cast<RegularReportState*>(
+                GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+            if (!state) return;
+            using Phase = regular_comparison::LoadPhase;
+            state->resultCache.comparison = Phase::Failed;
+            if (!reuseCurrent) state->resultQueryLoading = false;
+            if (error || !result || !result->currentOk) {
+                const auto text = result && !result->currentError.empty()
+                    ? L"项目及历史结果查询失败：" + search::utf8_to_wide(result->currentError)
+                    : std::wstring(L"历史结果后台任务异常");
+                if (!reuseCurrent) {
+                    state->resultCache.current = Phase::Failed;
+                    SetWindowTextW(state->status, text.c_str());
+                }
+                SetWindowTextW(state->comparisonStatus, text.c_str());
+                return;
+            }
+            // Existing middle results stay untouched on tab entry. When changing
+            // reports in comparison mode, publish both newly loaded lists together.
+            SendMessageW(state->comparisonList, WM_SETREDRAW, FALSE, 0);
+            if (!reuseCurrent) {
+                state->resultCache.current = Phase::Ready;
+                state->resultRows = std::move(result->currentRows);
+                presentResultRows(state, false);
+            }
+            if (result->ok) {
+                state->resultCache.comparison = Phase::Ready;
+                presentComparison(state, std::move(*result), false);
+            } else SetWindowTextW(state->comparisonStatus,
+                search::utf8_to_wide(result->error).c_str());
+            if (!reuseCurrent) {
+                SetWindowTextW(state->status,
+                    search::utf8_to_wide(search::make_query_count_status(state->reportRows.size())).c_str());
+                SendMessageW(state->resultList, WM_SETREDRAW, TRUE, 0);
+                if (TabCtrl_GetCurSel(state->middleTab) != 0) ShowWindow(state->resultList, SW_HIDE);
+            }
+            SendMessageW(state->comparisonList, WM_SETREDRAW, TRUE, 0);
+            if (TabCtrl_GetCurSel(state->rightTab) != 1) ShowWindow(state->comparisonList, SW_HIDE);
+            RedrawWindow(reuseCurrent ? state->rightPanel : state->hwnd, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_ALLCHILDREN);
+        });
+    if (!queued) {
+        st->resultCache.comparison = Phase::Failed;
+        if (!reuseCurrent) {
+            st->resultQueryLoading = false;
+            st->resultCache.current = Phase::Failed;
+            SetWindowTextW(st->status, L"无法启动项目及历史结果后台任务");
+        }
+        SetWindowTextW(st->comparisonStatus, L"无法启动历史结果后台任务");
+    }
+}
+
 void showRightInfoPage(RegularReportState* st) {
     if (!st || !st->rightTab) return;
     const bool show = TabCtrl_GetCurSel(st->rightTab) == 0;
     for (HWND c : st->rightInfoControls)
         if (IsWindow(c)) ShowWindow(c, show ? SW_SHOW : SW_HIDE);
     if (IsWindow(st->reportList)) ShowWindow(st->reportList, show ? SW_SHOW : SW_HIDE);
+    for (HWND c : {st->comparisonMode, st->comparisonTitle,
+                   st->comparisonList, st->comparisonStatus})
+        if (IsWindow(c)) ShowWindow(c, show ? SW_HIDE : SW_SHOW);
+    // Hiding a page does not invalidate its data or cancel useful in-flight work.
+    if (!show) loadComparison(st);
     InvalidateRect(st->rightPanel, nullptr, TRUE);
 }
 
@@ -815,6 +1037,31 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm->idFrom == REGULAR_IDC_RIGHT_TAB && nm->code == TCN_SELCHANGE) {
                 showRightInfoPage(st); return 0;
+            }
+            if (st && nm->idFrom == REGULAR_IDC_COMPARISON_LIST && nm->code == NM_CUSTOMDRAW) {
+                auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) return CDRF_NOTIFYSUBITEMDRAW;
+                if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                    const int row = static_cast<int>(cd->nmcd.dwItemSpec);
+                    cd->clrText = RGB(0, 0, 0);
+                    cd->clrTextBk = RGB(255, 255, 255);
+                    if (row == 0) {
+                        cd->clrTextBk = RGB(0, 120, 215);
+                        cd->clrText = RGB(255, 255, 255);
+                    } else if (cd->iSubItem == 0) {
+                        cd->clrTextBk = RGB(198, 192, 255);
+                    } else if (row > 0 && row <= static_cast<int>(st->comparisonItems.size()) &&
+                               cd->iSubItem >= 1 && cd->iSubItem <= 4) {
+                        const auto& cell = st->comparisonItems[static_cast<size_t>(row - 1)]
+                                               .results[static_cast<size_t>(cd->iSubItem - 1)];
+                        if (cell) {
+                            const COLORREF color = regularResultTextColor(*cell);
+                            if (color != CLR_INVALID) cd->clrText = color;
+                        }
+                    }
+                    return CDRF_NEWFONT;
+                }
             }
             if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == LVN_ITEMCHANGED) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
@@ -1018,6 +1265,17 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_GRAPH) {
                 regularOpenPicturePopupForSelection(st); return 0;
+            }
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TRACKING) {
+                const int index = currentReportIndex(st);
+                if (index < 0) {
+                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"追踪", MB_ICONINFORMATION);
+                } else {
+                    regularShowTrackingWindow(st->hwnd, st->ctx.uiFont, st->reportConnectionString,
+                        st->reportRows[static_cast<size_t>(index)],
+                        st->selectedRoomCode, st->selectedMachineCode);
+                }
+                return 0;
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TREND) {
                 const int index = currentReportIndex(st);
@@ -1380,6 +1638,25 @@ void createRightPanel(HWND parent, RegularReportState* st) {
     const wchar_t* tabs[] = {L"信息列表", L"结果比较"};
     insertTabs(st->rightTab, tabs, static_cast<int>(sizeof(tabs) / sizeof(tabs[0])));
 
+    st->comparisonMode = makeCombo(p, L"病人号", S(parent, REGULAR_PAD),
+        S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y), S(parent, 110), S(parent, 180));
+    st->comparisonTitle = makeStatic(p, L"历史结果对比", S(parent, 128),
+        S(parent, REGULAR_RIGHT_SEARCH_CONTROL_Y), S(parent, 440), S(parent, 28),
+        SS_CENTER | SS_CENTERIMAGE);
+    st->comparisonStatus = makeStatic(p, L"请在信息列表中选择报告。", 0, 0, 500, 24);
+    st->comparisonList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+        WS_CHILD | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        0, 0, 500, 400, p, win32_control_id(REGULAR_IDC_COMPARISON_LIST),
+        GetModuleHandleW(nullptr), nullptr);
+    ListView_SetExtendedListViewStyle(st->comparisonList,
+        LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT | LVS_EX_INFOTIP);
+    const ColumnDef comparisonCols[] = {
+        {0, L"项目名称", 130}, {1, L"结果", 100}, {2, L"结果", 100},
+        {3, L"结果", 100}, {4, L"结果", 100}, {5, L"参考", 130}};
+    addColumns(st->comparisonList, comparisonCols, 6, parent);
+    for (HWND c : {st->comparisonMode, st->comparisonTitle, st->comparisonStatus})
+        ShowWindow(c, SW_HIDE);
+
     st->rightSearchLabel = aI(makeStatic(p, L"按姓名查",
         S(parent, REGULAR_PAD), S(parent, REGULAR_RIGHT_SEARCH_LABEL_Y),
         S(parent, 70), S(parent, 24)));
@@ -1456,7 +1733,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
         {5418, L"医嘱"}, {5419, L"汇总(F6)"},
     };
     const ButtonDef row3[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {5421, L"追踪(Z)"}, {5422, L"计算(F8)"},
+        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {REGULAR_IDC_BOTTOM_TRACKING, L"追踪(Z)"}, {5422, L"计算(F8)"},
         {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
         {5426, L"日统计"}, {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
     };
@@ -1480,6 +1757,12 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
 // ============================================================================
 
 void createControls(HWND hwnd, RegularReportState* st) {
+    // Recreated controls cannot reuse the previous controls' ready state.
+    resetComparison(st);
+    st->resultCache.invalidate();
+    st->resultQueryTask.cancel();
+    ++st->resultQueryGeneration;
+    st->resultQueryLoading = false;
     st->leftPanel = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         0, 0, 0, 0, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -1592,6 +1875,17 @@ void layout(HWND hwnd, RegularReportState* st) {
     MoveWindow(st->rightSearchMenuButton, rightW - S(hwnd, REGULAR_PAD + 36), rscY,
                S(hwnd, 36), S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
 
+    MoveWindow(st->comparisonMode, riX, rscY, S(hwnd, 110), S(hwnd, 180), TRUE);
+    MoveWindow(st->comparisonTitle, riX + S(hwnd, 120), rscY,
+               std::max(S(hwnd, 100), riW - S(hwnd, 120)), S(hwnd, 28), TRUE);
+    MoveWindow(st->comparisonList, riX, rlY, riW,
+               std::max(S(hwnd, 80), topH - rlY - S(hwnd, 36)), TRUE);
+    MoveWindow(st->comparisonStatus, riX, topH - S(hwnd, 28), riW, S(hwnd, 24), TRUE);
+    const int comparisonColumnWidth = std::max(S(hwnd, 100),
+        (riW - S(hwnd, 260) - GetSystemMetrics(SM_CXVSCROLL) - 4) / 4);
+    for (int col = 1; col <= 4; ++col)
+        ListView_SetColumnWidth(st->comparisonList, col, comparisonColumnWidth);
+
     const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H);
     const int rdbG = S(hwnd, 8), rdbW = S(hwnd, REGULAR_RIGHT_DATE_BUTTON_W);
     const int arX = riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
@@ -1636,6 +1930,8 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         return;
     }
     if (!preserveState) {
+        resetComparison(st);
+        st->resultCache.invalidate();
         st->resultQueryTask.cancel();
         ++st->resultQueryGeneration;
         st->resultQueryLoading = false;
@@ -1964,7 +2260,7 @@ void insertResultRow(HWND list, int row, const search::ResultRow& d,
     setCell(list, row, 9, L"");
 }
 
-void presentResultRows(RegularReportState* st) {
+void presentResultRows(RegularReportState* st, bool redraw) {
     if (!st || !st->resultList) return;
     finishResultEdit(st, false);
     SendMessageW(st->resultList, WM_SETREDRAW, FALSE, 0);
@@ -1977,8 +2273,10 @@ void presentResultRows(RegularReportState* st) {
                         st->resultRows[i], same ? "" : st->resultRows[i].group_name);
         prevGroup = gn;
     }
-    SendMessageW(st->resultList, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(st->resultList, nullptr, TRUE);
+    if (redraw) {
+        SendMessageW(st->resultList, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(st->resultList, nullptr, TRUE);
+    }
 }
 
 // ============================================================================
@@ -2182,6 +2480,18 @@ int findReportIndexByRepNo(const RegularReportState* st, const std::string& repN
 // ============================================================================
 
 void querySelectedResults(RegularReportState* st, int sel) {
+    // Selection notifications can be repeated while a report load is pending.
+    if (st && sel >= 0 && sel < static_cast<int>(st->reportRows.size()) &&
+        st->resultQueryLoading && st->resultCache.key &&
+        *st->resultCache.key == reportCacheKey(st, sel)) return;
+    if (st && sel >= 0 && sel < static_cast<int>(st->reportRows.size()) &&
+        st->resultCache.key && *st->resultCache.key == reportCacheKey(st, sel) &&
+        st->resultCache.current == regular_comparison::LoadPhase::Ready) {
+        loadComparison(st);
+        return;
+    }
+    resetComparison(st);
+    if (st) st->resultCache.invalidate();
     if (st && (sel < 0 || sel >= static_cast<int>(st->reportRows.size()) ||
                search::trim(st->reportRows[static_cast<size_t>(sel)].rep_no) !=
                    st->highlightReportRepNo)) {
@@ -2204,17 +2514,23 @@ void querySelectedResults(RegularReportState* st, int sel) {
         }
         return;
     }
+    st->resultCache.select(reportCacheKey(st, sel));
     populateLeftPanelFromReport(st, sel);
     st->pictureQueryLoading = false; st->pictureRepNo.clear();
     st->pictureQueryTask.cancel();
     ++st->pictureQueryGeneration;
     regularClearPictureView(st, L"");
     regularQuerySelectedPicture(st, sel);
-    if (st->resultQueryLoading && st->selectedReportIndex == sel) return;
+    if (TabCtrl_GetCurSel(st->rightTab) == 1) {
+        st->selectedReportIndex = sel;
+        loadComparison(st);
+        return;
+    }
     finishResultEdit(st, false);
     ListView_DeleteAllItems(st->resultList);
     st->resultRows.clear(); st->selectedReportIndex = sel;
     st->resultQueryLoading = true;
+    st->resultCache.current = regular_comparison::LoadPhase::Loading;
     SetWindowTextW(st->status, L"正在查询项目明细...");
     const int gen = ++st->resultQueryGeneration;
     const HWND hwnd = st->hwnd;
@@ -2233,6 +2549,8 @@ void querySelectedResults(RegularReportState* st, int sel) {
             if (!state) return;
             if (error || !result) {
                 state->resultQueryLoading = false;
+                state->resultCache.current = regular_comparison::LoadPhase::Failed;
+                if (TabCtrl_GetCurSel(state->rightTab) == 1) loadComparison(state);
                 SetWindowTextW(state->status, L"项目明细后台任务异常");
                 LOG_ERROR("Regular report result task failed");
                 return;
@@ -2242,6 +2560,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
         });
     if (!queued) {
         st->resultQueryLoading = false;
+        st->resultCache.current = regular_comparison::LoadPhase::Failed;
         SetWindowTextW(st->status, L"无法启动项目明细后台任务");
     }
 }
@@ -2259,6 +2578,13 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
+    // A successful list refresh is an explicit boundary for result freshness,
+    // even when the selected report and its displayed metadata did not change.
+    resetComparison(st);
+    st->resultCache.invalidate();
+    st->resultQueryTask.cancel();
+    ++st->resultQueryGeneration;
+    st->resultQueryLoading = false;
     const bool ps = result->preserveState;
     const std::vector<search::ReportRow> prev = st->reportRows;
     std::string selId;
@@ -2339,13 +2665,17 @@ void finishResultQuery(RegularReportState* st, HWND hwnd,
     if (!st || !result || result->generation != st->resultQueryGeneration) return;
     st->resultQueryLoading = false;
     if (!result->ok) {
+        st->resultCache.current = regular_comparison::LoadPhase::Failed;
+        if (TabCtrl_GetCurSel(st->rightTab) == 1) loadComparison(st);
         MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(),
                     L"查询项目明细失败", MB_ICONERROR);
         return;
     }
     finishResultEdit(st, false);
     st->resultRows = std::move(result->rows);
+    st->resultCache.current = regular_comparison::LoadPhase::Ready;
     presentResultRows(st);
+    loadComparison(st);
     SetWindowTextW(st->status,
         search::utf8_to_wide(search::make_query_count_status(st->reportRows.size())).c_str());
 }
@@ -3309,6 +3639,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->resultQueryTask.cancel();
                 st->pictureQueryTask.cancel();
                 st->barcodePrintTask.cancel();
+                st->comparisonTask.cancel();
                 if (st->initialQuickMachineTimerActive) {
                     KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
                     st->initialQuickMachineTimerActive = false;

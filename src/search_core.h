@@ -934,6 +934,15 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_string, const std::string& reg_no, std::vector<std::string>& inpatient_nos, std::string& error, LogFn log = {});
+// Previous three reviewed reports, ordered by CHK_DATE and REP_NO descending.
+bool query_regular_comparison_history(const std::string& connection_string,
+                                     const ReportRow& current,
+                                     std::vector<ReportRow>& rows, std::string& error);
+// One connection and statement for all requested reports; buckets follow rep_nos order.
+bool query_results_batch(const std::string& connection_string,
+                         const std::vector<std::string>& rep_nos,
+                         std::vector<std::vector<ResultRow>>& rows,
+                         std::string& error, LogFn log = {});
 bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log = {});
