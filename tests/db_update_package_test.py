@@ -114,6 +114,8 @@ class PackageTests(unittest.TestCase):
         self.assertFalse((result / "01-upload.sql").exists())
         sql = (result / "02-publish.sql").read_text(encoding="utf-8-sig")
         self.assertNotIn("__", sql)
+        self.assertNotIn("TRY_CONVERT(", sql)
+        self.assertIn("TRY_CAST(", sql)
         self.assertIn(str(self.manifest["package"]["size"]), sql)
         self.assertLess((result / "02-publish.sql").stat().st_size, 16384)
         info = json.loads((result / "release-info.json").read_text(encoding="utf-8"))
@@ -148,6 +150,14 @@ class DatabaseBoundaryTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertEqual(set(re.findall(r"dbo\.\w+", text)), {"dbo.LS_AS_LISWORK"})
                 self.assertFalse(re.search(r"\b(?:CREATE TABLE|ALTER DATABASE|DROP TABLE|TRUNCATE TABLE|DBCC|KILL|GRANT|REVOKE|BACKUP DATABASE|RESTORE DATABASE)\b", text, re.I))
+
+    def test_publication_supports_older_database_compatibility(self):
+        # Guard the SQL 195 regression in BOTH template and generated upload materials.
+        # These checks are offline; actual SQL execution is reserved for the isolated test DB.
+        text = (ROOT / 'scripts/db_update/02-publish.sql').read_text(encoding='utf-8')
+        self.assertNotRegex(text, r'(?i)\bTRY_CONVERT\s*\(')
+        self.assertIn("TRY_CAST(REPLACE(SUBSTRING(Version,2,10),'.','') AS date)", text)
+        self.assertNotRegex(text, r'(?i)\bSET\s+(?:LANGUAGE|DATEFORMAT)\b')
 
     def test_runtime_cpp_is_read_only(self):
         import re

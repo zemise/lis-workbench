@@ -18,6 +18,15 @@ function Test-PublishConfirmation([string]$Answer) {
     return -not [string]::IsNullOrWhiteSpace($Answer) -and
         $Answer.Trim().Equals('YES', [StringComparison]::OrdinalIgnoreCase)
 }
+function Get-DatabaseFailureMessage([string]$Phase, [int]$Number) {
+    if ($Number -eq 195) {
+        $retry = if ($Phase -eq 'publication') {
+            'Publication did not complete; keep the staged package and retry using regenerated materials with the same version and hash.'
+        } else { 'Retry using the updated upload materials.' }
+        return "Database operation failed during $Phase (SQL error 195): a SQL function is unavailable at the server/database compatibility level. Regenerate and copy the WHOLE upload directory. Do not change database compatibility or schema. $retry No automatic repair."
+    }
+    return "Database operation failed during $Phase (SQL error $Number); check update-table permissions and state. No automatic repair."
+}
 function Get-UploadFailureMessage([Exception]$Failure, [string]$Phase, [bool]$TrustCertificate) {
     # PowerShell wraps .NET method errors. Inspect the chain without printing provider text.
     $sqlFailure = $null
@@ -34,7 +43,7 @@ function Get-UploadFailureMessage([Exception]$Failure, [string]$Phase, [bool]$Tr
         return "Connection/login failed$code. No SQL was executed. $hint"
     }
     if ($null -ne $sqlFailure) {
-        return "Database operation failed during $Phase (SQL error $($sqlFailure.Number)); check update-table permissions and state. No automatic repair."
+        return Get-DatabaseFailureMessage $Phase $sqlFailure.Number
     }
     return "Failed during ${Phase}: $($Failure.Message)"
 }

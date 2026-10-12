@@ -31,14 +31,15 @@ BEGIN TRY
     IF @State<>'staged' THROW 51004, 'Retired packages cannot be republished by this tool.', 1;
     SELECT @Current=Version FROM dbo.LS_AS_LISWORK WITH (UPDLOCK, HOLDLOCK)
         WHERE AppId='lis-workbench' AND Channel='stable' AND IsCurrent=1;
-    -- SQL Server 2012-compatible validation and numeric comparison. No schema changes.
+    -- SQL Server 2012+ engine, including databases at older compatibility levels.
+    -- Unseparated YYYYMMDD avoids session language/DATEFORMAT ambiguity. No schema changes.
     DECLARE @Versions TABLE (RoleName varchar(8), Version varchar(64), DateKey int, Revision int);
     INSERT INTO @Versions (RoleName, Version) VALUES ('target', @Version);
     IF @Current IS NOT NULL INSERT INTO @Versions (RoleName, Version) VALUES ('current', @Current);
     IF EXISTS (SELECT 1 FROM @Versions WHERE
         DATALENGTH(Version) NOT BETWEEN 11 AND 21 OR
         LEFT(Version,11) COLLATE Latin1_General_BIN2 NOT LIKE 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]' OR
-        TRY_CONVERT(date, REPLACE(SUBSTRING(Version,2,10),'.','-'),23) IS NULL OR
+        TRY_CAST(REPLACE(SUBSTRING(Version,2,10),'.','') AS date) IS NULL OR
         (DATALENGTH(Version)>11 AND
             (SUBSTRING(Version,12,1)<>'.' OR DATALENGTH(Version)<13 OR
              SUBSTRING(Version,13,1) COLLATE Latin1_General_BIN2 NOT LIKE '[1-9]' OR

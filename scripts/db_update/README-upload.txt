@@ -51,3 +51,10 @@ The exact legacy tags v2026.10.13, v2026.10.14, v2026.10.15 compare as
 v2026.10.12.1, .2, .3; package identities and stored data are not rewritten.
 Always regenerate and copy the whole upload directory with the new tool.
 No database schema migration is needed; the existing update table is reused.
+
+If SQL error 195 occurs during publication, the package may already be staged
+and verified. Keep it; do not change database compatibility or recreate the table.
+Use the updated generator to regenerate the WHOLE directory for the same Release,
+then retry upload.cmd. Matching version/hash reuses the staged record.
+The publisher supports SQL Server 2012+ with older database compatibility levels.
+It validates dates using TRY_CAST on unseparated YYYYMMDD.
