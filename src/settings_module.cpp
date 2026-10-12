@@ -635,9 +635,13 @@ void updateSourceFieldVisibility(HWND hwnd) {
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER_LABEL), update_page && is_folder ? SW_SHOW : SW_HIDE);
     ShowWindow(GetDlgItem(hwnd, IDC_SET_UPDATE_FOLDER), update_page && is_folder ? SW_SHOW : SW_HIDE);
     if (st && st->updateAutoCheck) EnableWindow(st->updateAutoCheck, source != lis_update::kSourceLis);
-    SetWindowTextW(GetDlgItem(hwnd, IDC_TEXT_UPDATE_HINT), source == lis_update::kSourceLis
-        ? L"LIS 使用现有数据库连接；通过系统菜单手动检查更新。"
-        : L"设置共享目录或 HTTP manifest，并控制启动后自动检查。");
+    if (HWND hint = GetDlgItem(hwnd, IDC_TEXT_UPDATE_HINT)) {
+        SetWindowTextW(hint, source == lis_update::kSourceLis
+            ? L"LIS 使用现有数据库连接；通过系统菜单手动检查更新。"
+            : L"设置共享目录或 HTTP manifest，并控制启动后自动检查。");
+        // Erase the complete old text area when the source changes.
+        InvalidateRect(hint, nullptr, TRUE);
+    }
 }
 
 SettingsUpdateConfig collectUpdateConfig(HWND hwnd) {
@@ -1208,6 +1212,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lp));
+            if (id == IDC_TEXT_UPDATE_HINT) {
+                // This label changes in place; a hollow brush leaves the previous
+                // source's glyphs underneath the new text. Match the white card.
+                SetBkMode(dc, OPAQUE);
+                SetBkColor(dc, COLOR_CARD_BG);
+                SetTextColor(dc, COLOR_MUTED_TEXT);
+                return reinterpret_cast<LRESULT>(st && st->editBrush ? st->editBrush : GetStockObject(WHITE_BRUSH));
+            }
             if (isReadOnlyEditId(id)) {
                 SetBkMode(dc, OPAQUE);
                 SetBkColor(dc, RGB(0xFF, 0xFF, 0xFF));
