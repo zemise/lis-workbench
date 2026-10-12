@@ -1,17 +1,18 @@
 LIS Workbench offline upload (Windows 10/11, Windows PowerShell 5.1)
 
 Copy this whole directory to the LAN computer. Double-click upload.cmd, or run:
-  upload.cmd -Server SERVER -Database LIS_DATABASE -User ADMIN_USER
+  upload.cmd -Server SERVER -Database LIS_DATABASE -User ADMIN_USER -TrustServerCertificate
 
 The database table dbo.LS_AS_LISWORK must already have been created manually.
 No DDL, permission changes, business-table access, or database maintenance is performed.
 The SQL Server account needs SELECT/INSERT/UPDATE/DELETE on this table only.
 The password is prompted securely and is never saved in these materials.
-The connection requires encryption and certificate validation. For an explicitly
-approved self-signed server, pass -TrustServerCertificate. No silent TLS fallback.
-For example, after independently verifying the LAN/test server:
-  upload.cmd -Server SERVER -Database LIS_DATABASE -User ADMIN_USER -TrustServerCertificate
-This flag applies to this connection only; encryption remains enabled.
+The connection always requires encryption. For LAN deployments it now trusts
+server certificates by default, including when double-clicking upload.cmd.
+-TrustServerCertificate remains supported but is optional; no encryption fallback.
+To require certificate chain and hostname validation instead, run:
+  upload.cmd -Server SERVER -Database LIS_DATABASE -User ADMIN_USER -ValidateServerCertificate
+Certificate trust changes apply to this connection only; no server/system change.
 Connection/login failure occurs before any SQL and gives a retry hint.
 Do not change the system-wide PowerShell execution policy to run this tool.
 
@@ -33,10 +34,11 @@ After updating the generator, move an existing version output directory aside,
 then generate again and copy the WHOLE new directory. Replacing upload.ps1 alone
 will fail the release-info.json checksum check.
 
-The client uses encrypted connections with certificate validation. If the LAN
-server has an explicitly approved self-signed certificate, the client can be
-configured locally in ClientConfig.ini under [Update]: TrustServerCertificate=1.
-This is an explicit opt-in; neither tool silently downgrades encryption.
+The client also defaults to Encrypt=Yes and TrustServerCertificate=Yes for LIS
+updates. To override locally in ClientConfig.ini under [Update]:
+  TrustServerCertificate=1  (LAN default; also enables older clients to connect)
+  TrustServerCertificate=0  (require certificate chain and hostname validation)
+Existing explicit settings are preserved. Trust does not validate server identity.
 Old clients must first use the complete installer to obtain the capable Updater.exe.
 The database version must be newer than the installed client to test an actual update;
 equal or older database versions produce no installation prompt.

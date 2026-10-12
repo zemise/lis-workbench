@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前源码版本：`v2026.10.13`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本：`v2026.10.14`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 2026-09-15 的阶段性交接记录见 [持续优化路线图](PROJECT_OPTIMIZATION_ROADMAP.md#2026-09-15-暂停与恢复交接)；其中的版本与发布状态属于当时的历史记录。当前版本发布内容以 [CHANGELOG.md](CHANGELOG.md) 和 GitHub 同名 Release 为准。
 
@@ -94,6 +94,7 @@
 - `常规报告` 底部“追踪”已支持所选患者按病人号跨仪器查看历史报告。默认以系统今天为结束日，按检验日期查询包含今天的最近30个自然日；“当前仪器”和“已审核”默认不勾选，勾选后分别限定原页面仪器、`CHK_FLAG='T'`。左侧确认时间显示 `REP_TIME`，右侧显示报告信息与项目结果，样本号为 `OPER_NO`、检验单号为 `REP_NO`，人员标签使用“检验者”“审核者”。查询在后台一次加载日期范围内全部报告并批量缓存明细，勾选筛选条件和切换报告均直接使用本地缓存；更改天数或刷新时重新读取。弹窗布局收窄，姓名、年龄、性别以蓝色显示，临床科室以红色显示，天数支持手动输入与上下按钮调整；详见 [常规报告追踪](QUERY_DESIGN.md#底部追踪)。
 - 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
 - 系统设置支持 LIS、共享文件夹和 HTTP 更新源。未配置或无效来源默认使用 LIS，已保存的有效共享目录／HTTP 选择保留；LIS 复用现有数据库连接配置，通过 `系统 -> 检查更新` 手动检查，确认下载并校验大小／SHA-256 后，再确认安装和重启。不同来源只显示对应设置项。
+- LIS 更新与离线上传工具默认加密并信任局域网服务器证书；客户端可在 `[Update]` 设置 `TrustServerCertificate=0` 强制验证，上传可用 `-ValidateServerCertificate`。旧版本遇到证书连接失败时设置 `TrustServerCertificate=1` 后重新检查。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
 - 共享目录／HTTP 来源支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。LIS 来源禁用自动检查，仅由用户手动触发。设置页中的复选框保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
 - `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。

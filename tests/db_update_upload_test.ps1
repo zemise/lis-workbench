@@ -10,10 +10,16 @@ $function=$ast.Find({param($node) $node -is [System.Management.Automation.Langua
 if ($null -eq $function) { throw 'Index validator missing.' }
 Invoke-Expression $function.Extent.Text
 
-foreach ($name in @('Test-PublishConfirmation','Get-UploadFailureMessage')) {
+foreach ($name in @('Test-PublishConfirmation','Get-UploadFailureMessage','Resolve-CertificateTrust')) {
     $helper=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
     if ($null -eq $helper) { throw "Missing helper: $name" }
     Invoke-Expression $helper.Extent.Text
+}
+$parameter=$ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TrustServerCertificate' }
+if ($null -eq $parameter -or $parameter.DefaultValue.Extent.Text -cne '$true') { throw 'Uploader must default to trusted LAN certificates.' }
+if (-not (Resolve-CertificateTrust $true $false) -or
+    (Resolve-CertificateTrust $true $true) -or (Resolve-CertificateTrust $false $false)) {
+    throw 'Certificate validation opt-out is inconsistent.'
 }
 foreach ($answer in @('YES','yes','Yes','  yEs  ',"`tYES`r`n")) {
     if (-not (Test-PublishConfirmation $answer)) { throw 'Explicit confirmation rejected.' }

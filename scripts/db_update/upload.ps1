@@ -1,12 +1,18 @@
 #Requires -Version 5.1
 param([string]$Server, [string]$Database, [string]$User,
-      [switch]$TrustServerCertificate)
+      [switch]$TrustServerCertificate = $true,
+      [switch]$ValidateServerCertificate)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Data
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $connection = $null
 $stage = 'local_validation'
+
+function Resolve-CertificateTrust([bool]$TrustCertificate, [bool]$ValidateCertificate) {
+    return $TrustCertificate -and -not $ValidateCertificate
+}
+$TrustServerCertificate = Resolve-CertificateTrust ([bool]$TrustServerCertificate) ([bool]$ValidateServerCertificate)
 
 function Test-PublishConfirmation([string]$Answer) {
     return -not [string]::IsNullOrWhiteSpace($Answer) -and

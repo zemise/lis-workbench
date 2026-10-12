@@ -1,6 +1,10 @@
 #pragma once
 #include <string>
 
+namespace lis_update {
+inline constexpr bool kDefaultTrustServerCertificate = true;
+}
+
 #ifdef _WIN32
 
 namespace lis_update {

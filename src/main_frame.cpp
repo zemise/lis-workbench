@@ -124,7 +124,7 @@ struct UpdateSourceConfig {
   std::wstring manifestUrl;
   std::wstring folderPath;
   search::DbSettings db;
-  bool trustServerCertificate = false;
+  bool trustServerCertificate = lis_update::kDefaultTrustServerCertificate;
 };
 
 void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone &done);
@@ -404,7 +404,8 @@ UpdateSourceConfig loadUpdateSourceConfig() {
       lis_update::kConfigSection, L"SourceType", lis_update::kSourceLis);
   cfg.sourceType = lis_update::normalize_source_type(cfg.sourceType);
   cfg.db = search::load_settings(search::default_ini_path()).db;
-  cfg.trustServerCertificate = search::load_module_int(lis_update::kConfigSection, L"TrustServerCertificate", 0) != 0;
+  cfg.trustServerCertificate = search::load_module_int(lis_update::kConfigSection,
+      L"TrustServerCertificate", lis_update::kDefaultTrustServerCertificate ? 1 : 0) != 0;
 
   cfg.manifestUrl =
       search::load_module_str(lis_update::kConfigSection, L"ManifestUrl",

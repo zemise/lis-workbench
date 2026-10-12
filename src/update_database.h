@@ -1,13 +1,18 @@
 #pragma once
 #include "app_settings.h"
 #include "update_source.h"
+#include "update_config.h"
 #include <functional>
 
 namespace lis_update {
+// Provider text is used for classification only; it is never included in the result.
+std::string describe_database_connection_failure(const std::string& driver,
+    const std::string& state, int native_error, const std::string& provider_text,
+    bool trust_server_certificate);
 class DatabaseUpdateSource final : public IUpdateSource {
 public:
     explicit DatabaseUpdateSource(search::DbSettings settings,
-                                  bool trust_server_certificate = false,
+                                  bool trust_server_certificate = kDefaultTrustServerCertificate,
                                   std::function<bool()> cancelled = {});
     bool fetch_manifest(UpdateManifest& manifest, std::string& error) override;
     bool fetch_package(const UpdateManifest& manifest, const std::wstring& target_path,

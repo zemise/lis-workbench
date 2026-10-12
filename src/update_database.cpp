@@ -1,6 +1,40 @@
 #include "update_database.h"
 #include "update_package.h"
 #include <utility>
+#include <algorithm>
+#include <cctype>
+
+namespace lis_update {
+std::string describe_database_connection_failure(const std::string& driver,
+    const std::string& state, int native, const std::string& provider_text, bool trust) {
+    std::string text=provider_text;
+    std::transform(text.begin(),text.end(),text.begin(),[](unsigned char c){return char(std::tolower(c));});
+    const auto has=[&](const char* token){return text.find(token)!=std::string::npos;};
+    std::string cause;
+    if(state=="IM002" || state=="IM003") {
+        cause="未找到可用的 SQL Server ODBC 驱动，请安装对应位数的 ODBC Driver 17 或 18。";
+    } else if(native==4060 || native==911) {
+        cause="目标 LIS 数据库不存在或账号无权访问，请检查数据库名称及权限。";
+    } else if(state=="28000" || native==18456 || native==18452) {
+        cause="SQL 登录失败，请检查系统设置中的数据库账号和密码。";
+    } else if(state=="HYT00" || state=="HYT01") {
+        cause="连接超时，请检查服务器地址、端口和局域网连通性。";
+    } else if(has("certificate") || has("证书") || native==-2146893019 || native==-2146893022) {
+        cause=trust ? "证书或 TLS 协商失败；已启用服务器证书信任，请检查驱动、服务器和系统 TLS 兼容性。"
+                    : "服务器证书验证失败；请配置可信证书，或在 ClientConfig.ini 的 [Update] 中设置 TrustServerCertificate=1 后重新检查更新。";
+    } else if(has("ssl") || has("tls")) {
+        cause="TLS 加密连接失败，请检查 SQL Server ODBC 驱动及系统 TLS 兼容性。";
+    } else {
+        cause="LIS 更新连接失败，请检查服务器地址、数据库配置及连接驱动。";
+    }
+    const bool valid_state=state.size()==5 && std::all_of(state.begin(),state.end(),[](unsigned char c){
+        return (c>='A'&&c<='Z') || (c>='0'&&c<='9');
+    });
+    return cause+" [driver="+driver+", SQLSTATE="+(valid_state?state:"UNKNOWN")+
+        ", native="+std::to_string(native)+", Encrypt=Yes, TrustServerCertificate="+(trust?"Yes":"No")+"]";
+}
+}
+
 #ifdef _WIN32
 #include <windows.h>
 #include <sqlext.h>
@@ -24,6 +58,13 @@ std::string utf8(const std::wstring& s) {
     WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),len,nullptr,nullptr);
     return out;
 }
+std::string odbc_connection_error(SQLSMALLINT type, SQLHANDLE handle, const wchar_t* driver, bool trust) {
+    SQLWCHAR state[6]={}, message[2048]={}; SQLINTEGER native=0; SQLSMALLINT length=0;
+    const SQLRETURN rc=SQLGetDiagRecW(type,handle,1,state,&native,message,2048,&length);
+    return lis_update::describe_database_connection_failure(utf8(driver),
+        SQL_SUCCEEDED(rc)?utf8(std::wstring((wchar_t*)state)):std::string(),native,
+        SQL_SUCCEEDED(rc)?utf8(std::wstring((wchar_t*)message)):std::string(),trust);
+}
 struct Connection {
     SQLHENV env=SQL_NULL_HENV; SQLHDBC db=SQL_NULL_HDBC; SQLHSTMT stmt=SQL_NULL_HSTMT;
     ~Connection() {
@@ -32,29 +73,43 @@ struct Connection {
         if(env!=SQL_NULL_HENV) SQLFreeHandle(SQL_HANDLE_ENV,env);
     }
     bool open(const search::DbSettings& cfg, bool trust, unsigned timeout, std::string& error) {
-        error="LIS update connection failed; check database settings, driver and certificate";
+        error="无法初始化 LIS 更新 ODBC 环境，请检查对应位数的 SQL Server 驱动。";
         if(cfg.server.empty() || cfg.initial_database.empty() || cfg.user.empty()) {
             error="configure the LIS database connection before checking updates"; return false;
         }
         if(!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_ENV,SQL_NULL_HANDLE,&env)) ||
            !SQL_SUCCEEDED(SQLSetEnvAttr(env,SQL_ATTR_ODBC_VERSION,(SQLPOINTER)SQL_OV_ODBC3,0)) ||
            !SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_DBC,env,&db))) return false;
-        SQLSetConnectAttr(db,SQL_LOGIN_TIMEOUT,(SQLPOINTER)5,0);
+        if(!SQL_SUCCEEDED(SQLSetConnectAttr(db,SQL_LOGIN_TIMEOUT,(SQLPOINTER)5,0))) {
+            error="设置连接超时失败："+odbc_connection_error(SQL_HANDLE_DBC,db,L"ODBC manager",trust);
+            return false;
+        }
         // Same catalog and credentials, dedicated read-only connection; never executes DDL/DML.
-        if (!SQL_SUCCEEDED(SQLSetConnectAttr(db,SQL_ATTR_ACCESS_MODE,(SQLPOINTER)SQL_MODE_READ_ONLY,0))) return false;
+        if (!SQL_SUCCEEDED(SQLSetConnectAttr(db,SQL_ATTR_ACCESS_MODE,(SQLPOINTER)SQL_MODE_READ_ONLY,0))) {
+            error="设置只读连接失败："+odbc_connection_error(SQL_HANDLE_DBC,db,L"ODBC manager",trust);
+            return false;
+        }
         for (const wchar_t* driver:{L"ODBC Driver 18 for SQL Server",L"ODBC Driver 17 for SQL Server",L"SQL Server"}) {
             std::wstring cs=L"DRIVER="+quoted(driver)+L";SERVER="+quoted(cfg.server)+L";DATABASE="+quoted(cfg.initial_database)+
                 L";UID="+quoted(cfg.user)+L";PWD="+quoted(cfg.password)+L";Encrypt=Yes;TrustServerCertificate="+(trust?L"Yes;":L"No;");
             SQLRETURN rc=SQLDriverConnectW(db,nullptr,(SQLWCHAR*)cs.data(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
             if(SQL_SUCCEEDED(rc)) {
-                if(!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT,db,&stmt)) ||
-                   !SQL_SUCCEEDED(SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)(uintptr_t)timeout,0))) return false;
+                if(!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT,db,&stmt))) {
+                    error="创建更新查询失败："+odbc_connection_error(SQL_HANDLE_DBC,db,driver,trust);
+                    return false;
+                }
+                if(!SQL_SUCCEEDED(SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)(uintptr_t)timeout,0))) {
+                    error="设置查询超时失败："+odbc_connection_error(SQL_HANDLE_STMT,stmt,driver,trust);
+                    return false;
+                }
                 error.clear(); return true;
             }
             // Only missing-driver errors permit trying another driver, never TLS/auth fallback.
+            error=odbc_connection_error(SQL_HANDLE_DBC,db,driver,trust);
             SQLWCHAR state[6]={}; SQLINTEGER native=0;
-            SQLGetDiagRecW(SQL_HANDLE_DBC,db,1,state,&native,nullptr,0,nullptr);
-            if(std::wstring((wchar_t*)state)!=L"IM002" && std::wstring((wchar_t*)state)!=L"IM003") return false;
+            const SQLRETURN diagnostic=SQLGetDiagRecW(SQL_HANDLE_DBC,db,1,state,&native,nullptr,0,nullptr);
+            const auto sqlstate=SQL_SUCCEEDED(diagnostic)?utf8(std::wstring((wchar_t*)state)):std::string();
+            if(sqlstate!="IM002" && sqlstate!="IM003") return false;
         }
         return false;
     }
