@@ -8,8 +8,15 @@ Thumbs.db
 /ClientConfig.ini
 /result_search.ini
 
+# 本地设计资料：统一存放于 docs/private，不进入版本管理或发布包。
+/docs/private/
+# 防止后续设计资料再次散落根目录并误提交。
+/*_DESIGN.md
+/*_PLAN.md
 /SPECIMEN_SIGN_MODULE.md
-/SPECIMEN_SIGN_CENTER_DESIGN.md
+/PROJECT_STRUCTURE.md
+/PROJECT_OPTIMIZATION_ROADMAP.md
+/QT_MIGRATION_GUIDE.md
 
 *.user
 *.log
