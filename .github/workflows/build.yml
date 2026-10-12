@@ -79,6 +79,7 @@ jobs:
           cmake --build build\main-app `
             --config Release `
             --target `
+              update_package_tests `
               microbiology_quick_machine_tests `
               microbiology_label_tests `
               regular_report_barcode_range_tests `

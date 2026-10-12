@@ -74,11 +74,13 @@ endif()
 add_library(update_core STATIC
     src/update_manifest.cpp
     src/update_source.cpp
+    src/update_database.cpp
+    src/update_package.cpp
 )
 target_include_directories(update_core PUBLIC src)
 target_compile_definitions(update_core PUBLIC UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
 if(WIN32)
-    target_link_libraries(update_core PUBLIC advapi32 urlmon)
+    target_link_libraries(update_core PUBLIC advapi32 urlmon odbc32)
 endif()
 
 # ── Shared UI library ──────────────────────────────────────────
@@ -242,6 +244,23 @@ if(MINGW)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(update_package_tests tests/update_package_test.cpp)
+    target_link_libraries(update_package_tests PRIVATE update_core)
+    find_program(DB_UPDATE_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+    if(DB_UPDATE_POWERSHELL_EXECUTABLE)
+        add_test(NAME db_update_upload_offline_tests
+            COMMAND ${DB_UPDATE_POWERSHELL_EXECUTABLE} -NoProfile -NonInteractive -File
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/db_update_upload_test.ps1)
+    endif()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        add_test(NAME db_update_package_tests
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/db_update_package_test.py)
+        if(NOT CMAKE_CROSSCOMPILING)
+            add_test(NAME update_package_tests
+                COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/update_package_test.py $<TARGET_FILE:update_package_tests>)
+        endif()
+    endif()
     add_executable(regular_report_comparison_tests
         tests/regular_report_comparison_test.cpp
         src/regular_report_comparison.cpp

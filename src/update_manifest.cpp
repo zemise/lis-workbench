@@ -156,12 +156,30 @@ bool is_supported_manifest(const UpdateManifest& manifest, std::string& error) {
         error = "manifest appId is not lis-workbench";
         return false;
     }
-    if (manifest.version.empty()) {
-        error = "manifest version is empty";
+    bool valid_version = manifest.version.size() == 11;
+    for (size_t i=0; valid_version && i<manifest.version.size(); ++i) {
+        const char c=manifest.version[i];
+        valid_version = i==0 ? c=='v' : i==5 || i==8 ? c=='.' : c>='0' && c<='9';
+    }
+    if (!valid_version) {
+        error = "manifest version must have form vYYYY.MM.DD";
         return false;
     }
     if (manifest.package.file.empty()) {
         error = "manifest package.file is empty";
+        return false;
+    }
+    if (manifest.channel != "stable") {
+        error = "unsupported update channel";
+        return false;
+    }
+    if (manifest.min_updater_version != kUpdaterProtocolVersion ||
+        compare_version_strings(manifest.min_updater_version, kUpdaterProtocolVersion) > 0) {
+        error = "updater protocol is too old; upgrade using the installer";
+        return false;
+    }
+    if (manifest.package.size == 0 || manifest.package.size > kMaxUpdatePackageSize) {
+        error = "invalid update package size (maximum 100 MiB)";
         return false;
     }
     if (manifest.package.sha256.size() != 64) {

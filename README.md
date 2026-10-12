@@ -2,7 +2,7 @@
 
 `lis-workbench`（LIS 工作台）是面向 LIS 检验结果、输血申请和相关检验摘要查询的 Windows 工作台。
 
-当前源码版本：`v2026.10.11`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本：`v2026.10.12`，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 2026-09-15 的阶段性交接记录见 [持续优化路线图](PROJECT_OPTIMIZATION_ROADMAP.md#2026-09-15-暂停与恢复交接)；其中的版本与发布状态属于当时的历史记录。当前版本发布内容以 [CHANGELOG.md](CHANGELOG.md) 和 GitHub 同名 Release 为准。
 
@@ -93,9 +93,9 @@
 - `常规报告` 右侧“结果比较”已支持当前报告＋此前最近 3 份已审核报告，按病人号和同科室仪器匹配，展示日期、检验单号、异常标记及参考范围；历史独有项目追加显示，缺项留空。页签切换复用已加载结果及在途任务，比较页跳转以一次批量明细查询同步更新两侧。具体口径及缓存策略见 [常规报告结果比较](QUERY_DESIGN.md#右侧结果比较)。
 - `常规报告` 底部“追踪”已支持所选患者按病人号跨仪器查看历史报告。默认以系统今天为结束日，按检验日期查询包含今天的最近30个自然日；“当前仪器”和“已审核”默认不勾选，勾选后分别限定原页面仪器、`CHK_FLAG='T'`。左侧确认时间显示 `REP_TIME`，右侧显示报告信息与项目结果，样本号为 `OPER_NO`、检验单号为 `REP_NO`，人员标签使用“检验者”“审核者”。查询在后台一次加载日期范围内全部报告并批量缓存明细，勾选筛选条件和切换报告均直接使用本地缓存；更改天数或刷新时重新读取。弹窗布局收窄，姓名、年龄、性别以蓝色显示，临床科室以红色显示，天数支持手动输入与上下按钮调整；详见 [常规报告追踪](QUERY_DESIGN.md#底部追踪)。
 - 直接打开 `常规报告` 页面时，如果已配置快捷检验仪器 `1`，页面会自动应用该仪器并按当天检验日期加载右侧报告列表；从 `检验结果查询` 双击跳转目标报告时会跳过该默认加载。
-- 系统设置支持配置自动更新源，默认选择共享文件夹，并根据更新源只显示共享目录或 HTTP 地址其中一项；配置保存到 `ClientConfig.ini` 的 `[Update]`，菜单栏 `系统 -> 检查更新` 会在后台按共享文件夹或 HTTP manifest 拉取更新包并完成 size / SHA-256 校验，发现新版本后可确认安装并重启程序。
+- 系统设置支持 LIS、共享文件夹和 HTTP 更新源。未配置或无效来源默认使用 LIS，已保存的有效共享目录／HTTP 选择保留；LIS 复用现有数据库连接配置，通过 `系统 -> 检查更新` 手动检查，确认下载并校验大小／SHA-256 后，再确认安装和重启。不同来源只显示对应设置项。
 - 自动更新 HTTP 地址默认使用 GitHub latest manifest：`https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json`，后续发布新版本不需要修改客户端配置。
-- 系统设置支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。设置页中的复选框保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
+- 共享目录／HTTP 来源支持启用自动检查更新；开启后主程序启动会延迟检查 manifest，每天最多一次，只提示新版本，用户确认后再下载并安装。LIS 来源禁用自动检查，仅由用户手动触发。设置页中的复选框保持纯原生 `BUTTON + BS_AUTOCHECKBOX`，通过白色宿主窗口统一背景，不使用 owner-draw。
 - `Updater.exe` 每次运行都会自动写入安装目录 `log\updater.log`，便于现场更新失败后带回分析。
 - 数据库配置持久化保存到程序同目录 `ClientConfig.ini`；中文打印机名、快捷检验仪器名等模块配置会以 ASCII 安全编码保存，程序读取时自动还原，避免受系统 ANSI 代码页影响后乱码。
 - `设置`、`查询` 和 `退出` 按钮。
@@ -263,6 +263,7 @@ make              # 帮助（默认）
 make compile      # 交叉编译 lis_workbench.exe + Updater.exe
 make clean compile  # 清除后编译
 make package      # 编译 + NSIS 安装包 + 更新 zip + manifest.json
+make db-update-package  # 从正式 GitHub Release 生成离线 LIS 上传材料，不连接数据库
 make verify       # 效验二进制和版本一致性
 make install      # 完整发布流程 → out/windows/dist/
 ```
@@ -286,7 +287,7 @@ make install      # 完整发布流程 → out/windows/dist/
 
 ## Windows 安装包（Windows / macOS 通用）
 
-主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、文件夹/HTTP 更新源、统一检查拉取流程、系统设置页的更新源配置和菜单栏 `系统 -> 检查更新` 入口。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
+主程序安装包使用 NSIS 生成，详见 `packaging/README_windows_installer.md`。自动更新设计详见 `AUTO_UPDATE_DESIGN.md`；当前已接入 `Updater.exe` 构建、安装包打包、LIS／文件夹／HTTP 更新源、系统设置页配置和菜单栏 `系统 -> 检查更新` 入口。LIS 来源只允许手动检查，先确认下载、完成校验，再确认安装；旧客户端首次使用完整安装包升级主程序与更新器。发现新版本后，主程序会在用户确认后启动 `Updater.exe`，由更新器解压 zip、备份、替换、失败回滚并重启主程序，同时自动写入 `log\updater.log`。GitHub Actions 会同时生成安装包、更新 zip 和 `manifest.json` artifact；推送与版本号一致的 `v*` 标签时会自动发布到 GitHub Release。
 
 VS 原生构建的 `lis_workbench.exe` 默认静态链接 MSVC runtime，Release 安装包通常不需要再携带 `MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`。
 

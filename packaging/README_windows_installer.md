@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.10` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。常用电话 RTF 文件同样不随安装包发布，现场可在 `常用电话` 页面上传，或自行放入安装目录 `documents`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.10.11`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.10.12`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -27,7 +27,7 @@ out/windows/update/updates/manifest.json
 out/windows/update/updates/LISWorkbench-<version>-win7-win11.zip
 ```
 
-Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。设置页默认选择共享文件夹，并只显示当前更新源对应的共享目录或 HTTP 地址。manifest 与 zip 同目录，便于同一份 manifest 兼容共享目录、普通 HTTP 和 GitHub Release。
+Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。设置页默认选择 LIS，已有有效共享目录／HTTP 选择保留，只显示当前来源对应的设置。LIS 来源复用现有数据库配置，仅通过菜单手动检查；离线上传材料用 `make db-update-package` 获取正式 Release，上传端使用 Windows 10/11，操作说明在生成目录的 `README-upload.txt`。manifest 与 zip 同目录，便于同一份 manifest 兼容共享目录、普通 HTTP 和 GitHub Release。
 更新 zip 不包含 HIV 统计表 DOCX 模版和常用电话 RTF 文件；自动更新不会覆盖现场已上传的 `templates\HIVStatisticsTemplate.docx` 或 `documents` 目录。
 
 使用 GitHub Release 作为外网更新源时，系统设置页的 HTTP 地址填写：
@@ -38,7 +38,9 @@ https://github.com/zemise/lis-workbench/releases/latest/download/manifest.json
 
 系统设置页的 HTTP 地址为空时会默认填入这条 latest 地址，后续发布新版本不需要改客户端配置。
 
-如果启用系统设置页中的 `自动检查更新`，主程序启动后会延迟检查 manifest，每天最多一次；自动检查只提示新版本，用户确认后再下载并安装。也可以通过菜单栏 `系统 -> 检查更新` 手动触发同一套更新流程。
+使用共享目录／HTTP 来源且启用系统设置页中的 `自动检查更新` 时，主程序启动后会延迟检查 manifest，每天最多一次；自动检查只提示新版本，用户确认后再下载并安装。也可以通过菜单栏 `系统 -> 检查更新` 手动触发同一套更新流程。
+
+旧客户端首次须使用完整安装包升级主程序和 Updater；测试数据库更新时，数据库发布版本需高于已安装客户端，相同或较低版本不会触发安装。
 
 如果现场更新失败，可在安装目录下的 `log\updater.log` 查看更新器日志并回传分析。
 
@@ -104,7 +106,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.10.11 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.10.12 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
