@@ -124,7 +124,6 @@ struct UpdateSourceConfig {
   std::wstring manifestUrl;
   std::wstring folderPath;
   search::DbSettings db;
-  bool trustServerCertificate = lis_update::kDefaultTrustServerCertificate;
 };
 
 void showManualUpdateCheckResult(HWND hwnd, const ManualUpdateCheckDone &done);
@@ -404,8 +403,6 @@ UpdateSourceConfig loadUpdateSourceConfig() {
       lis_update::kConfigSection, L"SourceType", lis_update::kSourceLis);
   cfg.sourceType = lis_update::normalize_source_type(cfg.sourceType);
   cfg.db = search::load_settings(search::default_ini_path()).db;
-  cfg.trustServerCertificate = search::load_module_int(lis_update::kConfigSection,
-      L"TrustServerCertificate", lis_update::kDefaultTrustServerCertificate ? 1 : 0) != 0;
 
   cfg.manifestUrl =
       search::load_module_str(lis_update::kConfigSection, L"ManifestUrl",
@@ -534,7 +531,7 @@ bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path,
 bool sameLisConfig(const UpdateSourceConfig& a, const UpdateSourceConfig& b) {
   return a.sourceType == b.sourceType && a.db.server == b.db.server &&
          a.db.initial_database == b.db.initial_database && a.db.user == b.db.user &&
-         a.db.password == b.db.password && a.trustServerCertificate == b.trustServerCertificate;
+         a.db.password == b.db.password;
 }
 
 // Fixed phase/outcome labels and validated package identifiers only: no connection data.
@@ -572,7 +569,7 @@ void startLisUpdateCheck(HWND hwnd, const UpdateSourceConfig& cfg) {
           done.error = "updater capability is missing; upgrade using the complete installer first";
           return done;
         }
-        lis_update::DatabaseUpdateSource source(cfg.db, cfg.trustServerCertificate, [cancel]{return cancel->load();});
+        lis_update::DatabaseUpdateSource source(cfg.db, [cancel]{return cancel->load();});
         activity.phase="metadata";
         done.ok = source.fetch_manifest(done.result.manifest, done.error);
         if(done.ok) activity.capture(done.result.manifest);
@@ -631,7 +628,7 @@ void startLisUpdateCheck(HWND hwnd, const UpdateSourceConfig& cfg) {
                 return downloaded;
               }
               const auto target = lis_update::join_update_path(packageDir, search::utf8_to_wide(manifest.package.file));
-              lis_update::DatabaseUpdateSource source(cfg.db, cfg.trustServerCertificate, [cancel]{return cancel->load();});
+              lis_update::DatabaseUpdateSource source(cfg.db, [cancel]{return cancel->load();});
               const auto reusable = lis_update::join_update_path(sharedDir, search::utf8_to_wide(manifest.package.file));
               lis_update::UpdateZipInfo zip;
               std::string cacheError;

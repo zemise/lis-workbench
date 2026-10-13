@@ -1,4 +1,5 @@
 #include "search_core.h"
+#include "odbc_connection_policy.h"
 #include "search_text.h"
 
 #include <algorithm>
@@ -451,85 +452,14 @@ std::string sql_room_machine_exclude_filter(const std::string& text, const char*
     return sql.str();
 }
 
-std::map<std::string, std::string> parse_connection_kv(const std::string& text) {
-    std::map<std::string, std::string> values;
-    for (const auto& part : split(text, ';')) {
-        const auto pos = part.find('=');
-        if (pos == std::string::npos) {
-            continue;
-        }
-        values[upper_ascii(trim(part.substr(0, pos)))] = trim(part.substr(pos + 1));
-    }
-    return values;
-}
-
-std::vector<std::string> odbc_candidates(const std::string& input) {
-    if (input.find("DRIVER=") != std::string::npos || input.find("Driver=") != std::string::npos) {
-        return {input};
-    }
-    const auto kv = parse_connection_kv(input);
-    const auto server_it = kv.find("DATA SOURCE");
-    const auto db_it = kv.find("INITIAL CATALOG");
-    const auto user_it = kv.find("USER ID");
-    const auto pass_it = kv.find("PASSWORD");
-    if (server_it == kv.end() || db_it == kv.end() || user_it == kv.end() || pass_it == kv.end()) {
-        return {input};
-    }
-
-    return {
-        "DRIVER={ODBC Driver 18 for SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second +
-            ";TrustServerCertificate=Yes;",
-        "DRIVER={ODBC Driver 17 for SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second +
-            ";TrustServerCertificate=Yes;",
-        "DRIVER={SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second + ";",
-    };
-}
+using odbc::odbc_candidates;
 
 #ifdef _WIN32
 constexpr SQLULEN kLoginTimeoutSeconds = 5;
 constexpr SQLULEN kQueryTimeoutSeconds = 120;
 
-std::mutex& preferred_odbc_candidate_mutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::map<std::string, std::string>& preferred_odbc_candidates() {
-    static std::map<std::string, std::string> cache;
-    return cache;
-}
-
-std::string cached_odbc_candidate(const std::string& connection_string) {
-    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
-    const auto it = preferred_odbc_candidates().find(connection_string);
-    return it == preferred_odbc_candidates().end() ? std::string{} : it->second;
-}
-
-void remember_odbc_candidate(const std::string& connection_string, const std::string& candidate) {
-    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
-    preferred_odbc_candidates()[connection_string] = candidate;
-}
-
-std::vector<std::string> prioritized_odbc_candidates(const std::string& connection_string,
-                                                     std::string& cached_candidate) {
-    auto candidates = odbc_candidates(connection_string);
-    cached_candidate = cached_odbc_candidate(connection_string);
-    if (cached_candidate.empty()) {
-        return candidates;
-    }
-    candidates.erase(std::remove(candidates.begin(), candidates.end(), cached_candidate), candidates.end());
-    candidates.insert(candidates.begin(), cached_candidate);
-    return candidates;
-}
+using odbc::prioritized_odbc_candidates;
+using odbc::remember_odbc_candidate;
 
 void enable_odbc_connection_pooling_once(LogFn log) {
     static std::once_flag flag;

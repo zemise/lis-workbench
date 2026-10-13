@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.10` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。常用电话 RTF 文件同样不随安装包发布，现场可在 `常用电话` 页面上传，或自行放入安装目录 `documents`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.10.13.2`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.10.13.3`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -106,7 +106,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.10.13.2 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.10.13.3 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
@@ -172,7 +172,7 @@ nmake
 
 版本日期使用发布当天（项目按 Asia/Shanghai），首次发布为 `vYYYY.MM.DD`，后续依次 `.1`、`.2`。修订号为 1～999999999 的整数，不补零，不使用 `.0`；不修改已有标签或包内容。主程序、安装包、ZIP、manifest 和 Release 标签必须一致。
 
-本次为 `v2026.10.13.2`。旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
+本次为 `v2026.10.13.3`。旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
 
 旧客户端和旧 Updater 仅接受三段版本，本次须完整安装一次。本版生成 manifest 的 `minUpdaterVersion` 为 `1.1.0`；客户端与更新器仍可读取旧 `1.0.0` manifest。数据库表结构不变，发布脚本在事务内按日期及修订号比较，并兼容上述三项旧标识，不允许降级；必须重新生成并复制整个上传目录，不能沿用旧版上传脚本。
 
@@ -187,13 +187,13 @@ make db-update-package RELEASE=v2026.10.12.4
 
 将整个目录复制到上传电脑，使用原命令重试；版本、哈希和元数据一致时复用已上传记录并重新读回校验。若要测试当前软件版本，使用不带 RELEASE 的 `make db-update-package` 获取最新发布。只需更新上传材料即可恢复旧包发布，客户端无需为此先重新安装。
 
-### LIS 更新提示 TLS 加密失败
+### LIS 更新与普通查询采用同一连接策略
 
-LIS 更新使用独立只读、加密的连接，需要本程序对应的 64 位 Microsoft ODBC Driver 17 或 18。Windows 自带的 `SQL Server` 驱动可能让普通查询正常，却在加密更新时出现 SSL Security error（native 18）；传入 TrustServerCertificate=Yes 不能保证旧驱动实现现代信任策略。本版不再回退到该驱动，缺失或加载失败会明确提示。
+从 `v2026.10.13.3` 起，LIS 更新与普通查询共用连接参数、驱动候选和本次运行中的成功连接缓存：优先使用已成功的候选，否则依次尝试 ODBC 18、ODBC 17、Windows `SQL Server`。现代候选保留原有 `TrustServerCertificate=Yes`，旧驱动不附加该参数，所有候选均不额外指定 Encrypt。实际是否加密取决于驱动默认值和服务器设置，可能未加密；哈希与 ZIP 校验不代替传输加密。
 
-在客户端安装支持其 Windows 版本的驱动后重试；无需改变 LIS 数据库、表结构或服务器设置，也无需修改上传工具的证书开关。驱动由用户安装，程序不自动安装依赖，不更改系统 TLS 配置，不在失败后关闭加密。
+更新仍建立独立只读连接，不占用业务查询的连接对象，只读取更新表。连接与查询超时、取消、分块下载及大小／SHA-256／ZIP 校验保留。客户端旧 `[Update] TrustServerCertificate` 不再单独改变 LIS 更新参数；上传工具仍始终加密并保留默认信任和严格验证开关。
+
+在 `10.12.5` 等旧版上因强制加密而无法取得更新的电脑，本次先用完整安装包升级，再测试后续更高版本的 LIS 更新。普通查询能正常连接的现有环境不再额外要求安装现代驱动；若采用现代驱动，仍须选适配其 Windows 和程序位数的版本。
 
 - [微软 ODBC 驱动下载](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)
 - [Windows 与驱动版本支持矩阵](https://learn.microsoft.com/en-us/sql/connect/odbc/windows/system-requirements-installation-and-driver-files)
-
-选型须对应操作系统；例如 Win7 不支持 ODBC 18，ODBC 17 的不同小版本也有不同系统要求，应按矩阵选择。安装包名称中的 Win7–Win11 指应用目标范围，不能视为所有最新驱动都支持这些系统。

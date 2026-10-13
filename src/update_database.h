@@ -3,14 +3,9 @@
 #include "update_source.h"
 #include "update_config.h"
 #include <functional>
-#include <array>
 #include <vector>
 
 namespace lis_update {
-// Legacy Windows "SQL Server" cannot reliably honor the modern TLS trust policy.
-inline constexpr std::array<const wchar_t*, 2> kDatabaseUpdateDrivers = {
-    L"ODBC Driver 18 for SQL Server", L"ODBC Driver 17 for SQL Server"
-};
 struct DatabaseConnectionDiagnostic {
     std::string state;
     int native_error = 0;
@@ -26,14 +21,12 @@ std::string describe_database_connection_failure(const std::string& driver,
 class DatabaseUpdateSource final : public IUpdateSource {
 public:
     explicit DatabaseUpdateSource(search::DbSettings settings,
-                                  bool trust_server_certificate = kDefaultTrustServerCertificate,
                                   std::function<bool()> cancelled = {});
     bool fetch_manifest(UpdateManifest& manifest, std::string& error) override;
     bool fetch_package(const UpdateManifest& manifest, const std::wstring& target_path,
                        std::string& error) override;
 private:
     search::DbSettings settings_;
-    bool trust_;
     std::function<bool()> cancelled_;
 };
 }

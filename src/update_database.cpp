@@ -1,4 +1,5 @@
 #include "update_database.h"
+#include "odbc_connection_policy.h"
 #include "update_package.h"
 #include <utility>
 #include <algorithm>
@@ -12,7 +13,7 @@ std::string describe_database_connection_failure(const std::string& driver,
     const auto has=[&](const char* token){return text.find(token)!=std::string::npos;};
     std::string cause;
     if(state=="IM002" || state=="IM003") {
-        cause="未找到可用的 SQL Server ODBC 驱动，请安装对应位数的 ODBC Driver 17 或 18。";
+        cause="未找到或无法加载可用的 ODBC 驱动，请检查普通查询使用的驱动及程序位数。";
     } else if(native==4060 || native==911) {
         cause="目标 LIS 数据库不存在或账号无权访问，请检查数据库名称及权限。";
     } else if(state=="28000" || native==18456 || native==18452) {
@@ -20,12 +21,12 @@ std::string describe_database_connection_failure(const std::string& driver,
     } else if(state=="HYT00" || state=="HYT01") {
         cause="连接超时，请检查服务器地址、端口和局域网连通性。";
     } else if(driver=="SQL Server" && (native==18 || has("ssl") || has("tls") || has("certificate") || has("证书"))) {
-        cause="当前使用 Windows 旧版 SQL Server 驱动，无法可靠应用更新所需的 TLS／证书信任策略；请安装支持当前 Windows 的 64 位 ODBC Driver 17 或 18 后重试。";
+        cause="旧版 SQL Server 驱动发生 TLS／SSL 协商失败；当前沿用普通查询策略，请核对普通查询是否正常及服务器强制加密、驱动和系统 TLS 支持。";
     } else if(native==-2146893007) {
         cause="TLS 协议或密码算法不兼容；服务器证书信任开关不能解决此问题，请检查驱动及客户端系统 TLS 支持。";
     } else if(has("certificate") || has("证书") || native==-2146893019 || native==-2146893022) {
         cause=trust ? "证书或 TLS 协商失败；已启用服务器证书信任，请检查驱动、服务器和系统 TLS 兼容性。"
-                    : "服务器证书验证失败；请配置可信证书，或在 ClientConfig.ini 的 [Update] 中设置 TrustServerCertificate=1 后重新检查更新。";
+                    : "服务器证书验证失败；当前沿用普通查询策略，请检查驱动与服务器证书配置。";
     } else if(has("ssl") || has("tls")) {
         cause="TLS 加密连接失败，请检查 SQL Server ODBC 驱动及系统 TLS 兼容性。";
     } else {
@@ -35,7 +36,8 @@ std::string describe_database_connection_failure(const std::string& driver,
         return (c>='A'&&c<='Z') || (c>='0'&&c<='9');
     });
     return cause+" [driver="+driver+", SQLSTATE="+(valid_state?state:"UNKNOWN")+
-        ", native="+std::to_string(native)+", Encrypt=Yes, TrustServerCertificate="+(trust?"Yes":"No")+"]";
+        ", native="+std::to_string(native)+", Encrypt=DriverDefault, TrustServerCertificate="+
+        (driver=="SQL Server" || driver=="ODBC manager" ? "DriverDefault" : trust?"Yes":"No")+"]";
 }
 
 std::string describe_database_connection_failures(const std::string& driver,
@@ -71,11 +73,6 @@ std::string describe_database_connection_failures(const std::string& driver,
 #include <thread>
 
 namespace {
-std::wstring quoted(const std::wstring& s) {
-    std::wstring out=L"{";
-    for (wchar_t c:s) { out+=c; if(c==L'}') out+=c; }
-    return out+L"}";
-}
 std::string utf8(const std::wstring& s) {
     if (s.empty()) return {};
     int len=WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),nullptr,0,nullptr,nullptr);
@@ -103,7 +100,8 @@ struct Connection {
         if(db!=SQL_NULL_HDBC) { SQLDisconnect(db); SQLFreeHandle(SQL_HANDLE_DBC,db); }
         if(env!=SQL_NULL_HENV) SQLFreeHandle(SQL_HANDLE_ENV,env);
     }
-    bool open(const search::DbSettings& cfg, bool trust, unsigned timeout, std::string& error) {
+    bool open(const search::DbSettings& cfg, unsigned timeout, std::string& error) {
+        const bool trust=false; // No driver has been selected yet.
         error="无法初始化 LIS 更新 ODBC 环境，请检查对应位数的 SQL Server 驱动。";
         if(cfg.server.empty() || cfg.initial_database.empty() || cfg.user.empty()) {
             error="configure the LIS database connection before checking updates"; return false;
@@ -120,28 +118,35 @@ struct Connection {
             error="设置只读连接失败："+odbc_connection_error(SQL_HANDLE_DBC,db,L"ODBC manager",trust);
             return false;
         }
-        for (const wchar_t* driver:lis_update::kDatabaseUpdateDrivers) {
-            std::wstring cs=L"DRIVER="+quoted(driver)+L";SERVER="+quoted(cfg.server)+L";DATABASE="+quoted(cfg.initial_database)+
-                L";UID="+quoted(cfg.user)+L";PWD="+quoted(cfg.password)+L";Encrypt=Yes;TrustServerCertificate="+(trust?L"Yes;":L"No;");
-            SQLRETURN rc=SQLDriverConnectW(db,nullptr,(SQLWCHAR*)cs.data(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
+        const auto connection_key=utf8(search::odbc::query_connection_string(cfg));
+        std::string cached_candidate;
+        const auto candidates=search::odbc::prioritized_odbc_candidates(connection_key,cached_candidate);
+        std::string attempts;
+        for (const auto& candidate:candidates) {
+            const auto driver_name=search::odbc::candidate_driver(candidate);
+            const auto driver=lis_update::utf8_to_wide_update(driver_name);
+            const bool trust=driver_name!="SQL Server";
+            const auto cs=lis_update::utf8_to_wide_update(candidate);
+            SQLRETURN rc=SQLDriverConnectW(db,nullptr,(SQLWCHAR*)cs.c_str(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
             if(SQL_SUCCEEDED(rc)) {
+                search::odbc::remember_odbc_candidate(connection_key,candidate);
                 if(!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT,db,&stmt))) {
-                    error="创建更新查询失败："+odbc_connection_error(SQL_HANDLE_DBC,db,driver,trust);
+                    error="创建更新查询失败："+odbc_connection_error(SQL_HANDLE_DBC,db,driver.c_str(),trust);
                     return false;
                 }
                 if(!SQL_SUCCEEDED(SQLSetStmtAttr(stmt,SQL_ATTR_QUERY_TIMEOUT,(SQLPOINTER)(uintptr_t)timeout,0))) {
-                    error="设置查询超时失败："+odbc_connection_error(SQL_HANDLE_STMT,stmt,driver,trust);
+                    error="设置查询超时失败："+odbc_connection_error(SQL_HANDLE_STMT,stmt,driver.c_str(),trust);
                     return false;
                 }
                 error.clear(); return true;
             }
-            // Only missing-driver errors permit trying another driver, never TLS/auth fallback.
+            // The user selected the same fallback policy as normal queries.
+            // Each attempt keeps its original driver parameters; no forced Encrypt flag.
             const auto diagnostics=connection_diagnostics(SQL_HANDLE_DBC,db);
-            error=lis_update::describe_database_connection_failures(utf8(driver),diagnostics,trust);
-            const auto state=diagnostics.empty()?std::string():diagnostics.front().state;
-            if(state!="IM002" && state!="IM003") return false;
+            if(!attempts.empty()) attempts+="\n";
+            attempts+=lis_update::describe_database_connection_failures(driver_name,diagnostics,trust);
         }
-        error="本机未找到或无法加载 LIS 加密更新所需的 64 位 ODBC Driver 17/18；请安装支持当前 Windows 的对应驱动后重试。普通查询可用的旧版 SQL Server 驱动不用于 LIS 更新。 " + error;
+        error="LIS 更新沿用普通查询连接策略，但所有候选连接均失败：\n"+attempts;
         return false;
     }
 };
@@ -171,15 +176,15 @@ struct Watch {
 #endif
 
 namespace lis_update {
-DatabaseUpdateSource::DatabaseUpdateSource(search::DbSettings cfg,bool trust,std::function<bool()> cancel)
-    :settings_(std::move(cfg)),trust_(trust),cancelled_(std::move(cancel)) {}
+DatabaseUpdateSource::DatabaseUpdateSource(search::DbSettings cfg,std::function<bool()> cancel)
+    :settings_(std::move(cfg)),cancelled_(std::move(cancel)) {}
 bool DatabaseUpdateSource::fetch_manifest(UpdateManifest& manifest,std::string& error) {
 #ifndef _WIN32
     (void)manifest; error="LIS updates are only available on Windows"; return false;
 #else
     if(cancelled_ && cancelled_()) {error="update cancelled"; return false;}
     Connection c;
-    if(!c.open(settings_,trust_,10,error)) return false;
+    if(!c.open(settings_,10,error)) return false;
     const wchar_t* query=L"SELECT PackageId,AppId,Channel,Version,MinUpdaterVersion,PackageFileName,PackageSize,PackageSha256,ReleaseNotes,CONVERT(varchar(33),PublishedAtUtc,126) FROM dbo.LS_AS_LISWORK WHERE AppId='lis-workbench' AND Channel='stable' AND State='published' AND IsCurrent=1 AND VerifiedAtUtc IS NOT NULL";
     error="cannot read LIS update metadata; check the update table and SELECT permission";
     Watch watch(c.stmt,cancelled_);
@@ -208,7 +213,7 @@ bool DatabaseUpdateSource::fetch_package(const UpdateManifest& m,const std::wstr
 #else
     if(m.database_package_id<=0 || !is_supported_manifest(m,error)) {error="invalid LIS package snapshot"; return false;}
     if(cancelled_ && cancelled_()) {error="update cancelled"; return false;}
-    Connection c; if(!c.open(settings_,trust_,120,error)) return false;
+    Connection c; if(!c.open(settings_,120,error)) return false;
     error="cannot read LIS package; it may have been cleaned; check updates again";
     const wchar_t* query=L"SELECT PackageData FROM dbo.LS_AS_LISWORK WHERE PackageId=? AND AppId='lis-workbench' AND Channel='stable' AND Version=? AND PackageSha256=? AND PackageSize=? AND PackageFileName=? AND MinUpdaterVersion=? AND VerifiedAtUtc IS NOT NULL AND State IN ('published','retired')";
     SQLBIGINT id=m.database_package_id,size=SQLBIGINT(m.package.size);
