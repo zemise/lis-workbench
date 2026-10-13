@@ -19,6 +19,10 @@ std::string describe_database_connection_failure(const std::string& driver,
         cause="SQL 登录失败，请检查系统设置中的数据库账号和密码。";
     } else if(state=="HYT00" || state=="HYT01") {
         cause="连接超时，请检查服务器地址、端口和局域网连通性。";
+    } else if(driver=="SQL Server" && (native==18 || has("ssl") || has("tls") || has("certificate") || has("证书"))) {
+        cause="当前使用 Windows 旧版 SQL Server 驱动，无法可靠应用更新所需的 TLS／证书信任策略；请安装支持当前 Windows 的 64 位 ODBC Driver 17 或 18 后重试。";
+    } else if(native==-2146893007) {
+        cause="TLS 协议或密码算法不兼容；服务器证书信任开关不能解决此问题，请检查驱动及客户端系统 TLS 支持。";
     } else if(has("certificate") || has("证书") || native==-2146893019 || native==-2146893022) {
         cause=trust ? "证书或 TLS 协商失败；已启用服务器证书信任，请检查驱动、服务器和系统 TLS 兼容性。"
                     : "服务器证书验证失败；请配置可信证书，或在 ClientConfig.ini 的 [Update] 中设置 TrustServerCertificate=1 后重新检查更新。";
@@ -33,6 +37,27 @@ std::string describe_database_connection_failure(const std::string& driver,
     return cause+" [driver="+driver+", SQLSTATE="+(valid_state?state:"UNKNOWN")+
         ", native="+std::to_string(native)+", Encrypt=Yes, TrustServerCertificate="+(trust?"Yes":"No")+"]";
 }
+
+std::string describe_database_connection_failures(const std::string& driver,
+    const std::vector<DatabaseConnectionDiagnostic>& diagnostics, bool trust) {
+    if (diagnostics.empty()) return describe_database_connection_failure(driver,"",0,"",trust);
+    const auto priority=[](const DatabaseConnectionDiagnostic& d) {
+        std::string text=d.provider_text;
+        std::transform(text.begin(),text.end(),text.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(d.native_error==4060 || d.native_error==911 || d.state=="28000" ||
+           d.native_error==18456 || d.native_error==18452) return 100;
+        if(d.native_error==-2146893007) return 95;
+        if(text.find("certificate")!=std::string::npos || text.find("证书")!=std::string::npos ||
+           d.native_error==-2146893019 || d.native_error==-2146893022) return 90;
+        if(d.state=="IM002" || d.state=="IM003" || d.state=="HYT00" || d.state=="HYT01") return 80;
+        if(text.find("ssl")!=std::string::npos || text.find("tls")!=std::string::npos) return 60;
+        return d.state.rfind("01",0)==0 ? 0 : 10;
+    };
+    const auto best=std::max_element(diagnostics.begin(),diagnostics.end(),
+        [&](const auto& a,const auto& b){return priority(a)<priority(b);});
+    return describe_database_connection_failure(driver,best->state,best->native_error,best->provider_text,trust);
+}
+
 }
 
 #ifdef _WIN32
@@ -58,12 +83,18 @@ std::string utf8(const std::wstring& s) {
     WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),len,nullptr,nullptr);
     return out;
 }
+std::vector<lis_update::DatabaseConnectionDiagnostic> connection_diagnostics(SQLSMALLINT type, SQLHANDLE handle) {
+    std::vector<lis_update::DatabaseConnectionDiagnostic> records;
+    for (SQLSMALLINT index=1; index<=16; ++index) {
+        SQLWCHAR state[6]={}, message[2048]={}; SQLINTEGER native=0; SQLSMALLINT length=0;
+        const SQLRETURN rc=SQLGetDiagRecW(type,handle,index,state,&native,message,2048,&length);
+        if(!SQL_SUCCEEDED(rc)) break;
+        records.push_back({utf8(std::wstring((wchar_t*)state)),native,utf8(std::wstring((wchar_t*)message))});
+    }
+    return records;
+}
 std::string odbc_connection_error(SQLSMALLINT type, SQLHANDLE handle, const wchar_t* driver, bool trust) {
-    SQLWCHAR state[6]={}, message[2048]={}; SQLINTEGER native=0; SQLSMALLINT length=0;
-    const SQLRETURN rc=SQLGetDiagRecW(type,handle,1,state,&native,message,2048,&length);
-    return lis_update::describe_database_connection_failure(utf8(driver),
-        SQL_SUCCEEDED(rc)?utf8(std::wstring((wchar_t*)state)):std::string(),native,
-        SQL_SUCCEEDED(rc)?utf8(std::wstring((wchar_t*)message)):std::string(),trust);
+    return lis_update::describe_database_connection_failures(utf8(driver),connection_diagnostics(type,handle),trust);
 }
 struct Connection {
     SQLHENV env=SQL_NULL_HENV; SQLHDBC db=SQL_NULL_HDBC; SQLHSTMT stmt=SQL_NULL_HSTMT;
@@ -89,7 +120,7 @@ struct Connection {
             error="设置只读连接失败："+odbc_connection_error(SQL_HANDLE_DBC,db,L"ODBC manager",trust);
             return false;
         }
-        for (const wchar_t* driver:{L"ODBC Driver 18 for SQL Server",L"ODBC Driver 17 for SQL Server",L"SQL Server"}) {
+        for (const wchar_t* driver:lis_update::kDatabaseUpdateDrivers) {
             std::wstring cs=L"DRIVER="+quoted(driver)+L";SERVER="+quoted(cfg.server)+L";DATABASE="+quoted(cfg.initial_database)+
                 L";UID="+quoted(cfg.user)+L";PWD="+quoted(cfg.password)+L";Encrypt=Yes;TrustServerCertificate="+(trust?L"Yes;":L"No;");
             SQLRETURN rc=SQLDriverConnectW(db,nullptr,(SQLWCHAR*)cs.data(),SQL_NTS,nullptr,0,nullptr,SQL_DRIVER_NOPROMPT);
@@ -105,12 +136,12 @@ struct Connection {
                 error.clear(); return true;
             }
             // Only missing-driver errors permit trying another driver, never TLS/auth fallback.
-            error=odbc_connection_error(SQL_HANDLE_DBC,db,driver,trust);
-            SQLWCHAR state[6]={}; SQLINTEGER native=0;
-            const SQLRETURN diagnostic=SQLGetDiagRecW(SQL_HANDLE_DBC,db,1,state,&native,nullptr,0,nullptr);
-            const auto sqlstate=SQL_SUCCEEDED(diagnostic)?utf8(std::wstring((wchar_t*)state)):std::string();
-            if(sqlstate!="IM002" && sqlstate!="IM003") return false;
+            const auto diagnostics=connection_diagnostics(SQL_HANDLE_DBC,db);
+            error=lis_update::describe_database_connection_failures(utf8(driver),diagnostics,trust);
+            const auto state=diagnostics.empty()?std::string():diagnostics.front().state;
+            if(state!="IM002" && state!="IM003") return false;
         }
+        error="本机未找到或无法加载 LIS 加密更新所需的 64 位 ODBC Driver 17/18；请安装支持当前 Windows 的对应驱动后重试。普通查询可用的旧版 SQL Server 驱动不用于 LIS 更新。 " + error;
         return false;
     }
 };

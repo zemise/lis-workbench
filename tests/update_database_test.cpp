@@ -4,6 +4,9 @@
 
 int main() {
     if (!lis_update::kDefaultTrustServerCertificate) return 1;
+    if (lis_update::kDatabaseUpdateDrivers.size()!=2 ||
+        std::wstring(lis_update::kDatabaseUpdateDrivers[0])!=L"ODBC Driver 18 for SQL Server" ||
+        std::wstring(lis_update::kDatabaseUpdateDrivers[1])!=L"ODBC Driver 17 for SQL Server") return 1;
     struct Scenario { const char* state; int native; const char* provider; bool trust; const char* expected; };
     const Scenario cases[] = {
         {"08001",0,"certificate verify failed; PRIVATE_CONNECTION",false,"TrustServerCertificate=1"},
@@ -28,5 +31,19 @@ int main() {
             std::cerr<<"diagnostic classification/redaction failed"; return 1;
         }
     }
-    std::cout<<"13 connection diagnostic scenarios passed without a database connection\n";
+    const auto legacy=lis_update::describe_database_connection_failure("SQL Server","08001",18,"SSL Security error PRIVATE_CONNECTION",true);
+    if(legacy.find("Windows 旧版 SQL Server 驱动")==std::string::npos ||
+       legacy.find("64 位 ODBC Driver")==std::string::npos || legacy.find("PRIVATE_CONNECTION")!=std::string::npos) return 1;
+    const auto detail=lis_update::describe_database_connection_failures("ODBC Driver 18 for SQL Server",{
+        {"08001",18,"SSL failure PRIVATE_CONNECTION"},
+        {"08001",-2146893019,"PRIVATE_CONNECTION"}},false);
+    if(detail.find("服务器证书验证失败")==std::string::npos || detail.find("PRIVATE_CONNECTION")!=std::string::npos) return 1;
+    const auto algorithms=lis_update::describe_database_connection_failures("ODBC Driver 17 for SQL Server",{
+        {"01000",0,"warning PRIVATE_CONNECTION"},
+        {"08001",-2146893007,"PRIVATE_CONNECTION"}},true);
+    if(algorithms.find("TLS 协议或密码算法不兼容")==std::string::npos ||
+       algorithms.find("native=-2146893007")==std::string::npos || algorithms.find("PRIVATE_CONNECTION")!=std::string::npos) return 1;
+    const auto empty=lis_update::describe_database_connection_failures("ODBC Driver 17 for SQL Server",{},true);
+    if(empty.find("SQLSTATE=UNKNOWN")==std::string::npos) return 1;
+    std::cout<<"17 connection diagnostic scenarios and modern driver policy passed without a database connection\n";
 }
