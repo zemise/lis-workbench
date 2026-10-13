@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <vector>
 #include <ctime>
+#include <cwchar>
 #include <mutex>
 #include <string>
 
@@ -78,12 +79,18 @@ const char* level_name(Level lv) {
 }
 
 std::wstring daily_log_path() {
+    wchar_t name[64]{};
+#ifdef _WIN32
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    wchar_t name[64]{};
     swprintf_s(name, L"%04u-%02u-%02u.log", st.wYear, st.wMonth, st.wDay);
-    if (g_log_dir.empty()) return name;
-    return g_log_dir + L"\\" + name;
+#else
+    const auto now = std::time(nullptr);
+    std::tm local{};
+    localtime_r(&now, &local);
+    std::wcsftime(name, sizeof(name) / sizeof(name[0]), L"%Y-%m-%d.log", &local);
+#endif
+    return (std::filesystem::path(g_log_dir) / name).wstring();
 }
 
 }  // namespace
@@ -105,13 +112,25 @@ void init(const std::wstring& log_dir, unsigned retention_days, unsigned long lo
 void write(Level level, const char* file, int line, const std::string& message) {
     std::lock_guard<std::mutex> lock(g_mutex);
 
+    char timestamp[28]{};
+#ifdef _WIN32
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    char timestamp[28]{};
     snprintf(timestamp, sizeof(timestamp),
              "%04u-%02u-%02u %02u:%02u:%02u.%03u",
              st.wYear, st.wMonth, st.wDay,
              st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+#else
+    const auto now = std::chrono::system_clock::now();
+    const auto seconds = std::chrono::system_clock::to_time_t(now);
+    std::tm local{};
+    localtime_r(&seconds, &local);
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count() % 1000;
+    char date[24]{};
+    std::strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", &local);
+    snprintf(timestamp, sizeof(timestamp), "%s.%03d", date, static_cast<int>(milliseconds));
+#endif
 
     // Build the log line: [timestamp] [LEVEL] file:line message
     char line_buf[4096]{};
@@ -123,7 +142,11 @@ void write(Level level, const char* file, int line, const std::string& message) 
         std::wstring path = daily_log_path();
         std::error_code ec;
         if (std::filesystem::is_symlink(path, ec)) return;
+#ifdef _WIN32
         FILE* f = _wfopen(path.c_str(), L"ab");
+#else
+        FILE* f = std::fopen(std::filesystem::path(path).c_str(), "ab");
+#endif
         if (f) {
             fputs(line_buf, f);
             fclose(f);
@@ -131,7 +154,9 @@ void write(Level level, const char* file, int line, const std::string& message) 
     }
 
     // Also emit to debugger
+#ifdef _WIN32
     OutputDebugStringA(line_buf);
+#endif
 }
 
 }  // namespace applog

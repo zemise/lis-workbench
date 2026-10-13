@@ -1,3 +1,4 @@
+#include "query_diagnostics.h"
 #include "trend_core.h"
 
 #include "search_text.h"
@@ -173,37 +174,17 @@ void disconnect(DbContext& db) {
     }
 }
 
-std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle) {
-    std::ostringstream oss;
-    SQLSMALLINT rec = 1;
-    while (true) {
-        SQLWCHAR state[16] = {};
-        SQLWCHAR message[1024] = {};
-        SQLINTEGER native_error = 0;
-        SQLSMALLINT text_len = 0;
-        const SQLRETURN rc = SQLGetDiagRecW(handle_type, handle, rec, state, &native_error, message, 1024, &text_len);
-        if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
-            break;
-        }
-        if (rec > 1) {
-            oss << " | ";
-        }
-        oss << wide_to_utf8(state) << ":" << native_error << ":" << wide_to_utf8(message);
-        ++rec;
-    }
-    return oss.str();
-}
-
 bool connect(const std::string& connection_string, DbContext& db, std::string& error) {
+    querydiag::stage_event(querydiag::Operation::connect);
     enable_odbc_connection_pooling_once();
     if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &db.env) != SQL_SUCCESS) {
-        error = "SQLAllocHandle ENV failed";
+        error = querydiag::safe_error(querydiag::Operation::environment);
         return false;
     }
     SQLSetEnvAttr(db.env, SQL_ATTR_ODBC_VERSION, reinterpret_cast<SQLPOINTER>(SQL_OV_ODBC3), 0);
     SQLSetEnvAttr(db.env, SQL_ATTR_CP_MATCH, reinterpret_cast<SQLPOINTER>(SQL_CP_STRICT_MATCH), 0);
     if (SQLAllocHandle(SQL_HANDLE_DBC, db.env, &db.dbc) != SQL_SUCCESS) {
-        error = "SQLAllocHandle DBC failed";
+        error = querydiag::safe_error(querydiag::Operation::connection_handle);
         disconnect(db);
         return false;
     }
@@ -227,23 +208,23 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
             return true;
         }
     }
-    error = "SQLDriverConnect failed: " + collect_diag(SQL_HANDLE_DBC, db.dbc);
+    error = querydiag::odbc_error(querydiag::Operation::connect, SQL_HANDLE_DBC, db.dbc);
     disconnect(db);
     return false;
 }
 
 bool exec_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, std::string& error) {
+    querydiag::stage_event(querydiag::Operation::execute);
     stmt = SQL_NULL_HSTMT;
     if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) {
-        error = "SQLAllocHandle STMT failed";
+        error = querydiag::safe_error(querydiag::Operation::statement);
         return false;
     }
     const SQLRETURN timeout_rc = SQLSetStmtAttr(
         stmt, SQL_ATTR_QUERY_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(kQueryTimeoutSeconds), 0);
     if (!(timeout_rc == SQL_SUCCESS || timeout_rc == SQL_SUCCESS_WITH_INFO)) {
-        error = "SQLSetStmtAttr QUERY_TIMEOUT failed: " +
-                collect_diag(SQL_HANDLE_STMT, stmt);
+        error = querydiag::odbc_error(querydiag::Operation::timeout, SQL_HANDLE_STMT, stmt);
         SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         stmt = SQL_NULL_HSTMT;
         return false;
@@ -251,11 +232,12 @@ bool exec_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, std::string
     const auto wide = utf8_to_wide(sql);
     const SQLRETURN rc = SQLExecDirectW(stmt, reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(wide.c_str())), SQL_NTS);
     if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
-        error = "SQLExecDirect failed: " + collect_diag(SQL_HANDLE_STMT, stmt);
+        error = querydiag::odbc_error(querydiag::Operation::execute, SQL_HANDLE_STMT, stmt);
         SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         stmt = SQL_NULL_HSTMT;
         return false;
     }
+    querydiag::stage_event(querydiag::Operation::fetch);
     return true;
 }
 
@@ -275,11 +257,13 @@ std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
 }  // namespace
 
 bool query_trend_points(const DbSettings& settings, const QueryInput& input, std::vector<TrendPoint>& rows, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)settings;
     (void)input;
-    error = "query_trend_points is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const auto connection_string = wide_to_utf8(build_connection_string_w(settings));

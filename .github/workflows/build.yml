@@ -71,38 +71,30 @@ jobs:
             -Clean `
             -Config Release `
             -Generator "Visual Studio 17 2022" `
-            -LabelPrintPackagePath "${{ steps.labelprint.outputs.package_root }}"
+            -LabelPrintPackagePath "${{ steps.labelprint.outputs.package_root }}" `
+            -CMakeArgs "-DBUILD_TESTING=ON", "-DLIS_REQUIRE_RELEASE_TESTS=ON"
 
       - name: Build and run tests
         shell: pwsh
         run: |
           cmake --build build\main-app `
             --config Release `
-            --target `
-              update_database_tests `
-              update_package_tests `
-              microbiology_quick_machine_tests `
-              microbiology_label_tests `
-              regular_report_barcode_range_tests `
-              regular_report_comparison_tests `
-              regular_report_tracking_tests `
-              scheduled_result_check_tests `
-              transfusion_order_core_tests `
-              search_datetime_tests `
-              tat_statistics_tests `
-              massive_transfusion_core_tests `
-              xlsx_writer_tests `
-              window_task_tests `
-              log_tests `
+            --target lis_tests `
             -j $env:NUMBER_OF_PROCESSORS
           if ($LASTEXITCODE -ne 0) {
             throw "Test build failed"
+          }
+
+          cmake -DTEST_DIR=build/main-app -DTEST_CONFIG=Release -P cmake/verify_release_tests.cmake
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required test inventory verification failed"
           }
 
           ctest `
             --test-dir build\main-app `
             -C Release `
             --output-on-failure `
+            --no-tests=error `
             --timeout 120
           if ($LASTEXITCODE -ne 0) {
             throw "Tests failed"

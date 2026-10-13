@@ -47,6 +47,25 @@ make package
 
 编译输出位于 `build/windows-x64/`，安装和更新产物位于 `out/windows/`。其他构建目标可通过 `make help` 查看。
 
+## 测试
+
+macOS/Linux 原生 Release 核心测试（数据库访问仍仅支持 Windows）：
+
+```bash
+cmake -S . -B build/native-tests -DCMAKE_BUILD_TYPE=Release -DBUILD_QT_GUI=OFF
+cmake --build build/native-tests --target lis_tests -j
+ctest --test-dir build/native-tests --output-on-failure --no-tests=error --timeout 120
+```
+
+原生测试需要 Python；没有 PowerShell 时明确排除离线上传脚本测试。Windows UI、WindowTask、ODBC 连接诊断和 LabelPrint 测试必须在 Windows 验证，交叉编译不能替代运行。
+
+正式 Windows CI 配置 `-DBUILD_TESTING=ON -DLIS_REQUIRE_RELEASE_TESTS=ON`，要求 Python、PowerShell 和 LabelPrint，构建 `lis_tests` 后先执行测试清单检查，再运行 Release CTest；缺少必需测试即阻断打包。清单检查命令：
+
+```powershell
+cmake -DTEST_DIR=build/main-app -DTEST_CONFIG=Release -P cmake/verify_release_tests.cmake
+```
+
+
 ## 项目结构
 
 | 路径 | 内容 |
@@ -66,4 +85,6 @@ make package
 
 开发时先读本地文档索引和项目参考，再查对应模块设计，并核对源码与测试。设计资料仅本地保存，不随 Git 克隆或发布包分发，需单独备份。
 
-版本以 `src/version.h` 为准。构建产物、本机配置和私有设计资料由 `.gitignore` 排除。
+查询失败显示固定错误码、安全 SQLSTATE／数字错误号和 `request_id`；排障时可用该 ID 关联日期日志中的查询阶段与耗时。查询诊断不输出原始 ODBC 消息、SQL、患者筛选值或连接凭据。
+
+当前源码版本为 `v2026.10.13.4`，版本以 `src/version.h` 为准。构建产物、本机配置和私有设计资料由 `.gitignore` 排除。
