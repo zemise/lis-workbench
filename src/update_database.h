@@ -3,8 +3,17 @@
 #include "update_source.h"
 #include "update_config.h"
 #include <functional>
+#include <vector>
 
 namespace lis_update {
+struct DatabaseConnectionDiagnostic {
+    std::string state;
+    int native_error = 0;
+    std::string provider_text;
+};
+std::string describe_database_connection_failures(const std::string& driver,
+    const std::vector<DatabaseConnectionDiagnostic>& diagnostics,
+    bool trust_server_certificate);
 // Provider text is used for classification only; it is never included in the result.
 std::string describe_database_connection_failure(const std::string& driver,
     const std::string& state, int native_error, const std::string& provider_text,
@@ -12,14 +21,12 @@ std::string describe_database_connection_failure(const std::string& driver,
 class DatabaseUpdateSource final : public IUpdateSource {
 public:
     explicit DatabaseUpdateSource(search::DbSettings settings,
-                                  bool trust_server_certificate = kDefaultTrustServerCertificate,
                                   std::function<bool()> cancelled = {});
     bool fetch_manifest(UpdateManifest& manifest, std::string& error) override;
     bool fetch_package(const UpdateManifest& manifest, const std::wstring& target_path,
                        std::string& error) override;
 private:
     search::DbSettings settings_;
-    bool trust_;
     std::function<bool()> cancelled_;
 };
 }

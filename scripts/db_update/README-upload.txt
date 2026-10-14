@@ -34,11 +34,12 @@ After updating the generator, move an existing version output directory aside,
 then generate again and copy the WHOLE new directory. Replacing upload.ps1 alone
 will fail the release-info.json checksum check.
 
-The client also defaults to Encrypt=Yes and TrustServerCertificate=Yes for LIS
-updates. To override locally in ClientConfig.ini under [Update]:
-  TrustServerCertificate=1  (LAN default; also enables older clients to connect)
-  TrustServerCertificate=0  (require certificate chain and hostname validation)
-Existing explicit settings are preserved. Trust does not validate server identity.
+From v2026.10.13.3 the LIS update client follows normal query connection policy:
+same driver candidates, parameters and successful-candidate cache, on a separate
+read-only connection. It does not set Encrypt or require a modern ODBC driver.
+Encryption depends on the driver's defaults and server settings; it may be absent.
+Client [Update] TrustServerCertificate no longer overrides this shared policy.
+The administrator uploader remains encrypted with its existing trust/validation flags.
 Old clients must first use the complete installer to obtain the capable Updater.exe.
 The database version must be newer than the installed client to test an actual update;
 equal or older database versions produce no installation prompt.
@@ -51,3 +52,10 @@ The exact legacy tags v2026.10.13, v2026.10.14, v2026.10.15 compare as
 v2026.10.12.1, .2, .3; package identities and stored data are not rewritten.
 Always regenerate and copy the whole upload directory with the new tool.
 No database schema migration is needed; the existing update table is reused.
+
+If SQL error 195 occurs during publication, the package may already be staged
+and verified. Keep it; do not change database compatibility or recreate the table.
+Use the updated generator to regenerate the WHOLE directory for the same Release,
+then retry upload.cmd. Matching version/hash reuses the staged record.
+The publisher supports SQL Server 2012+ with older database compatibility levels.
+It validates dates using TRY_CAST on unseparated YYYYMMDD.

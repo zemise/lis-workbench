@@ -10,6 +10,10 @@ endif()
 project(lis_workbench LANGUAGES C CXX)
 
 include(CTest)
+option(LIS_REQUIRE_RELEASE_TESTS "Require the complete Windows release test gate" OFF)
+if(LIS_REQUIRE_RELEASE_TESTS AND (NOT BUILD_TESTING OR NOT WIN32 OR CMAKE_CROSSCOMPILING))
+    message(FATAL_ERROR "Release tests require BUILD_TESTING=ON and a native Windows build")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,8 +58,11 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
 endif()
 
 # ── Core library ──────────────────────────────────────────────
-# Platform-free business logic. Reusable across Win32 and Qt frontends.
+# Shared business/query implementation. Non-Windows builds test pure logic;
+# database access remains Windows-only.
 add_library(search_core STATIC
+    src/login_core.cpp
+    src/login_source.cpp
     src/search_core.cpp
     src/search_app.cpp
     src/search_controller.cpp
@@ -63,12 +70,17 @@ add_library(search_core STATIC
     src/app_settings.cpp
     src/trend_core.cpp
     src/log.cpp
+    src/query_diagnostics.cpp
 )
 target_include_directories(search_core PUBLIC src)
 target_compile_definitions(search_core PUBLIC UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
 
 if(WIN32)
     target_link_libraries(search_core PUBLIC odbc32)
+    target_link_libraries(search_core PUBLIC bcrypt)
+elseif(NOT APPLE)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(search_core PUBLIC OpenSSL::Crypto)
 endif()
 
 add_library(update_core STATIC
@@ -83,6 +95,7 @@ if(WIN32)
     target_link_libraries(update_core PUBLIC advapi32 urlmon odbc32)
 endif()
 
+if(WIN32)
 # ── Shared UI library ──────────────────────────────────────────
 # Compiled once, linked by both result_search and main_app.
 add_library(search_ui_core STATIC
@@ -157,8 +170,16 @@ if(MINGW)
     target_link_options(result_search PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
+add_library(login_source_runtime STATIC src/login_source_win32.cpp src/login_adoption.cpp)
+target_include_directories(login_source_runtime PUBLIC src)
+target_compile_definitions(login_source_runtime PRIVATE NOMINMAX)
+target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuuid ole32 oleaut32 shell32 advapi32)
+
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
+    src/login_database.cpp
+    src/login_dialog.cpp
+    src/login_source_guard.cpp
     src/main_frame.cpp
     src/menu_toolbar.cpp
     src/backup_blood_statistics_module.cpp
@@ -203,7 +224,7 @@ add_executable(main_app WIN32
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
+target_link_libraries(main_app PRIVATE login_source_runtime search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
 if(WIN32)
     target_link_libraries(main_app PRIVATE dwmapi)
 endif()
@@ -243,6 +264,8 @@ if(MINGW)
     target_link_options(updater PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
+endif() # Windows frontends, UI dependencies and updater
+
 if(BUILD_TESTING)
     add_executable(update_database_tests tests/update_database_test.cpp)
     target_link_libraries(update_database_tests PRIVATE update_core)
@@ -250,12 +273,24 @@ if(BUILD_TESTING)
     add_executable(update_package_tests tests/update_package_test.cpp)
     target_link_libraries(update_package_tests PRIVATE update_core)
     find_program(DB_UPDATE_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+    if(LIS_REQUIRE_RELEASE_TESTS AND NOT DB_UPDATE_POWERSHELL_EXECUTABLE)
+        message(FATAL_ERROR "PowerShell is required for db_update_upload_offline_tests")
+    elseif(NOT DB_UPDATE_POWERSHELL_EXECUTABLE)
+        message(STATUS "Excluded db_update_upload_offline_tests: PowerShell not found")
+    endif()
     if(DB_UPDATE_POWERSHELL_EXECUTABLE)
         add_test(NAME db_update_upload_offline_tests
             COMMAND ${DB_UPDATE_POWERSHELL_EXECUTABLE} -NoProfile -NonInteractive -File
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/db_update_upload_test.ps1)
     endif()
-    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(LIS_REQUIRE_RELEASE_TESTS OR NOT CMAKE_CROSSCOMPILING)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    else()
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+    endif()
+    if(NOT Python3_FOUND)
+        message(STATUS "Excluded db_update_package_tests and ZIP fixtures: Python not found")
+    endif()
     if(Python3_FOUND)
         add_test(NAME db_update_package_tests
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/db_update_package_test.py)
@@ -309,37 +344,16 @@ if(BUILD_TESTING)
     target_include_directories(scheduled_result_check_tests PRIVATE src)
     add_test(NAME scheduled_result_check_tests COMMAND scheduled_result_check_tests)
 
-    add_executable(transfusion_order_core_tests
-        tests/transfusion_order_statistics_test.cpp
-        src/search_core.cpp
-        src/search_text.cpp
-    )
-    target_include_directories(transfusion_order_core_tests PRIVATE src)
-    if(WIN32)
-        target_link_libraries(transfusion_order_core_tests PRIVATE odbc32)
-    endif()
+    add_executable(transfusion_order_core_tests tests/transfusion_order_statistics_test.cpp)
+    target_link_libraries(transfusion_order_core_tests PRIVATE search_core)
     add_test(NAME transfusion_order_core_tests COMMAND transfusion_order_core_tests)
 
-    add_executable(search_datetime_tests
-        tests/search_datetime_test.cpp
-        src/search_core.cpp
-        src/search_text.cpp
-    )
-    target_include_directories(search_datetime_tests PRIVATE src)
-    if(WIN32)
-        target_link_libraries(search_datetime_tests PRIVATE odbc32)
-    endif()
+    add_executable(search_datetime_tests tests/search_datetime_test.cpp)
+    target_link_libraries(search_datetime_tests PRIVATE search_core)
     add_test(NAME search_datetime_tests COMMAND search_datetime_tests)
 
-    add_executable(tat_statistics_tests
-        tests/tat_statistics_test.cpp
-        src/search_core.cpp
-        src/search_text.cpp
-    )
-    target_include_directories(tat_statistics_tests PRIVATE src)
-    if(WIN32)
-        target_link_libraries(tat_statistics_tests PRIVATE odbc32)
-    endif()
+    add_executable(tat_statistics_tests tests/tat_statistics_test.cpp)
+    target_link_libraries(tat_statistics_tests PRIVATE search_core)
     add_test(NAME tat_statistics_tests COMMAND tat_statistics_tests)
 
     add_executable(massive_transfusion_core_tests
@@ -357,6 +371,32 @@ if(BUILD_TESTING)
     add_test(NAME xlsx_writer_tests COMMAND xlsx_writer_tests)
 
     if(WIN32)
+        add_executable(login_source_runtime_tests tests/login_source_win32_test.cpp)
+        target_link_libraries(login_source_runtime_tests PRIVATE login_source_runtime)
+        add_test(NAME login_source_runtime_tests COMMAND login_source_runtime_tests)
+        add_executable(login_source_guard_tests tests/login_source_guard_test.cpp src/login_source_guard.cpp resource/app.rc)
+        target_include_directories(login_source_guard_tests PRIVATE resource)
+        target_link_libraries(login_source_guard_tests PRIVATE search_ui_core search_core)
+        if(MSVC)
+            target_link_options(login_source_guard_tests PRIVATE /MANIFEST:NO)
+        endif()
+        add_test(NAME login_source_guard_tests COMMAND login_source_guard_tests)
+        set_tests_properties(login_source_guard_tests PROPERTIES TIMEOUT 30)
+        add_executable(login_adoption_tests tests/login_adoption_test.cpp src/login_adoption.cpp)
+        target_link_libraries(login_adoption_tests PRIVATE search_core)
+        add_test(NAME login_adoption_tests COMMAND login_adoption_tests)
+        add_executable(login_database_tests tests/login_database_test.cpp src/login_database.cpp)
+        target_link_libraries(login_database_tests PRIVATE search_core)
+        target_compile_definitions(login_database_tests PRIVATE NOMINMAX)
+        add_test(NAME login_database_tests COMMAND login_database_tests)
+        add_executable(login_dialog_tests tests/login_dialog_test.cpp src/login_dialog.cpp resource/app.rc)
+        target_include_directories(login_dialog_tests PRIVATE resource)
+        if(MSVC)
+            target_link_options(login_dialog_tests PRIVATE /MANIFEST:NO)
+        endif()
+        target_link_libraries(login_dialog_tests PRIVATE search_ui_core search_core)
+        add_test(NAME login_dialog_tests COMMAND login_dialog_tests)
+        set_tests_properties(login_dialog_tests PROPERTIES TIMEOUT 15)
         add_executable(window_task_tests
             tests/window_task_test.cpp
             src/window_task.cpp
@@ -365,11 +405,57 @@ if(BUILD_TESTING)
         target_compile_definitions(window_task_tests PRIVATE
             UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
         add_test(NAME window_task_tests COMMAND window_task_tests)
-        add_executable(log_tests tests/log_test.cpp)
-        target_include_directories(log_tests PRIVATE src)
-        target_link_libraries(log_tests PRIVATE search_core)
-        add_test(NAME log_tests COMMAND log_tests)
+        add_test(NAME window_task_failure_probe COMMAND window_task_tests --fail-worker)
+        set_tests_properties(window_task_tests window_task_failure_probe PROPERTIES TIMEOUT 30)
+        set_tests_properties(window_task_failure_probe PROPERTIES WILL_FAIL TRUE)
     endif()
+    add_executable(log_tests tests/log_test.cpp)
+    target_link_libraries(log_tests PRIVATE search_core)
+    add_test(NAME log_tests COMMAND log_tests)
+    add_executable(login_source_tests tests/login_source_test.cpp)
+    target_link_libraries(login_source_tests PRIVATE search_core)
+    add_test(NAME login_source_tests COMMAND login_source_tests)
+    add_executable(login_core_tests tests/login_core_test.cpp)
+    target_link_libraries(login_core_tests PRIVATE search_core)
+    add_test(NAME login_core_tests COMMAND login_core_tests)
+    if(MINGW)
+        foreach(login_test login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
+            target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
+        endforeach()
+    endif()
+    # One dependency target avoids CI silently forgetting newly added executables.
+    get_property(lis_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    list(FILTER lis_test_targets INCLUDE REGEX "_tests$")
+    add_custom_target(lis_tests DEPENDS ${lis_test_targets})
+
+    if(LIS_REQUIRE_RELEASE_TESTS)
+        set(LIS_REQUIRED_TESTS
+            login_source_tests login_adoption_tests login_source_guard_tests login_source_runtime_tests
+            login_core_tests
+            login_database_tests
+            login_dialog_tests
+            update_database_tests update_package_tests db_update_upload_offline_tests
+            db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
+            microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests
+            scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests
+            tat_statistics_tests massive_transfusion_core_tests xlsx_writer_tests
+            window_task_tests window_task_failure_probe log_tests)
+        foreach(test_name IN LISTS LIS_REQUIRED_TESTS)
+            if(NOT TEST ${test_name})
+                message(FATAL_ERROR "Required release test is not registered: ${test_name}")
+            endif()
+        endforeach()
+        file(WRITE "${CMAKE_BINARY_DIR}/required_release_tests.cmake"
+            "set(LIS_REQUIRED_TESTS ${LIS_REQUIRED_TESTS})\n")
+    else()
+        file(REMOVE "${CMAKE_BINARY_DIR}/required_release_tests.cmake")
+    endif()
+    if(NOT WIN32)
+        message(STATUS "Native core tests only: Windows UI/WindowTask, ODBC connection diagnostics and LabelPrint tests excluded")
+    elseif(CMAKE_CROSSCOMPILING)
+        message(STATUS "Cross-built Windows tests are compile checks only; run CTest on Windows for release verification")
+    endif()
+
 endif()
 
 # ── Qt 5.15 frontend (opt-in) ─────────────────────────────────

@@ -1433,14 +1433,7 @@ void runQuery(HWND hwnd, BarcodeState* st) {
         [filters] {
             BarcodeQueryResult result;
             result.ok = search::query_barcodes(
-                filters, result.rows, result.error,
-                [](const std::string& message) {
-                    if (message.rfind("barcode query timing:", 0) == 0) {
-                        LOG_DEBUG(message);
-                    } else if (message.rfind("barcode employee dictionary unavailable:", 0) == 0) {
-                        LOG_WARN(message);
-                    }
-                });
+                filters, result.rows, result.error);
             return result;
         },
         [hwnd](std::optional<BarcodeQueryResult> result, std::exception_ptr error) {

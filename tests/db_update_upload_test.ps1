@@ -10,7 +10,7 @@ $function=$ast.Find({param($node) $node -is [System.Management.Automation.Langua
 if ($null -eq $function) { throw 'Index validator missing.' }
 Invoke-Expression $function.Extent.Text
 
-foreach ($name in @('Test-PublishConfirmation','Get-UploadFailureMessage','Resolve-CertificateTrust','Test-ReleaseVersion')) {
+foreach ($name in @('Test-PublishConfirmation','Get-DatabaseFailureMessage','Get-UploadFailureMessage','Resolve-CertificateTrust','Test-ReleaseVersion')) {
     $helper=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$false)
     if ($null -eq $helper) { throw "Missing helper: $name" }
     Invoke-Expression $helper.Extent.Text
@@ -60,6 +60,16 @@ foreach ($answer in @('YES','yes','Yes','  yEs  ',"`tYES`r`n")) {
 foreach ($answer in @('',' ','no','y','YES please','yes;other',$null)) {
     if (Test-PublishConfirmation $answer) { throw 'Unconfirmed publication accepted.' }
 }
+$message=Get-DatabaseFailureMessage 'publication' 195
+foreach ($expected in @('SQL error 195','compatibility level','WHOLE upload directory','Do not change database','keep the staged package','same version and hash')) {
+    if (-not $message.Contains($expected)) { throw "Missing SQL compatibility guidance: $expected" }
+}
+if ($message.Contains('check update-table permissions')) { throw 'Compatibility error misclassified as permissions.' }
+$message=Get-DatabaseFailureMessage 'upload' 229
+if (-not $message.Contains('SQL error 229') -or -not $message.Contains('permissions')) {
+    throw 'Other SQL errors lost their diagnostic code.'
+}
+
 $wrapped=[Reflection.TargetInvocationException]::new('synthetic wrapper', [Exception]::new('PRIVATE_CONNECTION_DETAILS'))
 foreach ($trust in @($false,$true)) {
     $message=Get-UploadFailureMessage $wrapped 'connect' $trust

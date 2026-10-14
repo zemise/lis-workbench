@@ -1,4 +1,6 @@
+#include "query_diagnostics.h"
 #include "search_core.h"
+#include "odbc_connection_policy.h"
 #include "search_text.h"
 
 #include <algorithm>
@@ -451,85 +453,14 @@ std::string sql_room_machine_exclude_filter(const std::string& text, const char*
     return sql.str();
 }
 
-std::map<std::string, std::string> parse_connection_kv(const std::string& text) {
-    std::map<std::string, std::string> values;
-    for (const auto& part : split(text, ';')) {
-        const auto pos = part.find('=');
-        if (pos == std::string::npos) {
-            continue;
-        }
-        values[upper_ascii(trim(part.substr(0, pos)))] = trim(part.substr(pos + 1));
-    }
-    return values;
-}
-
-std::vector<std::string> odbc_candidates(const std::string& input) {
-    if (input.find("DRIVER=") != std::string::npos || input.find("Driver=") != std::string::npos) {
-        return {input};
-    }
-    const auto kv = parse_connection_kv(input);
-    const auto server_it = kv.find("DATA SOURCE");
-    const auto db_it = kv.find("INITIAL CATALOG");
-    const auto user_it = kv.find("USER ID");
-    const auto pass_it = kv.find("PASSWORD");
-    if (server_it == kv.end() || db_it == kv.end() || user_it == kv.end() || pass_it == kv.end()) {
-        return {input};
-    }
-
-    return {
-        "DRIVER={ODBC Driver 18 for SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second +
-            ";TrustServerCertificate=Yes;",
-        "DRIVER={ODBC Driver 17 for SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second +
-            ";TrustServerCertificate=Yes;",
-        "DRIVER={SQL Server};SERVER=" + server_it->second +
-            ";DATABASE=" + db_it->second +
-            ";UID=" + user_it->second +
-            ";PWD=" + pass_it->second + ";",
-    };
-}
+using odbc::odbc_candidates;
 
 #ifdef _WIN32
 constexpr SQLULEN kLoginTimeoutSeconds = 5;
 constexpr SQLULEN kQueryTimeoutSeconds = 120;
 
-std::mutex& preferred_odbc_candidate_mutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::map<std::string, std::string>& preferred_odbc_candidates() {
-    static std::map<std::string, std::string> cache;
-    return cache;
-}
-
-std::string cached_odbc_candidate(const std::string& connection_string) {
-    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
-    const auto it = preferred_odbc_candidates().find(connection_string);
-    return it == preferred_odbc_candidates().end() ? std::string{} : it->second;
-}
-
-void remember_odbc_candidate(const std::string& connection_string, const std::string& candidate) {
-    std::lock_guard<std::mutex> lock(preferred_odbc_candidate_mutex());
-    preferred_odbc_candidates()[connection_string] = candidate;
-}
-
-std::vector<std::string> prioritized_odbc_candidates(const std::string& connection_string,
-                                                     std::string& cached_candidate) {
-    auto candidates = odbc_candidates(connection_string);
-    cached_candidate = cached_odbc_candidate(connection_string);
-    if (cached_candidate.empty()) {
-        return candidates;
-    }
-    candidates.erase(std::remove(candidates.begin(), candidates.end(), cached_candidate), candidates.end());
-    candidates.insert(candidates.begin(), cached_candidate);
-    return candidates;
-}
+using odbc::prioritized_odbc_candidates;
+using odbc::remember_odbc_candidate;
 
 void enable_odbc_connection_pooling_once(LogFn log) {
     static std::once_flag flag;
@@ -566,7 +497,6 @@ struct DbContext {
     DbContext& operator=(const DbContext&) = delete;
 };
 
-std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle);
 
 std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
     std::wstring buffer(2048, L'\0');
@@ -594,7 +524,7 @@ bool fetch_binary_column(SQLHSTMT stmt, SQLUSMALLINT col, std::vector<unsigned c
             return true;
         }
         if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
-            error = "SQLGetData binary failed: " + collect_diag(SQL_HANDLE_STMT, stmt);
+            error = querydiag::odbc_error(querydiag::Operation::read, SQL_HANDLE_STMT, stmt);
             out.clear();
             return false;
         }
@@ -616,28 +546,6 @@ bool fetch_binary_column(SQLHSTMT stmt, SQLUSMALLINT col, std::vector<unsigned c
     }
 }
 
-std::string collect_diag(SQLSMALLINT handle_type, SQLHANDLE handle) {
-    std::ostringstream oss;
-    SQLSMALLINT rec = 1;
-    while (true) {
-        SQLWCHAR state[16] = {};
-        SQLWCHAR message[1024] = {};
-        SQLINTEGER native_error = 0;
-        SQLSMALLINT text_len = 0;
-        const SQLRETURN rc = SQLGetDiagRecW(handle_type, handle, rec, state, &native_error,
-                                            message, 1024, &text_len);
-        if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
-            break;
-        }
-        if (rec > 1) {
-            oss << " | ";
-        }
-        oss << wide_to_utf8(state) << ":" << native_error << ":" << wide_to_utf8(message);
-        ++rec;
-    }
-    return oss.str();
-}
-
 void disconnect(DbContext& db) {
     if (db.dbc != SQL_NULL_HDBC) {
         SQLDisconnect(db.dbc);
@@ -651,19 +559,20 @@ void disconnect(DbContext& db) {
 }
 
 bool connect(const std::string& connection_string, DbContext& db, std::string& error, LogFn log) {
+    querydiag::stage_event(querydiag::Operation::connect);
     if (connection_string.empty()) {
         error = "missing connection string";
         return false;
     }
     enable_odbc_connection_pooling_once(log);
     if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &db.env) != SQL_SUCCESS) {
-        error = "SQLAllocHandle ENV failed";
+        error = querydiag::safe_error(querydiag::Operation::environment);
         return false;
     }
     SQLSetEnvAttr(db.env, SQL_ATTR_ODBC_VERSION, reinterpret_cast<void*>(SQL_OV_ODBC3), 0);
     SQLSetEnvAttr(db.env, SQL_ATTR_CP_MATCH, reinterpret_cast<void*>(SQL_CP_STRICT_MATCH), 0);
     if (SQLAllocHandle(SQL_HANDLE_DBC, db.env, &db.dbc) != SQL_SUCCESS) {
-        error = "SQLAllocHandle DBC failed";
+        error = querydiag::safe_error(querydiag::Operation::connection_handle);
         disconnect(db);
         return false;
     }
@@ -703,7 +612,7 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
         }
     }
 
-    error = "SQLDriverConnect failed: " + collect_diag(SQL_HANDLE_DBC, db.dbc);
+    error = querydiag::odbc_error(querydiag::Operation::connect, SQL_HANDLE_DBC, db.dbc);
     if (log) {
         for (const auto& entry : failed_attempt_logs) {
             log(entry);
@@ -715,17 +624,17 @@ bool connect(const std::string& connection_string, DbContext& db, std::string& e
 }
 
 bool exec_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, std::string& error) {
+    querydiag::stage_event(querydiag::Operation::execute);
     stmt = SQL_NULL_HSTMT;
     if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) {
-        error = "SQLAllocHandle STMT failed";
+        error = querydiag::safe_error(querydiag::Operation::statement);
         return false;
     }
     const SQLRETURN timeout_rc = SQLSetStmtAttr(
         stmt, SQL_ATTR_QUERY_TIMEOUT,
         reinterpret_cast<SQLPOINTER>(kQueryTimeoutSeconds), 0);
     if (!(timeout_rc == SQL_SUCCESS || timeout_rc == SQL_SUCCESS_WITH_INFO)) {
-        error = "SQLSetStmtAttr QUERY_TIMEOUT failed: " +
-                collect_diag(SQL_HANDLE_STMT, stmt);
+        error = querydiag::odbc_error(querydiag::Operation::timeout, SQL_HANDLE_STMT, stmt);
         SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         stmt = SQL_NULL_HSTMT;
         return false;
@@ -733,11 +642,12 @@ bool exec_query(SQLHDBC dbc, const std::string& sql, SQLHSTMT& stmt, std::string
     const auto wide = utf8_to_wide(sql);
     const SQLRETURN rc = SQLExecDirectW(stmt, reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(wide.c_str())), SQL_NTS);
     if (!(rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO)) {
-        error = "SQLExecDirect failed: " + collect_diag(SQL_HANDLE_STMT, stmt);
+        error = querydiag::odbc_error(querydiag::Operation::execute, SQL_HANDLE_STMT, stmt);
         SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         stmt = SQL_NULL_HSTMT;
         return false;
     }
+    querydiag::stage_event(querydiag::Operation::fetch);
     return true;
 }
 
@@ -989,11 +899,14 @@ std::string employee_display_name(const std::string& employee_code,
 }
 
 bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)log;
-    error = "query_rooms is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1028,11 +941,14 @@ bool query_rooms(const std::string& connection_string, std::vector<RoomOption>& 
 
 bool query_barcode_rooms(const std::string& connection_string, std::vector<RoomOption>& rows,
                          std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)log;
-    error = "query_barcode_rooms is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1070,11 +986,14 @@ bool query_barcode_rooms(const std::string& connection_string, std::vector<RoomO
 }
 
 bool query_report_machine_picker_rooms(const std::string& connection_string, std::vector<RoomOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)log;
-    error = "query_report_machine_picker_rooms is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1109,11 +1028,14 @@ bool query_report_machine_picker_rooms(const std::string& connection_string, std
 }
 
 bool query_patient_types(const std::string& connection_string, std::vector<PatientTypeOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)log;
-    error = "query_patient_types is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1147,12 +1069,15 @@ bool query_patient_types(const std::string& connection_string, std::vector<Patie
 }
 
 bool query_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)room_code;
     (void)log;
-    error = "query_machines is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1191,12 +1116,15 @@ bool query_machines(const std::string& connection_string, const std::string& roo
 }
 
 bool query_report_machine_picker_machines(const std::string& connection_string, const std::string& room_code, std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)room_code;
     (void)log;
-    error = "query_report_machine_picker_machines is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1257,12 +1185,15 @@ bool query_report_machine_picker_machines(const std::string& connection_string, 
 bool query_microbiology_report_machine_picker_machines(
     const std::string& connection_string, const std::string& room_code,
     std::vector<MachineOption>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)room_code;
     (void)log;
-    error = "query_microbiology_report_machine_picker_machines is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1333,11 +1264,14 @@ bool query_microbiology_report_machine_picker_machines(
 }
 
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)filters;
     (void)log;
-    error = "query_reports is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1480,11 +1414,14 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
 }
 
 bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)filters;
     (void)log;
-    error = "query_blood_lis_reports is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -1569,12 +1506,14 @@ bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>
 
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no,
                                          std::string& phone, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     phone.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)reg_no;
     (void)log;
-    error = "query_latest_report_phone_by_reg_no is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string trimmed_reg_no = trim(reg_no);
@@ -1617,12 +1556,14 @@ bool query_latest_report_phone_by_reg_no(const std::string& connection_string, c
 bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_string, const std::string& reg_no,
                                                   std::vector<std::string>& inpatient_nos, std::string& error,
                                                   LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     inpatient_nos.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)reg_no;
     (void)log;
-    error = "query_inpatient_nos_by_social_no_from_reg_no is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string trimmed_reg_no = trim(reg_no);
@@ -1670,11 +1611,13 @@ bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_
 bool query_regular_comparison_history(const std::string& connection_string,
                                      const ReportRow& current,
                                      std::vector<ReportRow>& rows, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)current;
-    error = "comparison history is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (trim(current.reg_no).empty() || trim(current.mach_code).empty() ||
@@ -1706,12 +1649,13 @@ bool query_regular_comparison_history(const std::string& connection_string,
         row.inspect_date = fetch_column(stmt, 2);
         rows.push_back(std::move(row));
     }
-    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     if (fetched != SQL_NO_DATA) {
+        error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         rows.clear();
-        error = "历史报告读取失败。";
         return false;
     }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
@@ -1719,6 +1663,9 @@ bool query_regular_comparison_history(const std::string& connection_string,
 
 bool query_results(const std::string& connection_string, const std::string& rep_no,
                    std::vector<ResultRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
     std::vector<std::vector<ResultRow>> reports;
     if (!query_results_batch(connection_string, {rep_no}, reports, error, log)) return false;
@@ -1730,12 +1677,15 @@ bool query_results_batch(const std::string& connection_string,
                          const std::vector<std::string>& rep_nos,
                          std::vector<std::vector<ResultRow>>& rows,
                          std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)rep_nos;
     (void)log;
-    error = "query_results_batch is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (rep_nos.empty()) { error.clear(); return true; }
@@ -1821,23 +1771,27 @@ bool query_results_batch(const std::string& connection_string,
         if (report != report_indexes.end()) rows[report->second].push_back(std::move(row));
     }
 
-    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     if (fetched != SQL_NO_DATA) {
+        error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         rows.clear();
-        error = "项目明细读取失败。";
         return false;
     }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
 #endif
 }
 
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_quality_control_lis_results is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (trim(query.mach_code).empty()) {
@@ -2004,11 +1958,14 @@ bool query_quality_control_lis_results(const QualityControlLisQuery& query, std:
 }
 
 bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_quality_control_sample_items is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (trim(query.mach_code).empty() || trim(query.sample_no).empty() || trim(query.inspect_date).empty()) {
@@ -2081,12 +2038,14 @@ bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& qu
 
 bool query_report_picture(const std::string& connection_string, const std::string& rep_no,
                           std::vector<unsigned char>& picture, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     picture.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)rep_no;
     (void)log;
-    error = "query_report_picture is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string trimmed_rep_no = trim(rep_no);
@@ -2132,11 +2091,13 @@ bool query_report_picture(const std::string& connection_string, const std::strin
 }
 
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     summary = {};
 #ifndef _WIN32
     (void)filters;
     (void)log;
-    error = "query_lis_summary is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -2265,10 +2226,13 @@ bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::st
 }
 
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)filters; (void)log;
-    error = "query_blood_requests is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
@@ -2358,12 +2322,15 @@ bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodReq
 
 bool query_blood_crossmatch_history(const std::string& connection_string, const std::string& patient_no,
                                     std::vector<BloodCrossMatchRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string;
     (void)patient_no;
     (void)log;
-    error = "query_blood_crossmatch_history is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string no = trim(patient_no);
@@ -2435,10 +2402,13 @@ bool query_blood_crossmatch_history(const std::string& connection_string, const 
 }
 
 bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)filters; (void)log;
-    error = "query_barcodes is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const auto query_started = std::chrono::steady_clock::now();
@@ -2644,10 +2614,13 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
 }
 
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)query; (void)log;
-    error = "query_specimen_signed_list is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (!query.use_sign_time && !query.use_apply_time) {
@@ -2738,10 +2711,12 @@ bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vecto
 }
 
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     result = SpecimenBarcodeResult{};
 #ifndef _WIN32
     (void)query; (void)log;
-    error = "query_specimen_barcode is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const auto barcode = trim(query.barcode);
@@ -3080,12 +3055,15 @@ bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeRe
 }
 
 bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = HivStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_hiv_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     if (query.year < 1900 || query.year > 9999 || query.month < 1 || query.month > 12) {
@@ -3527,12 +3505,15 @@ bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, st
 }
 
 bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSummary& summary, std::vector<EmergencyStatDetailRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = EmergencyStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_emergency_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string start_time = trim(query.start_time);
@@ -3937,12 +3918,15 @@ bool build_tat_statistics(const TatStatQuery& query,
 bool query_tat_statistics(const TatStatQuery& query, TatStatSummary& summary,
                           std::vector<TatStatDetailRow>& rows,
                           std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = TatStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_tat_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string start_time = trim(query.start_time);
@@ -4079,12 +4063,15 @@ bool query_backup_blood_statistics(const BackupBloodStatQuery& query,
                                    BackupBloodStatSummary& summary,
                                    std::vector<BackupBloodStatDetailRow>& rows,
                                    std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = BackupBloodStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_backup_blood_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     constexpr const char* kBackupValue = "备血";
@@ -4427,12 +4414,15 @@ bool query_transfusion_order_statistics(
     TransfusionOrderStatSummary& summary,
     std::vector<TransfusionOrderStatDetailRow>& rows,
     std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = TransfusionOrderStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_transfusion_order_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string start_date = trim(query.start_date);
@@ -5280,13 +5270,16 @@ bool query_massive_transfusion_statistics(
     std::vector<MassiveTransfusionEventRow>& events,
     std::vector<MassiveTransfusionComponentDetailRow>& audit_rows,
     std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(events);
 #ifndef _WIN32
     (void)query;
     (void)summary;
     (void)events;
     (void)audit_rows;
     (void)log;
-    error = "query_massive_transfusion_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string start_date = trim(query.start_date);
@@ -5466,12 +5459,15 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
                                        ImmuneDuplicateStatSummary& summary,
                                        std::vector<ImmuneDuplicateStatDetailRow>& rows,
                                        std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     summary = ImmuneDuplicateStatSummary{};
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_immune_duplicate_statistics is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     constexpr const char* kBaseOrderKeyword = "输血前常规检查";
@@ -5673,11 +5669,14 @@ bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query,
 }
 
 bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<OutpatientChargeRow>& rows, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)query;
     (void)log;
-    error = "query_outpatient_charges is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const std::string start_time = trim(query.start_time);
@@ -5857,10 +5856,13 @@ bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<Ou
 bool query_scheduled_check_items(const std::string& connection_string,
                                  std::vector<ScheduledCheckItemOption>& rows,
                                  std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
     (void)connection_string; (void)log;
-    error = "scheduled check item query is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     // Follow the connection-scoped dictionary cache used for barcode employee
@@ -5923,7 +5925,7 @@ bool query_scheduled_check_items(const std::string& connection_string,
         if (current.unit.empty()) current.unit = row.unit;
     }
     if (fetch_rc != SQL_NO_DATA) {
-        error = "SQLFetch failed: " + collect_diag(SQL_HANDLE_STMT, stmt);
+        error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
         SQLFreeHandle(SQL_HANDLE_STMT, stmt);
         if (cached == cache.end()) return false;
         rows = cached->second.items;
@@ -5943,11 +5945,14 @@ bool query_scheduled_check_results(const std::string& connection_string,
                                    std::vector<ScheduledCheckResultRow>& rows,
                                    std::string& error, LogFn log,
                                    const ScheduledCheckResultQuery& query) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    request.observe_rows(rows);
     rows.clear();
     if (item_codes.empty()) { error.clear(); return true; }
 #ifndef _WIN32
     (void)connection_string; (void)log;
-    error = "scheduled check result query is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const auto valid_rep_no = [](const std::string& value) {
@@ -6033,10 +6038,12 @@ bool query_scheduled_check_machine_item_codes(const std::string& connection_stri
                                               const std::string& mach_code,
                                               std::vector<std::string>& codes,
                                               std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    request.observe_rows(codes);
     codes.clear();
 #ifndef _WIN32
     (void)connection_string; (void)room_code; (void)mach_code;
-    error = "scheduled check machine items are only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     const auto numeric = [](const std::string& value) {
@@ -6073,10 +6080,12 @@ bool query_scheduled_check_report_bounds(const std::string& connection_string,
                                          std::string& min_rep_no,
                                          std::string& max_rep_no,
                                          std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
     day.clear(); min_rep_no.clear(); max_rep_no.clear();
 #ifndef _WIN32
     (void)connection_string; (void)log;
-    error = "scheduled check report query is only available on Windows";
+    error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
     DbContext db;
