@@ -26,7 +26,8 @@ struct State {
     float scale=1.0f;
     HFONT ownFont=nullptr,titleFont=nullptr,headingFont=nullptr;
     HBRUSH surface=nullptr,brand=nullptr;
-    bool highContrast=false,feedbackError=false,compact=false;
+    bool highContrast=false,feedbackError=false,compact=false,narrow=false;
+    int scrollOffset=0;
     ~State() {
         for(HFONT font:{ownFont,titleFont,headingFont})if(font)DeleteObject(font);
         for(HBRUSH brush:{surface,brand})if(brush)DeleteObject(brush);
@@ -47,6 +48,7 @@ void paint(HWND hwnd,State* s) {
     RECT client{};GetClientRect(hwnd,&client);
     const auto px=[s](int n){return int(n*s->scale+0.5f);};
     FillRect(dc,&client,s->surface);
+    if(!s->narrow){
     RECT sidebar{0,0,px(BrandWidth),client.bottom};FillRect(dc,&sidebar,s->brand);
     HPEN pen=CreatePen(PS_SOLID,px(2),s->highContrast?GetSysColor(COLOR_WINDOWTEXT):RGB(181,212,232));
     HGDIOBJ oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(NULL_BRUSH));
@@ -59,12 +61,15 @@ void paint(HWND hwnd,State* s) {
     }
     MoveToEx(dc,px(30),px(204),nullptr);LineTo(dc,px(190),px(204));
     SelectObject(dc,oldPen);SelectObject(dc,oldBrush);DeleteObject(pen);
-    pen=CreatePen(PS_SOLID,px(1),s->highContrast?GetSysColor(COLOR_WINDOWTEXT):RGB(214,224,234));
-    oldPen=SelectObject(dc,pen);
+    }
+    HPEN pen=CreatePen(PS_SOLID,px(1),s->highContrast?GetSysColor(COLOR_WINDOWTEXT):RGB(214,224,234));
+    HGDIOBJ oldPen=SelectObject(dc,pen);
+    if(!s->narrow){
     MoveToEx(dc,px(BrandWidth),0,nullptr);LineTo(dc,px(BrandWidth),client.bottom);
+    }
     if(s->mode!=LoginMode::manual){
-        const int divider=px(s->compact?308:380);
-        MoveToEx(dc,px(252),divider,nullptr);LineTo(dc,client.right-px(32),divider);
+        const int divider=px(s->compact?308:380)-s->scrollOffset;
+        MoveToEx(dc,px(s->narrow?32:252),divider,nullptr);LineTo(dc,client.right-px(32),divider);
     }
     SelectObject(dc,oldPen);DeleteObject(pen);EndPaint(hwnd,&ps);
 }
@@ -86,8 +91,19 @@ void busy(HWND hwnd,bool active) {
 void layout(HWND hwnd, State* s) {
     const auto px=[s](int n){return int(n*s->scale+0.5f);};
     RECT client{};GetClientRect(hwnd,&client);
-    const int x=px(252),width=client.right-x-px(32);
-    const auto move=[&](int id,int left,int top,int w,int h){MoveWindow(GetDlgItem(hwnd,id),left,px(top),w,px(h),TRUE);};
+    const int contentHeight=px(clientHeight(s->mode,s->compact));
+    const int maximum=contentHeight>client.bottom?contentHeight-client.bottom:0;
+    if(s->scrollOffset>maximum)s->scrollOffset=maximum;
+    if(s->scrollOffset<0)s->scrollOffset=0;
+    SCROLLINFO scroll{sizeof(SCROLLINFO),SIF_RANGE|SIF_PAGE|SIF_POS,0,contentHeight-1,UINT(client.bottom),s->scrollOffset};
+    SetScrollInfo(hwnd,SB_VERT,&scroll,TRUE);
+    GetClientRect(hwnd,&client); // Scrollbar visibility may change the width.
+    s->narrow=client.right<px(640)||client.bottom<px(370);
+    for(int id:{BrandTitle,BrandDescription,BrandFooter})ShowWindow(GetDlgItem(hwnd,id),s->narrow?SW_HIDE:SW_SHOW);
+    const int x=px(s->narrow?32:252),width=client.right-x-px(32);
+    const auto move=[&](int id,int left,int top,int w,int h){
+        MoveWindow(GetDlgItem(hwnd,id),left,px(top)-(brandControl(id)?0:s->scrollOffset),w,px(h),TRUE);
+    };
     move(BrandTitle,px(28),232,px(176),40);
     move(BrandDescription,px(28),286,px(164),48);
     MoveWindow(GetDlgItem(hwnd,BrandFooter),px(28),client.bottom-px(36),px(164),px(24),TRUE);
@@ -108,6 +124,15 @@ void layout(HWND hwnd, State* s) {
     }
     for(int id:{Code,Password})SendMessageW(GetDlgItem(hwnd,id),EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,MAKELPARAM(px(8),px(8)));
     InvalidateRect(hwnd,nullptr,FALSE);
+}
+void revealControl(HWND hwnd,State* s,HWND control) {
+    if(!control||GetParent(control)!=hwnd||brandControl(GetDlgCtrlID(control)))return;
+    RECT rect{},client{};GetWindowRect(control,&rect);GetClientRect(hwnd,&client);
+    MapWindowPoints(nullptr,hwnd,reinterpret_cast<POINT*>(&rect),2);
+    const int margin=int(8*s->scale+0.5f),previous=s->scrollOffset;
+    if(rect.top<margin)s->scrollOffset+=rect.top-margin;
+    else if(rect.bottom>client.bottom-margin)s->scrollOffset+=rect.bottom-client.bottom+margin;
+    if(previous!=s->scrollOffset)layout(hwnd,s);
 }
 void applyFont(HWND hwnd,State* s) {
     const auto create=[s](int size,int weight){return CreateFontW(-MulDiv(size,int(96*s->scale),72),0,0,0,weight,FALSE,FALSE,FALSE,
@@ -154,6 +179,9 @@ void sizeWindow(HWND hwnd,State* s,const RECT& work,int left,int top,bool center
         s->compact=true;
         height-=int(clientHeight(s->mode,false)*s->scale)-int(clientHeight(s->mode,true)*s->scale);
     }
+    // Keep the window on small displays; the form scrolls at its chosen DPI.
+    if(width>work.right-work.left)width=work.right-work.left;
+    if(height>work.bottom-work.top)height=work.bottom-work.top;
     if(center){left=work.left+(work.right-work.left-width)/2;top=work.top+(work.bottom-work.top-height)/2;}
     if(left+width>work.right)left=work.right-width;
     if(top+height>work.bottom)top=work.bottom-height;
@@ -242,14 +270,14 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         SendMessageW(GetDlgItem(hwnd,Code),EM_SETLIMITTEXT,50,0);
         SendMessageW(GetDlgItem(hwnd,Password),EM_SETLIMITTEXT,512,0);
         control(L"STATIC",L"",0,Feedback,0,0,1,1);
-        control(L"BUTTON",L"取消",WS_TABSTOP,Cancel,0,0,1,1);
-        control(L"BUTTON",L"登录",WS_TABSTOP|BS_DEFPUSHBUTTON,Submit,0,0,1,1);
+        control(L"BUTTON",L"取消",WS_TABSTOP|BS_NOTIFY,Cancel,0,0,1,1);
+        control(L"BUTTON",L"登录",WS_TABSTOP|BS_NOTIFY|BS_DEFPUSHBUTTON,Submit,0,0,1,1);
         if(s->mode!=LoginMode::manual){
             control(L"STATIC",L"已有登录",SS_NOPREFIX,SourceTitle,0,0,1,1);
             control(L"STATIC",L"",0,SourceLabel,0,0,1,1);
             control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST|WS_VSCROLL,Sources,0,0,1,1);
-            control(L"BUTTON",L"使用此用户",WS_TABSTOP,UseSource,0,0,1,1);
-            control(L"BUTTON",L"刷新推荐",WS_TABSTOP,RefreshSource,0,0,1,1);
+            control(L"BUTTON",L"使用此用户",WS_TABSTOP|BS_NOTIFY,UseSource,0,0,1,1);
+            control(L"BUTTON",L"刷新推荐",WS_TABSTOP|BS_NOTIFY,RefreshSource,0,0,1,1);
             EnableWindow(GetDlgItem(hwnd,UseSource),FALSE);
             PostMessageW(hwnd,WM_APP+1,0,0);
         }
@@ -275,6 +303,23 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     case WM_SYSCOLORCHANGE:case WM_SETTINGCHANGE:case WM_THEMECHANGED:
         palette(s);RedrawWindow(hwnd,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);break;
     case WM_SIZE:layout(hwnd,s);return 0;
+    case WM_VSCROLL: {
+        SCROLLINFO scroll{sizeof(SCROLLINFO),SIF_ALL};GetScrollInfo(hwnd,SB_VERT,&scroll);
+        const int line=int(24*s->scale+0.5f);
+        switch(LOWORD(wp)){
+        case SB_TOP:s->scrollOffset=0;break;
+        case SB_BOTTOM:s->scrollOffset=scroll.nMax;break;
+        case SB_LINEUP:s->scrollOffset-=line;break;
+        case SB_LINEDOWN:s->scrollOffset+=line;break;
+        case SB_PAGEUP:s->scrollOffset-=int(scroll.nPage);break;
+        case SB_PAGEDOWN:s->scrollOffset+=int(scroll.nPage);break;
+        case SB_THUMBTRACK:case SB_THUMBPOSITION:s->scrollOffset=scroll.nTrackPos;break;
+        }
+        layout(hwnd,s);return 0;
+    }
+    case WM_MOUSEWHEEL:
+        s->scrollOffset-=GET_WHEEL_DELTA_WPARAM(wp)*int(48*s->scale+0.5f)/WHEEL_DELTA;
+        layout(hwnd,s);return 0;
     case 0x02e0: { // WM_DPICHANGED; available at runtime on newer Windows.
         s->scale=LOWORD(wp)/96.0f;
         auto* suggested=reinterpret_cast<RECT*>(lp);
@@ -291,6 +336,15 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
             EnableWindow(GetDlgItem(hwnd,RefreshSource),TRUE);SetWindowTextW(GetDlgItem(hwnd,SourceLabel),L"来源识别超时，可刷新或手动登录");return 0;
         }break;
     case WM_COMMAND:
+        if(lp){
+            const int id=LOWORD(wp),notification=HIWORD(wp);
+            const bool button=id==Submit||id==Cancel||id==UseSource||id==RefreshSource;
+            if(((id==Code||id==Password)&&notification==EN_SETFOCUS)
+                ||(id==Sources&&notification==CBN_SETFOCUS)||(button&&notification==BN_SETFOCUS)){
+                revealControl(hwnd,s,reinterpret_cast<HWND>(lp));return 0;
+            }
+            if(button&&notification!=BN_CLICKED)return 0;
+        }
         if((LOWORD(wp)==Code||LOWORD(wp)==Password)&&HIWORD(wp)==EN_CHANGE)s->manualTouched=true;
         if(LOWORD(wp)==Code) {
             if(HIWORD(wp)==EN_CHANGE) {
@@ -347,7 +401,7 @@ std::optional<Identity> show_dialog(HINSTANCE instance,const search::DbSettings&
     wc.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(IDI_APP));
     RegisterClassW(&wc);
     state.scale=search::dpi_scale_factor(nullptr);
-    const DWORD style=WS_CAPTION|WS_SYSMENU|WS_CLIPCHILDREN;
+    const DWORD style=WS_CAPTION|WS_SYSMENU|WS_CLIPCHILDREN|WS_VSCROLL;
     RECT bounds=windowBounds(&state,style,false);
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     const int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;

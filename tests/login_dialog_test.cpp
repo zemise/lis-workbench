@@ -2,9 +2,11 @@
 #include "login_database.h"
 #include "login_adoption.h"
 #include "search_ui_layout.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <vector>
 #include <windows.h>
 namespace { int phase=0;DWORD changedAt=0;std::atomic<int> calls{0},adoptCalls{0};int recMode=0;
 UINT layoutDpi=0;
@@ -23,20 +25,28 @@ RECT control_bounds(HWND dialog,int id) {
 }
 void check_layout(HWND dialog,bool sources) {
     RECT client{};GetClientRect(dialog,&client);
+    SCROLLINFO scroll{sizeof(SCROLLINFO),SIF_ALL};GetScrollInfo(dialog,SB_VERT,&scroll);
+    const int contentHeight=std::max(client.bottom,LONG(scroll.nMax+1));
     std::vector<int> ids{101,102,103,3,4,6,201,202,203,401,402,403,404,405};
     if(sources)for(int id:{301,302,303,304,406})ids.push_back(id);
     for(int id:ids){
+        if(!IsWindowVisible(GetDlgItem(dialog,id)))continue;
         const auto rect=control_bounds(dialog,id);
-        if(rect.left<0||rect.top<0||rect.right>client.right||rect.bottom>client.bottom){
+        const bool brand=id>=401&&id<=403;
+        const int offset=brand?0:scroll.nPos;
+        const int limit=brand?client.bottom:contentHeight;
+        if(rect.left<0||rect.top+offset<0||rect.right>client.right||rect.bottom+offset>limit){
             std::cerr<<"out of bounds phase="<<phase<<" dpi="<<layoutDpi<<" control="<<id
                 <<" rect=("<<rect.left<<","<<rect.top<<","<<rect.right<<","<<rect.bottom
-                <<") client=("<<client.right<<","<<client.bottom<<")\n";
+                <<") client=("<<client.right<<","<<client.bottom<<") scroll="<<scroll.nPos
+                <<" content="<<contentHeight<<"\n";
         }
-        check(rect.left>=0&&rect.top>=0&&rect.right<=client.right&&rect.bottom<=client.bottom,
-            "login controls remain inside client area at each DPI");
+        check(rect.left>=0&&rect.top+offset>=0&&rect.right<=client.right&&rect.bottom+offset<=limit,
+            "login controls remain inside the scrollable content at each DPI");
         check(rect.right>rect.left&&rect.bottom>rect.top,"login controls have positive area");
     }
     for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=i+1;j<ids.size();++j){
+        if(!IsWindowVisible(GetDlgItem(dialog,ids[i]))||!IsWindowVisible(GetDlgItem(dialog,ids[j])))continue;
         auto a=control_bounds(dialog,ids[i]),b=control_bounds(dialog,ids[j]);RECT overlap{};
         if(IntersectRect(&overlap,&a,&b)){
             std::cerr<<"overlap phase="<<phase<<" dpi="<<layoutDpi<<" controls="<<ids[i]<<","<<ids[j]
@@ -45,7 +55,8 @@ void check_layout(HWND dialog,bool sources) {
         }
         check(!IntersectRect(&overlap,&a,&b),"brand, form and source controls do not overlap");
     }
-    check(control_bounds(dialog,401).right<control_bounds(dialog,101).left,"brand and login form occupy separate columns");
+    if(IsWindowVisible(GetDlgItem(dialog,401)))
+        check(control_bounds(dialog,401).right<control_bounds(dialog,101).left,"brand and login form occupy separate columns");
     HDC dc=GetDC(dialog);
     auto font=reinterpret_cast<HFONT>(SendMessageW(GetDlgItem(dialog,6),WM_GETFONT,0,0));
     auto previous=SelectObject(dc,font);
@@ -58,6 +69,20 @@ void check_layout(HWND dialog,bool sources) {
     }
     SelectObject(dc,previous);ReleaseDC(dialog,dc);
 }
+void check_focus_navigation(HWND dialog,bool sources) {
+    std::vector<int> ids{101,102,4,3};
+    if(sources)for(int id:{301,303,302})ids.push_back(id);
+    for(int id:ids){
+        HWND control=GetDlgItem(dialog,id);
+        if(!IsWindowEnabled(control))continue;
+        SetFocus(control);
+        check(IsWindow(dialog),"focusing a button never submits or cancels login");
+        check(GetFocus()==control,"login controls remain keyboard focusable");
+        const auto rect=control_bounds(dialog,id);RECT client{};GetClientRect(dialog,&client);
+        check(rect.top>=0&&rect.bottom<=client.bottom,"focused login control scrolls fully into view");
+    }
+    SetFocus(GetDlgItem(dialog,101));
+}
 void check_dpi_layouts(HWND dialog,bool sources) {
     check_layout(dialog,sources);
     RECT original{};GetWindowRect(dialog,&original);
@@ -67,7 +92,12 @@ void check_dpi_layouts(HWND dialog,bool sources) {
         RECT suggested=original;
         SendMessageW(dialog,0x02e0,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&suggested));
         check_layout(dialog,sources);
+        check_focus_navigation(dialog,sources);
     }
+    SendMessageW(dialog,0x02e0,MAKEWPARAM(actual,actual),reinterpret_cast<LPARAM>(&original));
+    // Exercise scrolling even when the runner has a large monitor.
+    SetWindowPos(dialog,nullptr,0,0,original.right-original.left,300*actual/96,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    check_layout(dialog,sources);check_focus_navigation(dialog,sources);
     SendMessageW(dialog,0x02e0,MAKEWPARAM(actual,actual),reinterpret_cast<LPARAM>(&original));
     layoutDpi=0;
 }
