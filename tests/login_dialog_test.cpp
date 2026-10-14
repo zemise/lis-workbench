@@ -7,6 +7,7 @@
 #include <iostream>
 #include <windows.h>
 namespace { int phase=0;DWORD changedAt=0;std::atomic<int> calls{0},adoptCalls{0};int recMode=0;
+UINT layoutDpi=0;
 void check(bool ok,const char* msg){if(!ok){std::cerr<<msg<<'\n';std::exit(1);}}
 HWND thread_window(const wchar_t* name) {
     struct Match {const wchar_t* name;HWND window=nullptr;} match{name};
@@ -26,6 +27,11 @@ void check_layout(HWND dialog,bool sources) {
     if(sources)for(int id:{301,302,303,304,406})ids.push_back(id);
     for(int id:ids){
         const auto rect=control_bounds(dialog,id);
+        if(rect.left<0||rect.top<0||rect.right>client.right||rect.bottom>client.bottom){
+            std::cerr<<"out of bounds phase="<<phase<<" dpi="<<layoutDpi<<" control="<<id
+                <<" rect=("<<rect.left<<","<<rect.top<<","<<rect.right<<","<<rect.bottom
+                <<") client=("<<client.right<<","<<client.bottom<<")\n";
+        }
         check(rect.left>=0&&rect.top>=0&&rect.right<=client.right&&rect.bottom<=client.bottom,
             "login controls remain inside client area at each DPI");
         check(rect.right>rect.left&&rect.bottom>rect.top,"login controls have positive area");
@@ -33,7 +39,7 @@ void check_layout(HWND dialog,bool sources) {
     for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=i+1;j<ids.size();++j){
         auto a=control_bounds(dialog,ids[i]),b=control_bounds(dialog,ids[j]);RECT overlap{};
         if(IntersectRect(&overlap,&a,&b)){
-            std::cerr<<"overlap phase="<<phase<<" controls="<<ids[i]<<","<<ids[j]
+            std::cerr<<"overlap phase="<<phase<<" dpi="<<layoutDpi<<" controls="<<ids[i]<<","<<ids[j]
                 <<" rects=("<<a.left<<","<<a.top<<","<<a.right<<","<<a.bottom
                 <<") ("<<b.left<<","<<b.top<<","<<b.right<<","<<b.bottom<<")\n";
         }
@@ -57,11 +63,13 @@ void check_dpi_layouts(HWND dialog,bool sources) {
     RECT original{};GetWindowRect(dialog,&original);
     const UINT actual=UINT(96*search::dpi_scale_factor(dialog)+0.5f);
     for(UINT dpi:{96u,120u,144u,192u}){
+        layoutDpi=dpi;
         RECT suggested=original;
         SendMessageW(dialog,0x02e0,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&suggested));
         check_layout(dialog,sources);
     }
     SendMessageW(dialog,0x02e0,MAKEWPARAM(actual,actual),reinterpret_cast<LPARAM>(&original));
+    layoutDpi=0;
 }
 void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
     HWND dialog=thread_window(L"LISWorkbenchLogin");if(!dialog)return;
