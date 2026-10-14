@@ -89,7 +89,7 @@ void layout(HWND hwnd, State* s) {
     const int x=px(252),width=client.right-x-px(32);
     const auto move=[&](int id,int left,int top,int w,int h){MoveWindow(GetDlgItem(hwnd,id),left,px(top),w,px(h),TRUE);};
     move(BrandTitle,px(28),232,px(176),40);
-    move(BrandDescription,px(28),286,px(164),64);
+    move(BrandDescription,px(28),286,px(164),48);
     MoveWindow(GetDlgItem(hwnd,BrandFooter),px(28),client.bottom-px(36),px(164),px(24),TRUE);
     const bool compact=s->compact;
     move(FormTitle,x,compact?16:24,width,32);move(FormDescription,x,compact?52:62,width,24);
@@ -137,6 +137,28 @@ RECT monitorWorkArea(HMONITOR monitor) {
     MONITORINFO info{sizeof(MONITORINFO)};
     if(GetMonitorInfoW(monitor,&info))return info.rcWork;
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);return work;
+}
+void sizeWindow(HWND hwnd,State* s,const RECT& work,int left,int top,bool center=false) {
+    const DWORD style=DWORD(GetWindowLongPtrW(hwnd,GWL_STYLE));
+    auto bounds=windowBounds(s,style,false);
+    s->compact=s->mode!=LoginMode::manual&&bounds.bottom-bounds.top>work.bottom-work.top;
+    if(s->compact)bounds=windowBounds(s,style,true);
+    int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;
+    SetWindowPos(hwnd,nullptr,left,top,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
+    // During a DPI transition the actual nonclient metrics can differ from
+    // AdjustWindowRectExForDpi. Correct once using the resulting client area.
+    RECT client{};GetClientRect(hwnd,&client);
+    width+=int(ClientWidth*s->scale)-client.right;
+    height+=int(clientHeight(s->mode,s->compact)*s->scale)-client.bottom;
+    if(!s->compact&&s->mode!=LoginMode::manual&&height>work.bottom-work.top){
+        s->compact=true;
+        height-=int(clientHeight(s->mode,false)*s->scale)-int(clientHeight(s->mode,true)*s->scale);
+    }
+    if(center){left=work.left+(work.right-work.left-width)/2;top=work.top+(work.bottom-work.top-height)/2;}
+    if(left+width>work.right)left=work.right-width;
+    if(top+height>work.bottom)top=work.bottom-height;
+    if(left<work.left)left=work.left;if(top<work.top)top=work.top;
+    SetWindowPos(hwnd,nullptr,left,top,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
 }
 void startNameLookup(HWND hwnd,State* s) {
     KillTimer(hwnd,NameTimer);
@@ -257,16 +279,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         s->scale=LOWORD(wp)/96.0f;
         auto* suggested=reinterpret_cast<RECT*>(lp);
         const auto work=monitorWorkArea(MonitorFromRect(suggested,MONITOR_DEFAULTTONEAREST));
-        const DWORD style=DWORD(GetWindowLongPtrW(hwnd,GWL_STYLE));
-        auto bounds=windowBounds(s,style,false);
-        s->compact=s->mode!=LoginMode::manual&&bounds.bottom-bounds.top>work.bottom-work.top;
-        if(s->compact)bounds=windowBounds(s,style,true);
-        const int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;
-        int left=suggested->left,top=suggested->top;
-        if(left+width>work.right)left=work.right-width;
-        if(top+height>work.bottom)top=work.bottom-height;
-        if(left<work.left)left=work.left;if(top<work.top)top=work.top;
-        SetWindowPos(hwnd,nullptr,left,top,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
+        sizeWindow(hwnd,s,work,suggested->left,suggested->top);
         applyFont(hwnd,s);layout(hwnd,s);return 0;
     }
     case WM_APP+1:refreshSources(hwnd,s);return 0;
@@ -346,12 +359,7 @@ std::optional<Identity> show_dialog(HINSTANCE instance,const search::DbSettings&
     // Size the client area using the actual window DPI before making it visible.
     state.scale=search::dpi_scale_factor(window);
     work=monitorWorkArea(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST));
-    bounds=windowBounds(&state,style,false);
-    state.compact=mode!=LoginMode::manual&&bounds.bottom-bounds.top>work.bottom-work.top;
-    if(state.compact)bounds=windowBounds(&state,style,true);
-    const int actualWidth=bounds.right-bounds.left,actualHeight=bounds.bottom-bounds.top;
-    SetWindowPos(window,nullptr,work.left+(work.right-work.left-actualWidth)/2,
-        work.top+(work.bottom-work.top-actualHeight)/2,actualWidth,actualHeight,SWP_NOZORDER|SWP_NOACTIVATE);
+    sizeWindow(window,&state,work,0,0,true);
     ShowWindow(window,SW_SHOW);SetFocus(GetDlgItem(window,Code));
     MSG msg{};
     while(IsWindow(window) && GetMessageW(&msg,nullptr,0,0)>0) {
