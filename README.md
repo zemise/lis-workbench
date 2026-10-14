@@ -92,4 +92,4 @@ cmake -DTEST_DIR=build/main-app -DTEST_CONFIG=Release -P cmake/verify_release_te
 
 查询失败显示固定错误码、安全 SQLSTATE／数字错误号和 `request_id`；排障时可用该 ID 关联日期日志中的查询阶段与耗时。查询诊断不输出原始 ODBC 消息、SQL、患者筛选值或连接凭据。
 
-当前源码版本为 `v2026.10.14.1`，版本以 `src/version.h` 为准。构建产物、本机配置和私有设计资料由 `.gitignore` 排除。
+当前源码版本为 `v2026.10.15.1`，版本以 `src/version.h` 为准。构建产物、本机配置和私有设计资料由 `.gitignore` 排除。
