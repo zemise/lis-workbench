@@ -32,6 +32,11 @@ void check_layout(HWND dialog,bool sources) {
     }
     for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=i+1;j<ids.size();++j){
         auto a=control_bounds(dialog,ids[i]),b=control_bounds(dialog,ids[j]);RECT overlap{};
+        if(IntersectRect(&overlap,&a,&b)){
+            std::cerr<<"overlap phase="<<phase<<" controls="<<ids[i]<<","<<ids[j]
+                <<" rects=("<<a.left<<","<<a.top<<","<<a.right<<","<<a.bottom
+                <<") ("<<b.left<<","<<b.top<<","<<b.right<<","<<b.bottom<<")\n";
+        }
         check(!IntersectRect(&overlap,&a,&b),"brand, form and source controls do not overlap");
     }
     check(control_bounds(dialog,401).right<control_bounds(dialog,101).left,"brand and login form occupy separate columns");
