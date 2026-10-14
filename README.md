@@ -9,14 +9,15 @@ LIS 工作台是基于 C++17 和原生 Win32 的 Windows 桌面应用，用于�
 - 输血查询、备血与大量输血统计，以及 HIV、急诊、免疫重复项目和 TAT 统计。
 - 质控分析、定时结果核查、门诊查询与常用电话。
 - 本机配置管理，以及 LIS、共享目录和 HTTP 更新源。
+- 员工账号只读登录，支持退出登录、切换账号和员工姓名显示。
 
 ## 运行与配置
 
 目标平台为 Windows 7–11，需安装可用的 SQL Server ODBC 驱动，并具备 LIS 数据库访问权限。
 
-1. 安装并启动 `lis_workbench.exe`。
-2. 在系统设置中填写数据库服务器、数据库名称和连接凭据，测试连接后保存。
-3. 打开所需业务模块，设置查询条件并查询。
+1. 安装并启动 `lis_workbench.exe`，使用现有 `ClientConfig.ini` 中的数据库连接配置。登录窗口不提供连接设置入口。
+2. 输入账号后会自动显示匹配的员工姓名，再输入个人密码登录；取消登录会退出程序。账号和密码会去除首尾空白，密码区分大小写且不能为空。
+3. 登录后使用业务模块；系统菜单可退出登录或切换账号。认证仅查询账号、员工和锁定配置，不写错误次数、在线状态或数据库日志。
 
 配置保存在程序目录的 `ClientConfig.ini`。现场使用的打印机、模板及其他业务资料按需配置，详见 [安装与打包说明](packaging/README_windows_installer.md)。
 
@@ -57,14 +58,13 @@ cmake --build build/native-tests --target lis_tests -j
 ctest --test-dir build/native-tests --output-on-failure --no-tests=error --timeout 120
 ```
 
-原生测试需要 Python；没有 PowerShell 时明确排除离线上传脚本测试。Windows UI、WindowTask、ODBC 连接诊断和 LabelPrint 测试必须在 Windows 验证，交叉编译不能替代运行。
+原生测试需要 Python；Linux 的密码兼容测试还需要 OpenSSL Crypto 开发库，macOS 使用系统 CommonCrypto，Windows 使用系统 BCrypt。没有 PowerShell 时明确排除离线上传脚本测试。Windows UI、WindowTask、ODBC 连接诊断和 LabelPrint 测试必须在 Windows 验证，交叉编译不能替代运行。
 
 正式 Windows CI 配置 `-DBUILD_TESTING=ON -DLIS_REQUIRE_RELEASE_TESTS=ON`，要求 Python、PowerShell 和 LabelPrint，构建 `lis_tests` 后先执行测试清单检查，再运行 Release CTest；缺少必需测试即阻断打包。清单检查命令：
 
 ```powershell
 cmake -DTEST_DIR=build/main-app -DTEST_CONFIG=Release -P cmake/verify_release_tests.cmake
 ```
-
 
 ## 项目结构
 

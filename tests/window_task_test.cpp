@@ -195,6 +195,28 @@ int main(int argc, char** argv) {
         check(state->cancellationObserved.load(), "owner destruction cancels worker context");
         check(state->delivered == 0, "destroyed owner receives no completion");
     }
+    {
+        auto state = std::make_shared<State>();
+        app::WindowTask task;
+        check(task.start<int>(fencedWorker(state, [state](app::WindowTaskContext context) {
+            awaitRelease(state);
+            state->cancellationObserved.store(context.cancelled());
+            context.post([state]{++state->delivered;});
+            return 11;
+        }), handler(state)), "start prior-session task");
+        check(pumpUntil([state]{return state->entered.load();}), "prior-session worker running");
+        app::window_task_detail::invalidateSession();
+        check(!task.active(), "logout invalidates task without destroying its owner");
+        state->release.store(true);
+        drainAfterWorker(state);
+        check(state->cancellationObserved.load(), "worker observes session invalidation");
+        check(state->delivered==0, "logout discards old completion and progress");
+        auto current = std::make_shared<State>();
+        check(task.start<int>(fencedWorker(current, [](app::WindowTaskContext){return 12;}),handler(current)), "new session can reuse task");
+        check(pumpUntil([current]{return current->delivered==1;}), "new-session completion delivered");
+        drainAfterWorker(current);
+        check(current->value==12, "new session result retained");
+    }
     std::cout << "WindowTask lifecycle checks passed (including Release)\n";
     return 0;
 }

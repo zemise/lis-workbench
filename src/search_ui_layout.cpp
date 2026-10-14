@@ -17,7 +17,8 @@ float dpi_scale_factor(HWND hwnd) {
     static auto get_dpi_for_window = reinterpret_cast<GetDpiForWindowFn>(
         GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
     if (get_dpi_for_window) {
-        return get_dpi_for_window(hwnd) / 96.0f;
+        const UINT dpi = get_dpi_for_window(hwnd);
+        if (dpi != 0) return dpi / 96.0f;
     }
 
     HDC dc = GetDC(hwnd);

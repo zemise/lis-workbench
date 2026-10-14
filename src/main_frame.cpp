@@ -54,6 +54,7 @@
 #include "version.h"
 #include "win32_control_id.h"
 #include "window_task.h"
+#include "login_dialog.h"
 namespace {
 
 constexpr int IDM_QUERY = 1001;
@@ -63,6 +64,8 @@ constexpr int IDM_SETTINGS = 2001;
 constexpr int IDM_EXIT = 2002;
 constexpr int IDM_ABOUT = 2003;
 constexpr int IDM_CHECK_UPDATE = 2004;
+constexpr int IDM_LOGOUT = 2005;
+constexpr int IDM_SWITCH_USER = 2006;
 constexpr int IDM_CASCADE = 2101;
 constexpr int IDM_TILE_H = 2102;
 constexpr int IDM_TILE_V = 2103;
@@ -96,6 +99,9 @@ constexpr const wchar_t *UPDATE_APP_EXE_NAME = L"lis_workbench.exe";
 constexpr const wchar_t *UPDATE_UPDATER_EXE_NAME = L"Updater.exe";
 
 app::Context g_ctx;
+std::optional<login::Identity> g_identity;
+search::DbSettings g_authenticatedDb;
+bool g_relogin = false;
 bool g_manualUpdateChecking = false;
 std::shared_ptr<std::atomic<bool>> g_updateCancelled;
 app::WindowTask g_manualUpdateTask;
@@ -936,6 +942,9 @@ HMENU setupMenus(HWND hwnd) {
   // Fixed items appended to last menu (L"系统")
   for (int j = 0; j < subCount; j++) {
     if (wcscmp(subNames[j], L"系统") == 0) {
+      appendOwnerDrawItem(subMenus[j], IDM_SWITCH_USER, L"切换账号...");
+      appendOwnerDrawItem(subMenus[j], IDM_LOGOUT, L"退出登录");
+      AppendMenuW(subMenus[j], MF_SEPARATOR, 0, nullptr);
       appendOwnerDrawItem(subMenus[j], IDM_CHECK_UPDATE, L"检查更新(&U)...");
       AppendMenuW(subMenus[j], MF_SEPARATOR, 0, nullptr);
       appendOwnerDrawItem(subMenus[j], IDM_ABOUT, L"关于(&A)...");
@@ -986,7 +995,8 @@ void setupStatusBar(HWND hwnd) {
   RECT rc;
   GetClientRect(hwnd, &rc);
   updateStatusBarParts(sb, rc.right - rc.left);
-  SendMessageW(sb, SB_SETTEXT, 0, (LPARAM)L"就绪");
+  const auto status = g_identity ? L"操作员：" + g_identity->name : L"未登录";
+  SendMessageW(sb, SB_SETTEXT, 0, reinterpret_cast<LPARAM>(status.c_str()));
   std::wstring ip = L"本机：" + getLocalIp();
   SendMessageW(sb, SB_SETTEXT, MAKEWPARAM(2, SBT_NOBORDERS),
                (LPARAM)ip.c_str());
@@ -1091,6 +1101,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     updateToolbarState();
     break;
   case WM_TIMER: {
+    if (!g_identity) return 0;
     if (wp == ID_TIMER) {
       updateTimePane(hwnd);
     } else if (wp == ID_AUTO_UPDATE_TIMER) {
@@ -1130,6 +1141,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     break;
   case WM_COMMAND: {
     int id = LOWORD(wp);
+    if (!g_identity) return 0;
 
     // Module registry dispatch
     for (int i = 0; i < g_moduleCount; i++) {
@@ -1145,6 +1157,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     // Fixed items
     switch (id) {
+    case IDM_LOGOUT:
+    case IDM_SWITCH_USER:
+      g_identity.reset();
+      app::window_task_detail::invalidateSession();
+      g_relogin = true;
+      DestroyWindow(hwnd);
+      return 0;
     case IDM_ABOUT: {
       const std::wstring aboutText = L"LIS 工作台\n版本 " +
                                      search::utf8_to_wide(search::kVersion) +
@@ -1180,6 +1199,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     break;
   }
   case app::WM_APP_SETTINGS_CHANGED:
+    if (!g_identity) return 0;
+    if (g_ctx.dbSettings.server != g_authenticatedDb.server ||
+        g_ctx.dbSettings.initial_database != g_authenticatedDb.initial_database ||
+        g_ctx.dbSettings.user != g_authenticatedDb.user ||
+        g_ctx.dbSettings.password != g_authenticatedDb.password) {
+      g_identity.reset();
+      app::window_task_detail::invalidateSession();
+      g_relogin = true;
+      // Defer destruction until the settings page finishes its save callback.
+      PostMessageW(hwnd, WM_CLOSE, 0, 0);
+      return 0;
+    }
     start_scheduled_result_check_monitor(hwnd, makeCtx());
     rebuildUiFont(g_ctx.fontSize);
     broadcastSettingsChangedToMdiChildren();
@@ -1191,6 +1222,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     DestroyWindow(hwnd);
     return 0;
   case WM_DESTROY:
+    app::window_task_detail::invalidateSession();
     if (g_updateCancelled) g_updateCancelled->store(true);
     KillTimer(hwnd, ID_TIMER);
     KillTimer(hwnd, ID_AUTO_UPDATE_TIMER);
@@ -1241,22 +1273,46 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   wc.lpszClassName = L"LISWorkbenchMainWindow";
   RegisterClassExW(&wc);
 
-  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"LIS 工作台",
-                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr,
-                              nullptr, instance, nullptr);
+  do {
+    g_relogin = false;
+    g_identity = login::show_dialog(instance, g_ctx.dbSettings);
+    if (!g_identity) break;
+    g_authenticatedDb = g_ctx.dbSettings;
+    rebuildUiFont(g_ctx.fontSize);
+    const auto title = L"LIS 工作台 — " + g_identity->name;
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(),
+                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                                CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr,
+                                nullptr, instance, nullptr);
 
-  g_ctx.mainWindow = hwnd;
-  ShowWindow(hwnd, SW_MAXIMIZE);
-  UpdateWindow(hwnd);
+    if (!hwnd) {g_identity.reset();break;}
+    g_ctx.mainWindow = hwnd;
+    ShowWindow(hwnd, SW_MAXIMIZE);
+    UpdateWindow(hwnd);
 
-  MSG msg{};
-  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    if (!TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+      if (!TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
     }
-  }
+    // Destroy detached report/trend/settings windows as well as the MDI frame.
+    // Invalidate all task generations before another user's login loop is created.
+    app::window_task_detail::invalidateSession();
+    std::vector<HWND> remainingWindows;
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM parameter) -> BOOL {
+      reinterpret_cast<std::vector<HWND>*>(parameter)->push_back(window);
+      return TRUE;
+    }, reinterpret_cast<LPARAM>(&remainingWindows));
+    for (HWND window : remainingWindows) {
+      if (IsWindow(window)) DestroyWindow(window);
+    }
+    g_identity.reset();
+    g_ctx.mainWindow = nullptr;
+    g_ctx.mdiClient = nullptr;
+    g_menuDrawTexts.clear();
+  } while (g_relogin);
 
   if (g_ctx.uiFont)
     DeleteObject(g_ctx.uiFont);

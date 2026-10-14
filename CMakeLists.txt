@@ -61,6 +61,7 @@ endif()
 # Shared business/query implementation. Non-Windows builds test pure logic;
 # database access remains Windows-only.
 add_library(search_core STATIC
+    src/login_core.cpp
     src/search_core.cpp
     src/search_app.cpp
     src/search_controller.cpp
@@ -75,6 +76,10 @@ target_compile_definitions(search_core PUBLIC UNICODE _UNICODE ${LIS_WIN7_COMPAT
 
 if(WIN32)
     target_link_libraries(search_core PUBLIC odbc32)
+    target_link_libraries(search_core PUBLIC bcrypt)
+elseif(NOT APPLE)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(search_core PUBLIC OpenSSL::Crypto)
 endif()
 
 add_library(update_core STATIC
@@ -166,6 +171,8 @@ endif()
 
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
+    src/login_database.cpp
+    src/login_dialog.cpp
     src/main_frame.cpp
     src/menu_toolbar.cpp
     src/backup_blood_statistics_module.cpp
@@ -357,6 +364,18 @@ if(BUILD_TESTING)
     add_test(NAME xlsx_writer_tests COMMAND xlsx_writer_tests)
 
     if(WIN32)
+        add_executable(login_database_tests tests/login_database_test.cpp src/login_database.cpp)
+        target_link_libraries(login_database_tests PRIVATE search_core)
+        target_compile_definitions(login_database_tests PRIVATE NOMINMAX)
+        add_test(NAME login_database_tests COMMAND login_database_tests)
+        add_executable(login_dialog_tests tests/login_dialog_test.cpp src/login_dialog.cpp resource/app.rc)
+        target_include_directories(login_dialog_tests PRIVATE resource)
+        if(MSVC)
+            target_link_options(login_dialog_tests PRIVATE /MANIFEST:NO)
+        endif()
+        target_link_libraries(login_dialog_tests PRIVATE search_ui_core search_core)
+        add_test(NAME login_dialog_tests COMMAND login_dialog_tests)
+        set_tests_properties(login_dialog_tests PROPERTIES TIMEOUT 15)
         add_executable(window_task_tests
             tests/window_task_test.cpp
             src/window_task.cpp
@@ -372,6 +391,14 @@ if(BUILD_TESTING)
     add_executable(log_tests tests/log_test.cpp)
     target_link_libraries(log_tests PRIVATE search_core)
     add_test(NAME log_tests COMMAND log_tests)
+    add_executable(login_core_tests tests/login_core_test.cpp)
+    target_link_libraries(login_core_tests PRIVATE search_core)
+    add_test(NAME login_core_tests COMMAND login_core_tests)
+    if(MINGW)
+        foreach(login_test login_core_tests login_database_tests login_dialog_tests window_task_tests)
+            target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
+        endforeach()
+    endif()
     # One dependency target avoids CI silently forgetting newly added executables.
     get_property(lis_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     list(FILTER lis_test_targets INCLUDE REGEX "_tests$")
@@ -379,6 +406,9 @@ if(BUILD_TESTING)
 
     if(LIS_REQUIRE_RELEASE_TESTS)
         set(LIS_REQUIRED_TESTS
+            login_core_tests
+            login_database_tests
+            login_dialog_tests
             update_database_tests update_package_tests db_update_upload_offline_tests
             db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
             microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests

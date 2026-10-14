@@ -17,8 +17,12 @@ namespace app {
 
 namespace window_task_detail {
 
+std::uint64_t sessionGeneration() noexcept;
+void invalidateSession() noexcept;
+
 struct State {
     std::atomic<std::uint64_t> generation{0};
+    std::atomic<std::uint64_t> session{0};
     std::atomic<bool> active{false};
 };
 
@@ -88,6 +92,7 @@ public:
     void deliver() noexcept override {
         auto state = state_.lock();
         if (!state || !state->active.load(std::memory_order_acquire) ||
+            state->session.load(std::memory_order_acquire) != sessionGeneration() ||
             state->generation.load(std::memory_order_acquire) != generation_) {
             return;
         }
@@ -186,6 +191,7 @@ public:
         const auto generation =
             state_->generation.fetch_add(1, std::memory_order_acq_rel) + 1;
         state_->active.store(true, std::memory_order_release);
+        state_->session.store(window_task_detail::sessionGeneration(), std::memory_order_release);
 
         using WorkType = std::decay_t<Worker>;
         using HandlerType = std::decay_t<Handler>;

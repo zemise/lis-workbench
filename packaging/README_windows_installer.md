@@ -145,6 +145,10 @@ New-Item -ItemType Directory -Force out\windows\installer
 | VS 2022 (17.x) | `"Visual Studio 17 2022"` |
 | VS 2026 (18.x) | `"Visual Studio 18 2026"` |
 
+## 登录前配置
+
+启动主程序后必须先通过员工账号登录。登录窗口使用程序目录现有的`ClientConfig.ini`数据库连接，不提供连接设置入口；首次部署应在启动前准备连接配置。输入账号后会显示匹配的员工姓名，取消登录退出程序。认证采用只读查询，不修改账号错误次数、在线状态或密码。
+
 ## 运行时依赖
 
 - 目标 Windows 需安装 SQL Server ODBC 驱动（ODBC Driver 17/18 for SQL Server 或系统自带）
