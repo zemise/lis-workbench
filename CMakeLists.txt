@@ -62,6 +62,7 @@ endif()
 # database access remains Windows-only.
 add_library(search_core STATIC
     src/login_core.cpp
+    src/login_source.cpp
     src/search_core.cpp
     src/search_app.cpp
     src/search_controller.cpp
@@ -169,10 +170,16 @@ if(MINGW)
     target_link_options(result_search PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
+add_library(login_source_runtime STATIC src/login_source_win32.cpp src/login_adoption.cpp)
+target_include_directories(login_source_runtime PUBLIC src)
+target_compile_definitions(login_source_runtime PRIVATE NOMINMAX)
+target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuuid ole32 oleaut32 shell32 advapi32)
+
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
     src/login_database.cpp
     src/login_dialog.cpp
+    src/login_source_guard.cpp
     src/main_frame.cpp
     src/menu_toolbar.cpp
     src/backup_blood_statistics_module.cpp
@@ -217,7 +224,7 @@ add_executable(main_app WIN32
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
+target_link_libraries(main_app PRIVATE login_source_runtime search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
 if(WIN32)
     target_link_libraries(main_app PRIVATE dwmapi)
 endif()
@@ -364,6 +371,20 @@ if(BUILD_TESTING)
     add_test(NAME xlsx_writer_tests COMMAND xlsx_writer_tests)
 
     if(WIN32)
+        add_executable(login_source_runtime_tests tests/login_source_win32_test.cpp)
+        target_link_libraries(login_source_runtime_tests PRIVATE login_source_runtime)
+        add_test(NAME login_source_runtime_tests COMMAND login_source_runtime_tests)
+        add_executable(login_source_guard_tests tests/login_source_guard_test.cpp src/login_source_guard.cpp resource/app.rc)
+        target_include_directories(login_source_guard_tests PRIVATE resource)
+        target_link_libraries(login_source_guard_tests PRIVATE search_ui_core search_core)
+        if(MSVC)
+            target_link_options(login_source_guard_tests PRIVATE /MANIFEST:NO)
+        endif()
+        add_test(NAME login_source_guard_tests COMMAND login_source_guard_tests)
+        set_tests_properties(login_source_guard_tests PROPERTIES TIMEOUT 30)
+        add_executable(login_adoption_tests tests/login_adoption_test.cpp src/login_adoption.cpp)
+        target_link_libraries(login_adoption_tests PRIVATE search_core)
+        add_test(NAME login_adoption_tests COMMAND login_adoption_tests)
         add_executable(login_database_tests tests/login_database_test.cpp src/login_database.cpp)
         target_link_libraries(login_database_tests PRIVATE search_core)
         target_compile_definitions(login_database_tests PRIVATE NOMINMAX)
@@ -391,11 +412,14 @@ if(BUILD_TESTING)
     add_executable(log_tests tests/log_test.cpp)
     target_link_libraries(log_tests PRIVATE search_core)
     add_test(NAME log_tests COMMAND log_tests)
+    add_executable(login_source_tests tests/login_source_test.cpp)
+    target_link_libraries(login_source_tests PRIVATE search_core)
+    add_test(NAME login_source_tests COMMAND login_source_tests)
     add_executable(login_core_tests tests/login_core_test.cpp)
     target_link_libraries(login_core_tests PRIVATE search_core)
     add_test(NAME login_core_tests COMMAND login_core_tests)
     if(MINGW)
-        foreach(login_test login_core_tests login_database_tests login_dialog_tests window_task_tests)
+        foreach(login_test login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
             target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
         endforeach()
     endif()
@@ -406,6 +430,7 @@ if(BUILD_TESTING)
 
     if(LIS_REQUIRE_RELEASE_TESTS)
         set(LIS_REQUIRED_TESTS
+            login_source_tests login_adoption_tests login_source_guard_tests login_source_runtime_tests
             login_core_tests
             login_database_tests
             login_dialog_tests

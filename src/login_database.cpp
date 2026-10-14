@@ -6,6 +6,7 @@
 #include <sql.h>
 #include <sqlext.h>
 #include <array>
+#include <mutex>
 
 namespace login {
 namespace {
@@ -69,6 +70,53 @@ std::optional<std::wstring> lookup_name(const search::DbSettings& settings,
         if(!c.text(1,name,null)||null||SQLFetch(c.stmt)!=SQL_NO_DATA||stopped())return {};
         return trim(name);
     }catch(...){return {};}
+}
+Result validate_source_account(const search::DbSettings& settings,const Source& source,
+    const std::function<bool()>& cancelled) {
+    static std::mutex validationMutex;std::unique_lock<std::mutex> oneValidation(validationMutex,std::try_to_lock);
+    Result result;auto stopped=[&]{return cancelled&&cancelled();};
+    if(!oneValidation.owns_lock())return result;
+    if(source.employee_id<INT32_MIN||source.employee_id>INT32_MAX||source.port<=0||source.port>65535||source.machine.empty())return result;
+    try {
+        Connection c;if(stopped()||!c.open(settings)||stopped())return result;
+        const wchar_t* config=L"SELECT CONFIG FROM dbo.JC_CONFIG WHERE ID=15";
+        if(!SQL_SUCCEEDED(SQLExecDirectW(c.stmt,reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(config)),SQL_NTS))||!SQL_SUCCEEDED(SQLFetch(c.stmt)))return result;
+        std::wstring value;bool null=false;int seconds=0;
+        if(!c.text(1,value,null)||null||!parse_lock_seconds(value,seconds)||SQLFetch(c.stmt)!=SQL_NO_DATA)return result;
+        SQLFreeStmt(c.stmt,SQL_CLOSE);if(stopped())return result;
+        // Password is deliberately absent. Online status supplements the scoped
+        // live-process observation; it is never accepted on its own.
+        const wchar_t* sql=L"SELECT TOP (2) u.Id,u.Employee_Id,u.Code,u.Locked_Bit,e.EMPLOYEE_ID,e.NAME,"
+            L"CASE WHEN CAST(ISNULL(e.dlxq,'9999-01-01') AS datetime)<GETDATE() THEN 1 ELSE 0 END,"
+            L"CASE WHEN ?>0 AND u.Errtimes>=5 AND DATEDIFF(second,u.Errdatetime,GETDATE())<? THEN 1 ELSE 0 END,"
+            L"CASE WHEN u.login_bit=1 AND u.login_port=? AND UPPER(u.login_pcname)=UPPER(?) THEN 1 ELSE 0 END "
+            L"FROM dbo.Pub_User u LEFT JOIN dbo.JC_EMPLOYEE_PROPERTY e ON e.EMPLOYEE_ID=u.Employee_Id AND e.DELETE_BIT=0 "
+            L"WHERE u.Delete_Bit=0 AND u.Employee_Id=?";
+        if(!SQL_SUCCEEDED(SQLPrepareW(c.stmt,reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(sql)),SQL_NTS)))return result;
+        SQLINTEGER lock=seconds,port=source.port;SQLBIGINT employee=source.employee_id;
+        SQLLEN lockSize=sizeof(lock),portSize=sizeof(port),empSize=sizeof(employee),machineSize=SQL_NTS;
+        auto machine=source.machine;
+        for(int i=1;i<=2;++i)if(!SQL_SUCCEEDED(SQLBindParameter(c.stmt,SQLUSMALLINT(i),SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,0,0,&lock,0,&lockSize)))return result;
+        if(!SQL_SUCCEEDED(SQLBindParameter(c.stmt,3,SQL_PARAM_INPUT,SQL_C_SLONG,SQL_INTEGER,0,0,&port,0,&portSize))||
+           !SQL_SUCCEEDED(SQLBindParameter(c.stmt,4,SQL_PARAM_INPUT,SQL_C_WCHAR,SQL_WVARCHAR,128,0,machine.data(),SQLLEN((machine.size()+1)*sizeof(wchar_t)),&machineSize))||
+           !SQL_SUCCEEDED(SQLBindParameter(c.stmt,5,SQL_PARAM_INPUT,SQL_C_SBIGINT,SQL_BIGINT,0,0,&employee,0,&empSize))||
+           !SQL_SUCCEEDED(SQLExecute(c.stmt)))return result;
+        auto fetched=SQLFetch(c.stmt);if(fetched==SQL_NO_DATA){result.status=Status::invalid_credentials;return result;}
+        if(fetched!=SQL_SUCCESS)return result;
+        std::array<std::wstring,9> columns;std::array<bool,9> nulls{};
+        for(int i=0;i<9;++i)if(!c.text(i+1,columns[i],nulls[i]))return result;
+        if(SQLFetch(c.stmt)!=SQL_NO_DATA||stopped())return result;
+        for(int i:{0,1,2,3,4,6,7,8})if(nulls[i])return result;
+        if(number(columns[1])!=source.employee_id||number(columns[4])!=source.employee_id||number(columns[8])!=1)return result;
+        if(number(columns[3])>0){result.status=Status::locked;return result;}
+        if(number(columns[7])!=0){result.status=Status::temporary_locked;return result;}
+        if(number(columns[6])!=0){result.status=Status::expired;return result;}
+        Identity identity{number(columns[0]),number(columns[1]),columns[2],trim(columns[5])};
+        if(!valid_code(identity.code))return result;
+        if(identity.name.empty())identity.name=identity.code;
+        if(stopped())return result;
+        result.status=Status::success;result.identity=std::move(identity);return result;
+    }catch(...){return result;}
 }
 Result authenticate(const search::DbSettings& settings,std::wstring code,std::wstring password,
                     const std::function<bool()>& cancelled) {

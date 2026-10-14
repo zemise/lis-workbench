@@ -2252,6 +2252,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_BLOOD_OPEN_REQUEST: {
             std::unique_ptr<BloodRequestOpenTarget> target(
                 reinterpret_cast<BloodRequestOpenTarget*>(lp));
+            if (app::window_task_detail::sessionSuspended() ||
+                (target && target->session != app::window_task_detail::sessionGeneration())) return 0;
             if (st && target) openBloodRequest(st, *target);
             return 0;
         }
@@ -2414,7 +2416,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-        case WM_DESTROY:
+        case WM_DESTROY: {
+            MSG pending{};
+            while (PeekMessageW(&pending, hwnd, WM_BLOOD_OPEN_REQUEST,WM_BLOOD_OPEN_REQUEST, PM_REMOVE))
+                delete reinterpret_cast<BloodRequestOpenTarget*>(pending.lParam);
+        }
+
             RemovePropW(hwnd, PROP_STATE);
             if (st) {
                 if (st->bgBrush) DeleteObject(st->bgBrush);

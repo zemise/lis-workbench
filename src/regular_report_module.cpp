@@ -2375,7 +2375,9 @@ LRESULT CALLBACK resultEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (wp == VK_RETURN) { finishResultEdit(st, true, true); return 0; }
             if (wp == VK_ESCAPE) { finishResultEdit(st, false); return 0; }
             break;
-        case WM_KILLFOCUS: finishResultEdit(st, false, false, false); return 0;
+        case WM_KILLFOCUS:
+            if (!app::window_task_detail::sessionSuspended()) finishResultEdit(st, false, false, false);
+            return 0;
         case WM_NCDESTROY: RemoveWindowSubclass(hwnd, resultEditProc, sid); break;
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
@@ -3537,6 +3539,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (st) st->skipInitialQuickMachineLoad = true;
             std::unique_ptr<RegularReportOpenTarget> target(
                 reinterpret_cast<RegularReportOpenTarget*>(lp));
+            if (app::window_task_detail::sessionSuspended() ||
+                (target && target->session != app::window_task_detail::sessionGeneration())) return 0;
             if (st && target) regularOpenReportTarget(st, *target);
             return 0;
         }
@@ -3632,7 +3636,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CTLCOLORDLG:
             return reinterpret_cast<LRESULT>(st ? st->bgBrush : nullptr);
 
-        case WM_DESTROY:
+        case WM_DESTROY: {
+            MSG pending{};
+            while (PeekMessageW(&pending, hwnd, WM_REGULAR_OPEN_REPORT,WM_REGULAR_OPEN_REPORT, PM_REMOVE))
+                delete reinterpret_cast<RegularReportOpenTarget*>(pending.lParam);
+        }
+
             RemovePropW(hwnd, REGULAR_REPORT_PROP_STATE);
             if (st) {
                 st->reportQueryTask.cancel();

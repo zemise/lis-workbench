@@ -17,6 +17,7 @@ struct Scenario {
     std::wstring config=L"60",stored=legacy_vectors[3].stored,name=L"测试人员";
     bool config_null=false,employee_missing=false,locked=false,expired=false,query_error=false,date_null=false;
     int config_rows=1,accounts=1,errors=0,elapsed=0;
+    bool online=true;
 } scenario;
 int phase=0,cursor=0;bool readonly=false;
 std::map<int,SQLPOINTER> bound;
@@ -40,13 +41,16 @@ SQLRETURN SQL_API SQLPrepareW(SQLHSTMT,SQLWCHAR* sql,SQLINTEGER){
     const std::wstring text(reinterpret_cast<wchar_t*>(sql));
     check(text.find(L"SELECT TOP (2)")==0,"authentication prepares SELECT only");
     check(text.find(L"e.DELETE_BIT=0")!=std::wstring::npos && text.find(L"u.Delete_Bit=0")!=std::wstring::npos,"both soft-delete predicates");
-    check(text.find(L"UPPER(u.Code)=UPPER(?)")!=std::wstring::npos,"username parameterized case-insensitive comparison");
-    phase=text.find(L"SELECT TOP (2) e.NAME")==0?3:2;cursor=0;bound.clear();return SQL_SUCCESS;
+    const bool source=text.find(L"u.Employee_Id=?")!=std::wstring::npos;
+    if(source){check(text.find(L"Password")==std::wstring::npos,"source validation never selects password");check(text.find(L"u.login_port=?")!=std::wstring::npos&&text.find(L"UPPER(u.login_pcname)=UPPER(?)")!=std::wstring::npos,"source terminal is parameterized");}
+    else check(text.find(L"UPPER(u.Code)=UPPER(?)")!=std::wstring::npos,"username parameterized case-insensitive comparison");
+    phase=source?4:text.find(L"SELECT TOP (2) e.NAME")==0?3:2;cursor=0;bound.clear();return SQL_SUCCESS;
 }
 SQLRETURN SQL_API SQLBindParameter(SQLHSTMT,SQLUSMALLINT index,SQLSMALLINT,SQLSMALLINT,SQLSMALLINT,SQLULEN,SQLSMALLINT,SQLPOINTER value,SQLLEN,SQLLEN*){bound[index]=value;return SQL_SUCCESS;}
 SQLRETURN SQL_API SQLExecute(SQLHSTMT){
-    check(bound.size()==(phase==3?1:3),"no password bound into SQL");
-    check(std::wstring(static_cast<wchar_t*>(bound[phase==3?1:3]))==L"t123","normalized username bound");
+    check(bound.size()==(phase==4?5:phase==3?1:3),"no password bound into SQL");
+    if(phase==4){check(*static_cast<SQLBIGINT*>(bound[5])==200&&*static_cast<SQLINTEGER*>(bound[3])==4310&&std::wstring(static_cast<wchar_t*>(bound[4]))==L"TESTPC","source employee and terminal bound");}
+    else check(std::wstring(static_cast<wchar_t*>(bound[phase==3?1:3]))==L"t123","normalized username bound");
     return scenario.query_error?SQL_ERROR:SQL_SUCCESS;
 }
 SQLRETURN SQL_API SQLFetch(SQLHSTMT){return cursor++<(phase==1?scenario.config_rows:scenario.accounts)?SQL_SUCCESS:SQL_NO_DATA;}
@@ -59,7 +63,10 @@ SQLRETURN SQL_API SQLGetData(SQLHSTMT,SQLUSMALLINT column,SQLSMALLINT type,SQLPO
         const int lock=*static_cast<SQLINTEGER*>(bound[1]);
         const bool limited=lock>0&&scenario.errors>=5&&!scenario.date_null&&scenario.elapsed<lock;
         std::array<std::wstring,9> values{L"100",L"200",L"T123",scenario.stored,scenario.locked?L"1":L"0",L"200",scenario.name,scenario.expired?L"1":L"0",limited?L"1":L"0"};
-        value=values.at(column-1);null=scenario.employee_missing&&column==6;
+        if(phase==4){
+            values={L"100",L"200",L"T123",scenario.locked?L"1":L"0",L"200",scenario.name,scenario.expired?L"1":L"0",limited?L"1":L"0",scenario.online?L"1":L"0"};
+        }
+        value=values.at(column-1);null=scenario.employee_missing&&column==(phase==4?5:6);
     }
     if(null){*indicator=SQL_NULL_DATA;return SQL_SUCCESS;}
     *indicator=SQLLEN(value.size()*sizeof(wchar_t));
@@ -67,6 +74,18 @@ SQLRETURN SQL_API SQLGetData(SQLHSTMT,SQLUSMALLINT column,SQLSMALLINT type,SQLPO
 }
 }
 int main(){
+    search::DbSettings source_settings{L"fake",L"fake",L"fake",L"fake"};
+    login::Source source;source.employee_id=200;source.port=4310;source.machine=L"TESTPC";
+    auto adopted=[&]{return login::validate_source_account(source_settings,source,[]{return false;});};
+    reset();auto account=adopted();check(account.status==login::Status::success&&!account.identity->adopted_source,"database alone does not publish a trusted source binding");
+    reset();scenario.online=false;check(adopted().status!=login::Status::success,"offline or wrong terminal rejected");
+    reset();scenario.locked=true;check(adopted().status==login::Status::locked,"source locked rejected");
+    reset();scenario.expired=true;check(adopted().status==login::Status::expired,"source expired rejected");
+    reset();scenario.errors=5;scenario.elapsed=59;check(adopted().status==login::Status::temporary_locked,"source error lock rejected");
+    reset();scenario.employee_missing=true;check(adopted().status!=login::Status::success,"source missing employee rejected");
+    reset();scenario.accounts=2;check(adopted().status!=login::Status::success,"unexpected source duplicates fail closed");
+    reset();scenario.query_error=true;check(adopted().status!=login::Status::success,"source query failure rejected");
+    reset();check(login::validate_source_account(source_settings,source,[]{return true;}).status!=login::Status::success,"cancelled source validation rejected");
     search::DbSettings name_settings{L"fake",L"fake",L"fake",L"fake"};
     reset();check(login::lookup_name(name_settings,L" t123 ",[]{return false;})==L"测试人员","read-only parameterized name lookup");
     reset();scenario.accounts=2;check(!login::lookup_name(name_settings,L"t123",[]{return false;}),"ambiguous name lookup stays blank");

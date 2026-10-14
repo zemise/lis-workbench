@@ -217,6 +217,43 @@ int main(int argc, char** argv) {
         drainAfterWorker(current);
         check(current->value==12, "new session result retained");
     }
+    {
+        auto state = std::make_shared<State>();
+        app::WindowTask task;int recovered=0,published=0;
+        check(task.start<int>(fencedWorker(state,[state](app::WindowTaskContext context){
+            awaitRelease(state);state->cancellationObserved.store(context.cancelled());return 99;
+        }),[&](std::optional<int> value,std::exception_ptr error){
+            if(value)++published;else if(error)++recovered;
+        }), "start work before same-identity suspension");
+        check(pumpUntil([state]{return state->entered.load();}), "suspended worker entered");
+        auto suspended=app::window_task_detail::suspendSessionTasks();
+        check(!task.active(), "suspension cancels old task generation");
+        state->release.store(true);drainAfterWorker(state);
+        check(published==0&&recovered==0&&state->cancellationObserved.load(), "old data discarded without running UI cleanup while hidden");
+        app::window_task_detail::recoverSuspendedTasks(std::move(suspended));
+        check(recovered==1&&published==0, "same-identity recovery clears busy UI without replaying old data");
+    }
+    {
+        auto state=std::make_shared<State>();app::WindowTask task;int calls=0;
+        check(task.start<int>(fencedWorker(state,[state](app::WindowTaskContext){awaitRelease(state);return 1;}),
+            [&](std::optional<int>,std::exception_ptr){++calls;}), "start before suspension and page cancel");
+        check(pumpUntil([state]{return state->entered.load();}), "cancelled suspended worker entered");
+        auto suspended=app::window_task_detail::suspendSessionTasks();task.cancel();
+        state->release.store(true);drainAfterWorker(state);
+        app::window_task_detail::recoverSuspendedTasks(std::move(suspended));
+        check(calls==0,"destroyed/cancelled page cannot receive suspension cleanup");
+    }
+    {
+        auto state=std::make_shared<State>();app::WindowTask task;int calls=0;
+        check(task.start<int>(fencedWorker(state,[state](app::WindowTaskContext){awaitRelease(state);return 1;}),
+            [&](std::optional<int>,std::exception_ptr){++calls;}), "start before pause and logout");
+        check(pumpUntil([state]{return state->entered.load();}), "worker entered before pause and logout");
+        auto suspended=app::window_task_detail::suspendSessionTasks();
+        app::window_task_detail::invalidateSession();
+        state->release.store(true);drainAfterWorker(state);
+        app::window_task_detail::recoverSuspendedTasks(std::move(suspended));
+        check(calls==0,"logout prevents even cancellation cleanup from crossing into another identity");
+    }
     std::cout << "WindowTask lifecycle checks passed (including Release)\n";
     return 0;
 }

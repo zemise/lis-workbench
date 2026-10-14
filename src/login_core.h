@@ -1,4 +1,5 @@
 #pragma once
+#include "login_source.h"
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,6 +10,7 @@ struct Identity {
     std::int64_t employee_id = 0;
     std::wstring code;
     std::wstring name;
+    std::optional<Source> adopted_source;
 };
 enum class Status { success, invalid_credentials, locked, temporary_locked, expired, failed };
 struct Result { Status status = Status::failed; std::optional<Identity> identity; };

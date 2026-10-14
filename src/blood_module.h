@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "module_registry.h"
+#include "window_task.h"
 
 #include <string>
 
@@ -12,6 +13,7 @@ constexpr UINT WM_BLOOD_OPEN_REQUEST = WM_APP + 65;
 struct BloodRequestOpenTarget {
     std::string apply_form_no;
     std::string apply_time;
+    std::uint64_t session = app::window_task_detail::sessionGeneration();
 };
 
 HWND create_blood_module(const ModuleContext& ctx);

@@ -12,6 +12,8 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
+#include <stdexcept>
 
 namespace app {
 
@@ -25,6 +27,22 @@ struct State {
     std::atomic<std::uint64_t> session{0};
     std::atomic<bool> active{false};
 };
+
+struct SuspendedTask {
+    std::weak_ptr<State> state;
+    std::uint64_t generation = 0;
+    std::function<void()> recovery;
+    std::uint64_t suspension_epoch = 0;
+};
+class SessionSuspended : public std::runtime_error {
+public: SessionSuspended():std::runtime_error("session suspended"){}
+};
+void registerRecovery(std::weak_ptr<State> state, std::uint64_t generation, std::function<void()> recovery);
+std::vector<SuspendedTask> suspendSessionTasks();
+void recoverSuspendedTasks(std::vector<SuspendedTask> tasks);
+bool sessionSuspended() noexcept;
+// Clears the pause gate only; recovery tickets are owned by the source guard.
+void discardSuspendedTasks() noexcept;
 
 class Completion {
 public:
@@ -182,9 +200,11 @@ public:
     WindowTask& operator=(WindowTask&&) = delete;
 
     template <typename Result, typename Worker, typename Handler>
-    bool start(Worker&& worker, Handler&& handler) {
+    bool start(Worker&& worker, Handler&& handler, bool session_control = false) {
         static_assert(!std::is_void_v<Result>, "WindowTask requires an owned result value");
 
+        // Only the source-session controller may run while business is paused.
+        if (window_task_detail::sessionSuspended() && !session_control) {cancel();return false;}
         HWND dispatcherWindow = window_task_detail::dispatcher();
         if (!dispatcherWindow) return false;
 
@@ -196,6 +216,11 @@ public:
         using WorkType = std::decay_t<Worker>;
         using HandlerType = std::decay_t<Handler>;
         try {
+            if constexpr (std::is_copy_constructible_v<HandlerType>) {
+                window_task_detail::registerRecovery(state_, generation, [copy=handler]() mutable {
+                    copy(std::optional<Result>{}, std::make_exception_ptr(window_task_detail::SessionSuspended{}));
+                });
+            }
             auto work = std::make_unique<
                 window_task_detail::WorkModel<Result, WorkType, HandlerType>>(
                 state_, generation, dispatcherWindow,

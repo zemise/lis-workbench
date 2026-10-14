@@ -2654,6 +2654,11 @@ void stop_scheduled_result_check_monitor() {
   g_monitor.main = nullptr;
   g_page = nullptr;
 }
+void pause_scheduled_result_check_monitor() {
+  auto* page = g_page;
+  stop_scheduled_result_check_monitor();
+  g_page = page;
+}
 bool run_scheduled_result_check_now() { return triggerScan(true); }
 bool run_scheduled_result_check_timer() { return triggerScan(false); }
 void handle_scheduled_result_check_notification(LPARAM event_code) {

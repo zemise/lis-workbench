@@ -55,6 +55,7 @@
 #include "win32_control_id.h"
 #include "window_task.h"
 #include "login_dialog.h"
+#include "login_source_guard.h"
 namespace {
 
 constexpr int IDM_QUERY = 1001;
@@ -102,6 +103,16 @@ app::Context g_ctx;
 std::optional<login::Identity> g_identity;
 search::DbSettings g_authenticatedDb;
 bool g_relogin = false;
+bool g_sourcePaused = false;
+login::LoginMode g_loginMode = login::LoginMode::startup;
+std::wstring g_sourceDirectory;
+std::unique_ptr<login::SourceGuard> g_sourceGuard;
+bool authenticatedConnectionChanged() {
+  return g_ctx.dbSettings.server != g_authenticatedDb.server ||
+         g_ctx.dbSettings.initial_database != g_authenticatedDb.initial_database ||
+         g_ctx.dbSettings.user != g_authenticatedDb.user ||
+         g_ctx.dbSettings.password != g_authenticatedDb.password;
+}
 bool g_manualUpdateChecking = false;
 std::shared_ptr<std::atomic<bool>> g_updateCancelled;
 app::WindowTask g_manualUpdateTask;
@@ -1101,7 +1112,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     updateToolbarState();
     break;
   case WM_TIMER: {
-    if (!g_identity) return 0;
+    if (!g_identity || g_sourcePaused) return 0;
     if (wp == ID_TIMER) {
       updateTimePane(hwnd);
     } else if (wp == ID_AUTO_UPDATE_TIMER) {
@@ -1142,6 +1153,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_COMMAND: {
     int id = LOWORD(wp);
     if (!g_identity) return 0;
+    if (g_sourcePaused && id != IDM_SWITCH_USER && id != IDM_LOGOUT && id != IDM_EXIT) return 0;
 
     // Module registry dispatch
     for (int i = 0; i < g_moduleCount; i++) {
@@ -1159,6 +1171,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (id) {
     case IDM_LOGOUT:
     case IDM_SWITCH_USER:
+      g_loginMode = id == IDM_SWITCH_USER ? login::LoginMode::recommend : login::LoginMode::manual;
       g_identity.reset();
       app::window_task_detail::invalidateSession();
       g_relogin = true;
@@ -1200,23 +1213,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   }
   case app::WM_APP_SETTINGS_CHANGED:
     if (!g_identity) return 0;
-    if (g_ctx.dbSettings.server != g_authenticatedDb.server ||
-        g_ctx.dbSettings.initial_database != g_authenticatedDb.initial_database ||
-        g_ctx.dbSettings.user != g_authenticatedDb.user ||
-        g_ctx.dbSettings.password != g_authenticatedDb.password) {
+    if (authenticatedConnectionChanged()) {
       g_identity.reset();
       app::window_task_detail::invalidateSession();
       g_relogin = true;
+      g_loginMode = login::LoginMode::manual;
       // Defer destruction until the settings page finishes its save callback.
       PostMessageW(hwnd, WM_CLOSE, 0, 0);
       return 0;
     }
+    if (g_sourcePaused) return 0;
     start_scheduled_result_check_monitor(hwnd, makeCtx());
     rebuildUiFont(g_ctx.fontSize);
     broadcastSettingsChangedToMdiChildren();
     return 0;
   case WM_SCHEDULED_RESULT_NOTIFICATION:
-    handle_scheduled_result_check_notification(lp);
+    if (!g_sourcePaused) handle_scheduled_result_check_notification(lp);
     return 0;
   case WM_CLOSE:
     DestroyWindow(hwnd);
@@ -1273,13 +1285,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   wc.lpszClassName = L"LISWorkbenchMainWindow";
   RegisterClassExW(&wc);
 
+  g_sourceDirectory = search::load_module_str(L"Authentication", L"SourceDirectory", L"C:\\LIS\\创星医疗管理系统（标准）");
   do {
+    g_sourcePaused = false;
     g_relogin = false;
-    g_identity = login::show_dialog(instance, g_ctx.dbSettings);
+    g_identity = login::show_dialog(instance, g_ctx.dbSettings, g_loginMode, g_sourceDirectory);
     if (!g_identity) break;
     g_authenticatedDb = g_ctx.dbSettings;
     rebuildUiFont(g_ctx.fontSize);
-    const auto title = L"LIS 工作台 — " + g_identity->name;
+    const auto title = L"LIS 工作台 — " + g_identity->name + (g_identity->adopted_source ? L"（采用已有登录）" : L"");
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(),
                                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1200, 800, nullptr,
@@ -1290,13 +1304,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ShowWindow(hwnd, SW_MAXIMIZE);
     UpdateWindow(hwnd);
 
+    if (IsWindow(hwnd) && g_identity && g_identity->adopted_source) {
+      g_sourceGuard = std::make_unique<login::SourceGuard>(hwnd, *g_identity, g_ctx.dbSettings, g_sourceDirectory,
+        [hwnd](bool paused, const login::Identity& identity) {
+          if (!paused && authenticatedConnectionChanged()) {SendMessageW(hwnd, WM_COMMAND, IDM_LOGOUT, 0);return;}
+          g_sourcePaused = paused;
+          if (paused) {
+            pause_scheduled_result_check_monitor();
+            g_manualUpdateTask.cancel();g_autoUpdateTask.cancel();g_manualUpdateChecking = false;
+          } else {
+            g_identity = identity;
+            start_scheduled_result_check_monitor(hwnd, makeCtx());
+            const auto title = L"LIS 工作台 — " + identity.name + L"（采用已有登录）";
+            SetWindowTextW(hwnd, title.c_str());
+            const auto status = L"会话已恢复，可刷新已中断的查询";
+            SendMessageW(GetDlgItem(hwnd, ID_STATUS), SB_SETTEXT, 0, reinterpret_cast<LPARAM>(status));
+          }
+        },[hwnd](int action) {
+          SendMessageW(hwnd, WM_COMMAND, action == 1 ? IDM_SWITCH_USER : action == 2 ? IDM_LOGOUT : IDM_EXIT, 0);
+        });
+      if (!g_sourceGuard->start()) PostMessageW(hwnd, WM_COMMAND, IDM_LOGOUT, 0);
+    }
     MSG msg{};
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
       if (!TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
       }
     }
+    g_sourceGuard.reset();
     // Destroy detached report/trend/settings windows as well as the MDI frame.
     // Invalidate all task generations before another user's login loop is created.
     app::window_task_detail::invalidateSession();
@@ -1312,6 +1348,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_ctx.mainWindow = nullptr;
     g_ctx.mdiClient = nullptr;
     g_menuDrawTexts.clear();
+    // The old frame may be destroyed from a nested modal loop. Do not let its
+    // remaining quit message terminate the next login dialog.
+    MSG oldQuit{};
+    while (PeekMessageW(&oldQuit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
   } while (g_relogin);
 
   if (g_ctx.uiFont)
