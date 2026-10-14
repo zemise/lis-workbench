@@ -15,6 +15,49 @@ HWND thread_window(const wchar_t* name) {
         GetClassNameW(window,cls,128);if(std::wstring(cls)==m->name){m->window=window;return FALSE;}return TRUE;
     },reinterpret_cast<LPARAM>(&match));return match.window;
 }
+RECT control_bounds(HWND dialog,int id) {
+    HWND control=GetDlgItem(dialog,id);check(control!=nullptr,"expected login control exists");
+    RECT rect{};GetWindowRect(control,&rect);
+    MapWindowPoints(nullptr,dialog,reinterpret_cast<POINT*>(&rect),2);return rect;
+}
+void check_layout(HWND dialog,bool sources) {
+    RECT client{};GetClientRect(dialog,&client);
+    std::vector<int> ids{101,102,103,3,4,6,201,202,203,401,402,403,404,405};
+    if(sources)for(int id:{301,302,303,304,406})ids.push_back(id);
+    for(int id:ids){
+        const auto rect=control_bounds(dialog,id);
+        check(rect.left>=0&&rect.top>=0&&rect.right<=client.right&&rect.bottom<=client.bottom,
+            "login controls remain inside client area at each DPI");
+        check(rect.right>rect.left&&rect.bottom>rect.top,"login controls have positive area");
+    }
+    for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=i+1;j<ids.size();++j){
+        auto a=control_bounds(dialog,ids[i]),b=control_bounds(dialog,ids[j]);RECT overlap{};
+        check(!IntersectRect(&overlap,&a,&b),"brand, form and source controls do not overlap");
+    }
+    check(control_bounds(dialog,401).right<control_bounds(dialog,101).left,"brand and login form occupy separate columns");
+    HDC dc=GetDC(dialog);
+    auto font=reinterpret_cast<HFONT>(SendMessageW(GetDlgItem(dialog,6),WM_GETFONT,0,0));
+    auto previous=SelectObject(dc,font);
+    const auto feedback=control_bounds(dialog,6);
+    for(const wchar_t* value:{L"请输入登录名；登录名不能包含单引号、分号或双连字符。",
+        L"该账号处于错误次数限时锁定期间，请稍后重试。"}){
+        RECT measured{0,0,feedback.right-feedback.left,0};
+        DrawTextW(dc,value,-1,&measured,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);
+        check(measured.bottom<=feedback.bottom-feedback.top,"long login feedback fits without clipping");
+    }
+    SelectObject(dc,previous);ReleaseDC(dialog,dc);
+}
+void check_dpi_layouts(HWND dialog,bool sources) {
+    check_layout(dialog,sources);
+    RECT original{};GetWindowRect(dialog,&original);
+    const UINT actual=UINT(96*search::dpi_scale_factor(dialog)+0.5f);
+    for(UINT dpi:{96u,120u,144u,192u}){
+        RECT suggested=original;
+        SendMessageW(dialog,0x02e0,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&suggested));
+        check_layout(dialog,sources);
+    }
+    SendMessageW(dialog,0x02e0,MAKEWPARAM(actual,actual),reinterpret_cast<LPARAM>(&original));
+}
 void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
     HWND dialog=thread_window(L"LISWorkbenchLogin");if(!dialog)return;
     check(!thread_window(L"LISWorkbenchMainWindow"),"business frame absent before login");
@@ -22,6 +65,7 @@ void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
         if(phase==6)return; // Startup must adopt the sole recommendation unaided.
         if(phase==7){
             if(SendMessageW(GetDlgItem(dialog,301),CB_GETCOUNT,0,0)!=2)return;
+            check_dpi_layouts(dialog,true);
             check(SendMessageW(GetDlgItem(dialog,301),CB_GETCURSEL,0,0)==CB_ERR,"multiple sources require explicit selection");
             check(adoptCalls==1,"recommend mode never auto-submits");
             SendMessageW(GetDlgItem(dialog,301),CB_SETCURSEL,1,0);SendMessageW(dialog,WM_COMMAND,302,0);phase=8;return;
@@ -39,11 +83,7 @@ void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
         check(search::dpi_scale_factor(nullptr)>0,"pre-window DPI has nonzero fallback");
         RECT client{};GetClientRect(dialog,&client);
         check(client.right>=480&&client.bottom>=314,"login client area has useful minimum size");
-        for(int id:{101,102,103,3,4,6,201,202,203}) {
-            RECT rect{};GetWindowRect(GetDlgItem(dialog,id),&rect);
-            MapWindowPoints(nullptr,dialog,reinterpret_cast<POINT*>(&rect),2);
-            check(rect.left>=0&&rect.top>=0&&rect.right<=client.right&&rect.bottom<=client.bottom,"scaled login controls remain inside client area");
-        }
+        check_dpi_layouts(dialog,false);
         check(GetDlgItem(dialog,5)==nullptr,"connection settings removed");
         check(GetWindowTextLengthW(GetDlgItem(dialog,6))==0,"no initial prompt");
         SendMessageW(dialog,WM_COMMAND,3,0);
