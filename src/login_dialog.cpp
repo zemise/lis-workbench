@@ -4,6 +4,7 @@
 #include "login_adoption.h"
 #include "search_ui_layout.h"
 #include "window_task.h"
+#include "window_message_loop.h"
 #include "resource.h"
 #include <optional>
 
@@ -17,6 +18,10 @@ constexpr int BrandTitle=401,BrandDescription=402,BrandFooter=403;
 constexpr int FormTitle=404,FormDescription=405,SourceTitle=406;
 constexpr int ClientWidth=700,BrandWidth=220;
 int clientHeight(LoginMode mode,bool compact=false){return mode==LoginMode::manual?392:(compact?486:578);}
+struct SourceRecommendations {
+    std::vector<Recommendation> items;
+    std::wstring diagnostic;
+};
 struct State {
     HINSTANCE instance;const search::DbSettings& db;
     LoginMode mode;std::wstring directory;
@@ -134,6 +139,9 @@ void revealControl(HWND hwnd,State* s,HWND control) {
     else if(rect.bottom>client.bottom-margin)s->scrollOffset+=rect.bottom-client.bottom+margin;
     if(previous!=s->scrollOffset)layout(hwnd,s);
 }
+BOOL CALLBACK applyChildFont(HWND child,LPARAM font) {
+    SendMessageW(child,WM_SETFONT,WPARAM(font),TRUE);return TRUE;
+}
 void applyFont(HWND hwnd,State* s) {
     const auto create=[s](int size,int weight){return CreateFontW(-MulDiv(size,int(96*s->scale),72),0,0,0,weight,FALSE,FALSE,FALSE,
         DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");};
@@ -141,9 +149,7 @@ void applyFont(HWND hwnd,State* s) {
     if(!font||!title||!heading){
         if(font)DeleteObject(font);if(title)DeleteObject(title);if(heading)DeleteObject(heading);return;
     }
-    EnumChildWindows(hwnd,[](HWND child,LPARAM param)->BOOL{
-        SendMessageW(child,WM_SETFONT,WPARAM(param),TRUE);return TRUE;
-    },reinterpret_cast<LPARAM>(font));
+    EnumChildWindows(hwnd,applyChildFont,reinterpret_cast<LPARAM>(font));
     for(int id:{BrandTitle,FormTitle})SendMessageW(GetDlgItem(hwnd,id),WM_SETFONT,reinterpret_cast<WPARAM>(title),TRUE);
     for(int id:{CodeLabel,PasswordLabel,SourceTitle})SendMessageW(GetDlgItem(hwnd,id),WM_SETFONT,reinterpret_cast<WPARAM>(heading),TRUE);
     if(s->ownFont)DeleteObject(s->ownFont);s->ownFont=font;
@@ -224,11 +230,11 @@ void refreshSources(HWND hwnd,State* s) {
     EnableWindow(GetDlgItem(hwnd,UseSource),FALSE);EnableWindow(GetDlgItem(hwnd,RefreshSource),FALSE);
     SetWindowTextW(GetDlgItem(hwnd,SourceLabel),L"正在识别已登录用户…");
     auto db=s->db;auto directory=s->directory;SetTimer(hwnd,SourceTimeout,10000,nullptr);
-    const bool started=s->sourceTask.start<std::vector<Recommendation>>(
-        [db,directory](app::WindowTaskContext t){return recommendations(db,directory,[t]{return t.cancelled();});},
-        [hwnd,s](std::optional<std::vector<Recommendation>> result,std::exception_ptr error){
+    const bool started=s->sourceTask.start<SourceRecommendations>(
+        [db,directory](app::WindowTaskContext t){SourceRecommendations r;r.items=recommendations(db,directory,[t]{return t.cancelled();},&r.diagnostic);return r;},
+        [hwnd,s](std::optional<SourceRecommendations> result,std::exception_ptr error){
             KillTimer(hwnd,SourceTimeout);EnableWindow(GetDlgItem(hwnd,RefreshSource),TRUE);
-            if(!error&&result)s->recommendations=std::move(*result);
+            if(!error&&result)s->recommendations=std::move(result->items);
             for(const auto& r:s->recommendations){
                 ULARGE_INTEGER bits{};bits.QuadPart=r.source.main_created;FILETIME utc{bits.LowPart,bits.HighPart},local{};SYSTEMTIME time{};
                 FileTimeToLocalFileTime(&utc,&local);FileTimeToSystemTime(&local,&time);
@@ -236,7 +242,10 @@ void refreshSources(HWND hwnd,State* s) {
                 const auto label=r.identity.name+L"（"+r.identity.code+L"）  启动于 "+started;
                 SendMessageW(GetDlgItem(hwnd,Sources),CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label.c_str()));
             }
-            SetWindowTextW(GetDlgItem(hwnd,SourceLabel),s->recommendations.empty()?L"未发现可采用的登录，可刷新或手动登录":L"当前已登录用户（可选择或手动输入）");
+            const auto label=s->recommendations.empty()?
+                (!error&&result&&!result->diagnostic.empty()?result->diagnostic:L"来源识别失败，可刷新或手动登录"):
+                std::wstring(L"当前已登录用户（可选择或手动输入）");
+            SetWindowTextW(GetDlgItem(hwnd,SourceLabel),label.c_str());
             if(s->recommendations.size()==1)SendMessageW(GetDlgItem(hwnd,Sources),CB_SETCURSEL,0,0);
             EnableWindow(GetDlgItem(hwnd,UseSource),!s->recommendations.empty());
             if(s->mode==LoginMode::startup&&!s->manualTouched&&s->recommendations.size()==1&&s->recommendations[0].automatic_allowed)useSource(hwnd,s,true);
@@ -388,7 +397,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         s->task.cancel();s->nameTask.cancel();s->sourceTask.cancel();KillTimer(hwnd,NameTimer);KillTimer(hwnd,SourceTimeout);
         // A sent close can be dispatched inside GetMessage while it still waits
         // for a posted message. Wake the modal loop without posting WM_QUIT.
-        PostThreadMessageW(GetCurrentThreadId(),WM_NULL,0,0);
+        app::wake_window_message_loop();
         return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);

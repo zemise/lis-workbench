@@ -11,6 +11,7 @@
 namespace querydiag {
 namespace {
 thread_local RequestScope* current = nullptr;
+thread_local unsigned silence_depth = 0;
 
 std::string new_id() {
     static const std::uint64_t seed = [] {
@@ -133,10 +134,14 @@ std::string odbc_error(Operation operation, SQLSMALLINT type, SQLHANDLE handle, 
 }
 #endif
 
+SilenceScope::SilenceScope() noexcept { ++silence_depth; }
+SilenceScope::~SilenceScope() noexcept { --silence_depth; }
+
 RequestScope::RequestScope(const char* query, std::string& error, Sink sink)
     : parent_(current), id_(parent_ ? parent_->id() : new_id()), query_(query),
       error_(error), sink_(std::move(sink)), started_(std::chrono::steady_clock::now()),
-      exceptions_(std::uncaught_exceptions()) {
+      exceptions_(std::uncaught_exceptions()),
+      silent_(silence_depth != 0 || (parent_ && parent_->silent_)) {
     error_.clear();
     current = this;
     event("event=begin");
@@ -172,6 +177,7 @@ RequestScope::Sink RequestScope::log_callback() {
 }
 
 void RequestScope::event(const std::string& safe_event) noexcept {
+    if (silent_ || silence_depth != 0) return;
     try {
         // A nested query forwarding to its parent's callback is already decorated.
         if (safe_event.rfind("request_id=", 0) == 0) {

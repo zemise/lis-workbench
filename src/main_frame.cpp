@@ -1,6 +1,8 @@
 #include <winsock2.h> // must come before windows.h
 
 #include "main_app.h"
+#include "window_message_loop.h"
+#include "single_instance.h"
 #include "resource.h"
 #include "search_text.h"
 
@@ -1171,11 +1173,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (id) {
     case IDM_LOGOUT:
     case IDM_SWITCH_USER:
+      LOG_INFO(id == IDM_SWITCH_USER ? "Session transition requested mode=recommend" : "Session transition requested mode=manual");
       g_loginMode = id == IDM_SWITCH_USER ? login::LoginMode::recommend : login::LoginMode::manual;
       g_identity.reset();
       app::window_task_detail::invalidateSession();
       g_relogin = true;
-      DestroyWindow(hwnd);
+      // Let the native menu/command callback unwind before destroying its
+      // owner and rebuilding the authenticated session.
+      if (!PostMessageW(hwnd, WM_CLOSE, 0, 0))
+        DestroyWindow(hwnd);
       return 0;
     case IDM_ABOUT: {
       const std::wstring aboutText = L"LIS 工作台\n版本 " +
@@ -1234,6 +1240,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     DestroyWindow(hwnd);
     return 0;
   case WM_DESTROY:
+    LOG_INFO(g_relogin ? "Session frame closed outcome=relogin" : "Session frame closed outcome=exit");
     app::window_task_detail::invalidateSession();
     if (g_updateCancelled) g_updateCancelled->store(true);
     KillTimer(hwnd, ID_TIMER);
@@ -1243,7 +1250,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     g_manualUpdateTask.cancel();
     g_autoUpdateTask.cancel();
     g_manualUpdateChecking = false;
-    PostQuitMessage(0);
+    // A main frame is one authenticated session, not the application lifetime.
+    // In particular, switching accounts may destroy it inside a menu loop.
+    app::wake_window_message_loop();
     return 0;
   }
   return DefFrameProcW(hwnd, g_ctx.mdiClient, msg, wp, lp);
@@ -1252,6 +1261,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+  // Keep the guard alive across login, account switches and suspended sessions.
+  // Do this before reading configuration, initializing logs or starting workers.
+  app::SingleInstance singleInstance;
+  if (!singleInstance.primary()) {
+    if (singleInstance.already_running()) {
+      app::activate_workbench();
+      return 0;
+    }
+    MessageBoxW(nullptr, L"无法检查工作台运行状态，请稍后重试。", L"LIS 工作台", MB_OK | MB_ICONERROR);
+    return 1;
+  }
   install_crash_handler();
   applog::init(
       L"log",
@@ -1285,12 +1305,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   wc.lpszClassName = L"LISWorkbenchMainWindow";
   RegisterClassExW(&wc);
 
-  g_sourceDirectory = search::load_module_str(L"Authentication", L"SourceDirectory", L"C:\\LIS\\创星医疗管理系统（标准）");
+  g_sourceDirectory = search::load_module_str(L"Authentication", L"SourceDirectory", L"");
   do {
     g_sourcePaused = false;
     g_relogin = false;
+    LOG_INFO("Session login opening");
     g_identity = login::show_dialog(instance, g_ctx.dbSettings, g_loginMode, g_sourceDirectory);
-    if (!g_identity) break;
+    if (!g_identity) {
+      LOG_INFO("Session login closed outcome=cancelled");
+      break;
+    }
     g_authenticatedDb = g_ctx.dbSettings;
     rebuildUiFont(g_ctx.fontSize);
     const auto title = L"LIS 工作台 — " + g_identity->name + (g_identity->adopted_source ? L"（采用已有登录）" : L"");
@@ -1348,10 +1372,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_ctx.mainWindow = nullptr;
     g_ctx.mdiClient = nullptr;
     g_menuDrawTexts.clear();
-    // The old frame may be destroyed from a nested modal loop. Do not let its
-    // remaining quit message terminate the next login dialog.
-    MSG oldQuit{};
-    while (PeekMessageW(&oldQuit, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
   } while (g_relogin);
 
   if (g_ctx.uiFont)

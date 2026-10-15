@@ -25,6 +25,16 @@ struct Diagnostic {
 std::string safe_error(Operation operation, const std::vector<Diagnostic>& diagnostics = {});
 void stage_event(Operation operation) noexcept;
 
+// Thread-local: silence this operation and its nested diagnostic requests,
+// including the application's file/debug sinks, without affecting other pages.
+class SilenceScope {
+public:
+    SilenceScope() noexcept;
+    ~SilenceScope() noexcept;
+    SilenceScope(const SilenceScope&) = delete;
+    SilenceScope& operator=(const SilenceScope&) = delete;
+};
+
 #ifdef _WIN32
 using DiagnosticReader = decltype(&SQLGetDiagRecW);
 std::string odbc_error(Operation operation, SQLSMALLINT type, SQLHANDLE handle,
@@ -54,6 +64,7 @@ private:
     std::function<std::size_t()> row_count_;
     std::chrono::steady_clock::time_point started_;
     int exceptions_;
+    bool silent_;
 };
 
 }  // namespace querydiag

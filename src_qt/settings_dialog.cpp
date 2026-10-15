@@ -24,7 +24,7 @@ SettingsDialog::SettingsDialog(const search::DbSettings& settings,
 
     database_ = new QLineEdit(this);
     database_->setText(QString::fromStdWString(settings.initial_database));
-    database_->setPlaceholderText("trasen");
+    database_->setPlaceholderText("数据库名称");
 
     user_ = new QLineEdit(this);
     user_->setText(QString::fromStdWString(settings.user));
