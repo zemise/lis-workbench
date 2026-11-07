@@ -27,7 +27,7 @@ out/windows/update/updates/manifest.json
 out/windows/update/updates/LISWorkbench-<version>-win7-win11.zip
 ```
 
-Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。设置页默认选择 LIS，已有有效共享目录／HTTP 选择保留，只显示当前来源对应的设置。LIS 来源复用现有数据库配置，仅通过菜单手动检查；离线上传材料用 `make db-update-package` 获取正式 Release，上传端使用 Windows 10/11，操作说明在生成目录的 `README-upload.txt`。manifest 与 zip 同目录，便于同一份 manifest 兼容共享目录、普通 HTTP 和 GitHub Release。
+Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。设置页默认选择 LIS，已有有效共享目录／HTTP 选择保留，只显示当前来源对应的设置。LIS 来源复用现有数据库配置，每次新启动在登录前检查新版，自动下载、校验并安装重启，不受“自动检查更新”开关或每日次数限制；也可通过菜单手动检查。无新版或检查失败继续登录，关闭启动更新窗口可取消并退出。离线上传材料用 `make db-update-package` 获取正式 Release，上传端使用 Windows 10/11，操作说明在生成目录的 `README-upload.txt`。manifest 与 zip 同目录，便于同一份 manifest 兼容共享目录、普通 HTTP 和 GitHub Release。
 更新 zip 不包含 HIV 统计表 DOCX 模版和常用电话 RTF 文件；自动更新不会覆盖现场已上传的 `templates\HIVStatisticsTemplate.docx` 或 `documents` 目录。
 
 使用 GitHub Release 作为外网更新源时，系统设置页的 HTTP 地址填写：
@@ -188,7 +188,7 @@ nmake
 
 版本日期使用发布当天（项目按 Asia/Shanghai），首次发布为 `vYYYY.MM.DD`，后续依次 `.1`、`.2`。修订号为 1～999999999 的整数，不补零，不使用 `.0`；不修改已有标签或包内容。主程序、安装包、ZIP、manifest 和 Release 标签必须一致。
 
-当前源码版本为 `v2026.11.08`，发布时使用同名标签。本版新增已签收条码的项目覆盖补关联，保持原条码并补充报告状态及定位；不需要数据库结构迁移或修改 LIS 数据。规则与操作见[使用说明](../docs/USAGE.md)，验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，不复用旧版本二进制；安装或替换前退出已有工作台进程。
+当前源码版本为 `v2026.11.08`，发布时使用同名标签。本版新增 LIS 登录前自动更新、常规报告精简置顶及已签收条码的项目覆盖补关联；不需要数据库结构迁移或修改 LIS 数据。规则与操作见[使用说明](../docs/USAGE.md)，验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，不复用旧版本二进制；安装或替换前退出已有工作台进程。
 
 旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
 
