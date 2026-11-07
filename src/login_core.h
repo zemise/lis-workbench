@@ -13,7 +13,12 @@ struct Identity {
     std::optional<Source> adopted_source;
 };
 enum class Status { success, invalid_credentials, locked, temporary_locked, expired, failed };
-struct Result { Status status = Status::failed; std::optional<Identity> identity; };
+struct Result {
+    Status status = Status::failed;
+    std::optional<Identity> identity;
+    // Safe stage/reason only: never credentials, SQL text or provider messages.
+    std::wstring diagnostic;
+};
 std::wstring trim(const std::wstring& text);
 bool valid_code(const std::wstring& code);
 bool decrypt_legacy(const std::wstring& stored, std::wstring& plaintext);

@@ -71,6 +71,7 @@ add_library(search_core STATIC
     src/trend_core.cpp
     src/log.cpp
     src/query_diagnostics.cpp
+    src/tat_statistics_core.cpp
 )
 target_include_directories(search_core PUBLIC src)
 target_compile_definitions(search_core PUBLIC UNICODE _UNICODE ${LIS_WIN7_COMPAT_DEFINITIONS})
@@ -173,7 +174,7 @@ endif()
 add_library(login_source_runtime STATIC src/login_source_win32.cpp src/login_adoption.cpp)
 target_include_directories(login_source_runtime PUBLIC src)
 target_compile_definitions(login_source_runtime PRIVATE NOMINMAX)
-target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuuid ole32 oleaut32 shell32 advapi32)
+target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuuid ole32 oleaut32 shell32 advapi32 version)
 
 # ── Main application (Win32 MDI shell) ────────────────────────
 add_executable(main_app WIN32
@@ -181,6 +182,7 @@ add_executable(main_app WIN32
     src/login_dialog.cpp
     src/login_source_guard.cpp
     src/main_frame.cpp
+    src/single_instance.cpp
     src/menu_toolbar.cpp
     src/backup_blood_statistics_module.cpp
     src/barcode_label_printing.cpp
@@ -322,6 +324,7 @@ if(BUILD_TESTING)
     if(LIS_HAS_LABELPRINT AND WIN32)
         add_executable(microbiology_label_tests
             tests/microbiology_label_test.cpp
+            src/search_text.cpp
             src/microbiology_label_template.cpp
             src/microbiology_label_render.cpp
             src/microbiology_report_barcode_range.cpp
@@ -330,6 +333,13 @@ if(BUILD_TESTING)
         target_link_libraries(microbiology_label_tests PRIVATE ${LIS_LABELPRINT_TARGET})
         add_test(NAME microbiology_label_tests COMMAND microbiology_label_tests)
     endif()
+    add_executable(regular_report_machine_tests
+        tests/regular_report_machine_test.cpp
+        src/search_text.cpp
+    )
+    target_include_directories(regular_report_machine_tests PRIVATE src)
+    add_test(NAME regular_report_machine_tests COMMAND regular_report_machine_tests)
+
     add_executable(regular_report_barcode_range_tests
         tests/regular_report_barcode_range_test.cpp
         src/regular_report_barcode_range.cpp
@@ -355,6 +365,9 @@ if(BUILD_TESTING)
     add_executable(tat_statistics_tests tests/tat_statistics_test.cpp)
     target_link_libraries(tat_statistics_tests PRIVATE search_core)
     add_test(NAME tat_statistics_tests COMMAND tat_statistics_tests)
+    add_executable(tat_no_log_tests tests/tat_no_log_test.cpp)
+    target_link_libraries(tat_no_log_tests PRIVATE search_core)
+    add_test(NAME tat_no_log_tests COMMAND tat_no_log_tests)
 
     add_executable(massive_transfusion_core_tests
         tests/massive_transfusion_statistics_test.cpp
@@ -371,8 +384,12 @@ if(BUILD_TESTING)
     add_test(NAME xlsx_writer_tests COMMAND xlsx_writer_tests)
 
     if(WIN32)
-        add_executable(login_source_runtime_tests tests/login_source_win32_test.cpp)
-        target_link_libraries(login_source_runtime_tests PRIVATE login_source_runtime)
+        add_executable(single_instance_tests tests/single_instance_test.cpp src/single_instance.cpp)
+        target_link_libraries(single_instance_tests PRIVATE search_core user32 shell32)
+        add_test(NAME single_instance_tests COMMAND single_instance_tests)
+        set_tests_properties(single_instance_tests PROPERTIES TIMEOUT 30)
+        add_executable(login_source_runtime_tests tests/login_source_win32_test.cpp src/login_database.cpp)
+        target_link_libraries(login_source_runtime_tests PRIVATE login_source_runtime search_ui_core)
         add_test(NAME login_source_runtime_tests COMMAND login_source_runtime_tests)
         add_executable(login_source_guard_tests tests/login_source_guard_test.cpp src/login_source_guard.cpp resource/app.rc)
         target_include_directories(login_source_guard_tests PRIVATE resource)
@@ -419,7 +436,7 @@ if(BUILD_TESTING)
     target_link_libraries(login_core_tests PRIVATE search_core)
     add_test(NAME login_core_tests COMMAND login_core_tests)
     if(MINGW)
-        foreach(login_test login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
+        foreach(login_test single_instance_tests login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
             target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
         endforeach()
     endif()
@@ -430,6 +447,7 @@ if(BUILD_TESTING)
 
     if(LIS_REQUIRE_RELEASE_TESTS)
         set(LIS_REQUIRED_TESTS
+            single_instance_tests
             login_source_tests login_adoption_tests login_source_guard_tests login_source_runtime_tests
             login_core_tests
             login_database_tests
@@ -437,8 +455,9 @@ if(BUILD_TESTING)
             update_database_tests update_package_tests db_update_upload_offline_tests
             db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
             microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests
+            regular_report_machine_tests
             scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests
-            tat_statistics_tests massive_transfusion_core_tests xlsx_writer_tests
+            tat_statistics_tests tat_no_log_tests massive_transfusion_core_tests xlsx_writer_tests
             window_task_tests window_task_failure_probe log_tests)
         foreach(test_name IN LISTS LIS_REQUIRED_TESTS)
             if(NOT TEST ${test_name})

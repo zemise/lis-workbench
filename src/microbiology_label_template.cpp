@@ -77,6 +77,26 @@ labelprint::MedicalLabelLayout originalLayout(labelprint::MedicalLabelPrinterMod
     return layout;
 }
 
+labelprint::MedicalLabelLayout bloodManualLayout(labelprint::MedicalLabelPrinterModel model) {
+    auto layout = originalLayout(model);
+    // Use the vacant barcode/specimen area for patient identification.
+    // Coordinates and font sizes are printer dots on a 50 x 30 mm, 203-DPI label.
+    layout.patientName.pos = {5, 60};
+    layout.patientName.height = 36;
+    layout.patientName.width = 24;
+    layout.patientId.pos = {5, 115};
+    layout.patientId.height = 32;
+    layout.patientId.width = 16;
+    layout.specimenType.pos = {221, 60};
+    layout.specimenType.height = 36;
+    layout.specimenType.width = 16;
+    layout.department.pos = {5, 175};
+    layout.department.height = 24;
+    layout.department.width = 16;
+    layout.timestamp.pos.x = 183;
+    return layout;
+}
+
 void addOrder(labelprint::LabelDocument& doc, const std::string& text,
               labelprint::MedicalLabelTextLayout layout,
               labelprint::MedicalLabelPrinterModel model) {
@@ -128,14 +148,15 @@ void addOrder(labelprint::LabelDocument& doc, const std::string& text,
 
 labelprint::LabelDocument build_microbiology_label(
     const BarcodeLabelPayload& p, labelprint::MedicalLabelPrinterModel model) {
-    const auto layout = originalLayout(model);
+    const bool bloodManual = p.view_machine_code == blood_manual::view_code;
+    const auto layout = bloodManual ? bloodManualLayout(model) : originalLayout(model);
     labelprint::LabelDocument doc(layout.settings);
     addSingleLine(doc, p.sample_no, layout.sampleNo);
     addSingleLine(doc, p.test_item, layout.testItem);
-    addOrder(doc, p.order_text, layout.testItem, model);
+    if (!bloodManual) addOrder(doc, p.order_text, layout.testItem, model);
     auto specimen = layout.specimenType;
     specimen.pos = {5, 137};
-    addSingleLine(doc, p.specimen_type, specimen);
+    if (!bloodManual) addSingleLine(doc, p.specimen_type, specimen);
     addSingleLine(doc, p.patient_name, layout.patientName);
     std::string demographics = p.sex;
     if (!p.age.empty()) {

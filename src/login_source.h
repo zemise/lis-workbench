@@ -23,6 +23,8 @@ struct SourceScan {
     std::vector<SourceMain> mains;
     std::vector<Source> sources;
     std::vector<std::uint32_t> unreadable_mains;
+    std::vector<std::wstring> diagnostics;
+    bool retryable = false;
 };
 enum class SourceStatus { ready, locked, exited, changed, unavailable };
 struct SourceMatch {

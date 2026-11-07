@@ -60,6 +60,8 @@ constexpr const wchar_t* PROP_STATE = L"BloodSt";
 constexpr const wchar_t* PROP_LIS_STATE = L"BloodLisSt";
 constexpr const wchar_t* WINDOW_TITLE = L"输血结果查询";
 constexpr UINT WM_BLOOD_AUTO_QUERY = WM_APP + 61;
+constexpr UINT_PTR BLOOD_DATE_TIMER = 6202;
+constexpr UINT BLOOD_DATE_CHECK_INTERVAL_MS = 1000;
 constexpr UINT_PTR SEARCH_EDIT_SUBCLASS = 6201;
 constexpr int DEFAULT_DATE_RANGE_DAYS = 7;
 constexpr int DEFAULT_LIS_DAYS = 14;
@@ -154,6 +156,7 @@ struct BloodState {
     HWND statusCombo = nullptr;
     HWND startDate = nullptr;
     HWND endDate = nullptr;
+    SYSTEMTIME lastObservedDate{};
     HWND list = nullptr;
     HWND tabs = nullptr;
     HWND status = nullptr;
@@ -352,6 +355,23 @@ void setDefaultDateRange(BloodState* st) {
     SYSTEMTIME start = subtractDays(today, DEFAULT_DATE_RANGE_DAYS);
     DateTime_SetSystemtime(st->startDate, GDT_VALID, &start);
     DateTime_SetSystemtime(st->endDate, GDT_VALID, &today);
+    st->lastObservedDate = today;
+}
+
+bool updateBloodEndDateOnDayChange(BloodState* st) {
+    SYSTEMTIME today{};
+    GetLocalTime(&today);
+    const auto& previous = st->lastObservedDate;
+    if (previous.wYear == today.wYear && previous.wMonth == today.wMonth &&
+        previous.wDay == today.wDay) return false;
+
+    // Track the calendar day separately so a manually selected historical end
+    // date remains usable until the next day. Consume the change before querying
+    // to avoid duplicate refreshes if an error dialog pumps timer messages.
+    today.wHour = today.wMinute = today.wSecond = today.wMilliseconds = 0;
+    st->lastObservedDate = today;
+    DateTime_SetSystemtime(st->endDate, GDT_VALID, &today);
+    return true;
 }
 
 bool setApplyDateRange(BloodState* st, const std::string& applyTime) {
@@ -661,6 +681,10 @@ void selectBloodRow(BloodState* st, int rowIndex, int column) {
 }
 
 bool runBloodQuery(BloodState* st) {
+    if (app::window_task_detail::sessionSuspended()) return false;
+    // Also check on manual search, in case it precedes the first timer tick
+    // after midnight or resuming from sleep.
+    updateBloodEndDateOnDayChange(st);
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
         MessageBoxW(nullptr, L"请先在“系统设置”中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return false;
@@ -820,25 +844,26 @@ void createBloodControls(HWND hwnd, BloodState* st) {
 
     createToolbar(hwnd, st);
 
+    // Reserve enough label width for all five characters at the largest UI font (13 pt).
     st->searchBox = search::create_groupbox(hwnd, L"信息检索", 0, 0, 0, 0);
-    addSearchLabel(st, hwnd, L"病人编号：", 12, 28, 60, 24);
+    addSearchLabel(st, hwnd, L"病人编号：", 12, 28, 92, 24);
     st->patientNo = search::create_edit(hwnd, IDC_PATIENT_NO, 0, 0, 0, 0);
     SetWindowSubclass(st->patientNo, searchEditProc, SEARCH_EDIT_SUBCLASS, reinterpret_cast<DWORD_PTR>(hwnd));
-    addLayout(st, st->patientNo, LayoutArea::LeftSearch, 76, 22, 250, 28);
+    addLayout(st, st->patientNo, LayoutArea::LeftSearch, 108, 22, 250, 28);
 
-    addSearchLabel(st, hwnd, L"病人姓名：", 12, 64, 60, 24);
+    addSearchLabel(st, hwnd, L"病人姓名：", 12, 64, 92, 24);
     st->patientName = search::create_edit(hwnd, IDC_PATIENT_NAME, 0, 0, 0, 0);
     SetWindowSubclass(st->patientName, searchEditProc, SEARCH_EDIT_SUBCLASS, reinterpret_cast<DWORD_PTR>(hwnd));
-    addLayout(st, st->patientName, LayoutArea::LeftSearch, 76, 58, 250, 28);
+    addLayout(st, st->patientName, LayoutArea::LeftSearch, 108, 58, 250, 28);
 
-    addSearchLabel(st, hwnd, L"申请单号：", 12, 100, 60, 24);
+    addSearchLabel(st, hwnd, L"申请单号：", 12, 100, 92, 24);
     st->formNo = search::create_edit(hwnd, IDC_FORM_NO, 0, 0, 0, 0);
     SetWindowSubclass(st->formNo, searchEditProc, SEARCH_EDIT_SUBCLASS, reinterpret_cast<DWORD_PTR>(hwnd));
-    addLayout(st, st->formNo, LayoutArea::LeftSearch, 76, 94, 250, 28);
+    addLayout(st, st->formNo, LayoutArea::LeftSearch, 108, 94, 250, 28);
 
-    addSearchLabel(st, hwnd, L"申请状态：", 12, 136, 60, 24);
+    addSearchLabel(st, hwnd, L"申请状态：", 12, 136, 92, 24);
     st->statusCombo = search::create_combo(hwnd, IDC_STATUS_COMBO, 0, 0, 0, 0, false);
-    addLayout(st, st->statusCombo, LayoutArea::LeftSearch, 76, 130, 250, 180);
+    addLayout(st, st->statusCombo, LayoutArea::LeftSearch, 108, 130, 250, 180);
     const wchar_t* statusItems[] = {
         STATUS_ALL_LABEL,
         STATUS_PENDING_LABEL,
@@ -850,14 +875,14 @@ void createBloodControls(HWND hwnd, BloodState* st) {
     }
     SendMessageW(st->statusCombo, CB_SETCURSEL, 0, 0);
 
-    addSearchLabel(st, hwnd, L"申请日期：", 12, 172, 60, 24);
+    addSearchLabel(st, hwnd, L"申请日期：", 12, 172, 92, 24);
     st->startDate = search::create_date_picker(hwnd, IDC_START_DATE, 0, 0, 0, 0);
     st->endDate = search::create_date_picker(hwnd, IDC_END_DATE, 0, 0, 0, 0);
-    addLayout(st, st->startDate, LayoutArea::LeftSearch, 76, 166, 120, 28);
-    addLayout(st, st->endDate, LayoutArea::LeftSearch, 204, 166, 120, 28);
+    addLayout(st, st->startDate, LayoutArea::LeftSearch, 108, 166, 120, 28);
+    addLayout(st, st->endDate, LayoutArea::LeftSearch, 236, 166, 120, 28);
 
     st->searchButton = createOwnerDrawButton(hwnd, IDC_SEARCH, L"查找", 0, 0, 0, 0);
-    addLayout(st, st->searchButton, LayoutArea::LeftSearch, 332, 22, 110, 172);
+    addLayout(st, st->searchButton, LayoutArea::LeftSearch, 364, 22, 110, 172);
 
     st->legend = createStatic(hwnd, L"白色【未审核】，绿色【已审核】，黄色【已完结】", SS_CENTER, 0, 0, 0, 0);
 
@@ -1018,7 +1043,7 @@ void layoutBloodWindow(HWND hwnd, BloodState* st) {
     const int toolbarH = S(64);
     const int margin = S(8);
     const int gap = S(8);
-    const int leftW = (std::max)(S(420), (std::min)(S(448), clientW * 27 / 100));
+    const int leftW = (std::max)(S(452), (std::min)(S(480), clientW * 27 / 100));
     const int rightX = leftW + gap;
     const int rightW = (std::max)(S(500), clientW - rightX - margin);
     const int contentTop = toolbarH + gap;
@@ -2243,12 +2268,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             createBloodControls(hwnd, st);
             setDefaultDateRange(st);
             layoutBloodWindow(hwnd, st);
+            SetTimer(hwnd, BLOOD_DATE_TIMER, BLOOD_DATE_CHECK_INTERVAL_MS, nullptr);
             PostMessageW(hwnd, WM_BLOOD_AUTO_QUERY, 0, 0);
             return 0;
         }
         case WM_BLOOD_AUTO_QUERY:
             if (st) runBloodQuery(st);
             return 0;
+        case WM_TIMER:
+            if (wp == BLOOD_DATE_TIMER) {
+                // Leave the day pending while the adopted login is locked;
+                // the next tick after unlocking performs one catch-up query.
+                if (st && !app::window_task_detail::sessionSuspended() &&
+                    updateBloodEndDateOnDayChange(st)) {
+                    runBloodQuery(st);
+                }
+                return 0;
+            }
+            break;
         case WM_BLOOD_OPEN_REQUEST: {
             std::unique_ptr<BloodRequestOpenTarget> target(
                 reinterpret_cast<BloodRequestOpenTarget*>(lp));
@@ -2417,6 +2454,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case WM_DESTROY: {
+            KillTimer(hwnd, BLOOD_DATE_TIMER);
             MSG pending{};
             while (PeekMessageW(&pending, hwnd, WM_BLOOD_OPEN_REQUEST,WM_BLOOD_OPEN_REQUEST, PM_REMOVE))
                 delete reinterpret_cast<BloodRequestOpenTarget*>(pending.lParam);

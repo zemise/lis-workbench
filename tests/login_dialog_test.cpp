@@ -2,6 +2,7 @@
 #include "login_database.h"
 #include "login_adoption.h"
 #include "search_ui_layout.h"
+#include "window_message_loop.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -11,12 +12,24 @@
 namespace { int phase=0;DWORD changedAt=0;std::atomic<int> calls{0},adoptCalls{0};int recMode=0;
 UINT layoutDpi=0;
 void check(bool ok,const char* msg){if(!ok){std::cerr<<msg<<'\n';std::exit(1);}}
+struct WindowMatch {const wchar_t* name;HWND window=nullptr;};
+BOOL CALLBACK matchThreadWindow(HWND window,LPARAM parameter) {
+    auto* m=reinterpret_cast<WindowMatch*>(parameter);wchar_t cls[128]{};
+    GetClassNameW(window,cls,128);if(std::wstring(cls)==m->name){m->window=window;return FALSE;}return TRUE;
+}
 HWND thread_window(const wchar_t* name) {
-    struct Match {const wchar_t* name;HWND window=nullptr;} match{name};
-    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM parameter)->BOOL{
-        auto* m=reinterpret_cast<Match*>(parameter);wchar_t cls[128]{};
-        GetClassNameW(window,cls,128);if(std::wstring(cls)==m->name){m->window=window;return FALSE;}return TRUE;
-    },reinterpret_cast<LPARAM>(&match));return match.window;
+    WindowMatch match{name};
+    EnumThreadWindows(GetCurrentThreadId(),matchThreadWindow,reinterpret_cast<LPARAM>(&match));return match.window;
+}
+LRESULT CALLBACK sessionFrameProc(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    if(message==WM_TIMER){
+        // A switch is delivered through a nested SendMessage while the outer
+        // message pump is dispatching. The next login must survive this close.
+        KillTimer(window,1);SendMessageW(window,WM_COMMAND,2006,0);return 0;
+    }
+    if(message==WM_COMMAND&&LOWORD(wp)==2006){DestroyWindow(window);return 0;}
+    if(message==WM_DESTROY){app::wake_window_message_loop();return 0;}
+    return DefWindowProcW(window,message,wp,lp);
 }
 RECT control_bounds(HWND dialog,int id) {
     HWND control=GetDlgItem(dialog,id);check(control!=nullptr,"expected login control exists");
@@ -120,6 +133,14 @@ void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
             wchar_t code[64]{};GetWindowTextW(GetDlgItem(dialog,101),code,64);check(std::wstring(code)==L"T123","late recommendation does not overwrite manual input");
             SendMessageW(dialog,WM_COMMAND,3,0);phase=11;return;
         }
+        if(phase==12){
+            wchar_t label[256]{};GetWindowTextW(GetDlgItem(dialog,304),label,256);
+            if(std::wstring(label)!=L"未检测到运行中的来源程序")return;
+            check(!IsWindowEnabled(GetDlgItem(dialog,302)),"failed discovery cannot enable adoption");
+            check(IsWindowEnabled(GetDlgItem(dialog,303)),"failed discovery allows refresh");
+            check_dpi_layouts(dialog,true);
+            SendMessageW(dialog,WM_COMMAND,4,0);phase=13;return;
+        }
         return;
     }
     if(phase==0) {
@@ -159,7 +180,8 @@ void CALLBACK probe(HWND,UINT,UINT_PTR,DWORD) {
 }
 }
 namespace login {
-std::vector<Recommendation> recommendations(const search::DbSettings&,const std::wstring&,const std::function<bool()>& cancelled){
+std::vector<Recommendation> recommendations(const search::DbSettings&,const std::wstring&,const std::function<bool()>& cancelled,std::wstring* diagnostic){
+    if(diagnostic)*diagnostic=L"未检测到运行中的来源程序";
     Sleep(120);if(cancelled()||recMode==0)return {};
     Source s;s.employee_id=2;s.main_created=100;s.main_pid=10;s.main_hwnd=20;s.helper_pid=30;
     std::vector<Recommendation> r{{s,Identity{1,2,L"CURRENT",L"当前姓名"},true}};
@@ -198,6 +220,26 @@ int main(){
     phase=9;recMode=1;
     auto manual=login::show_dialog(GetModuleHandleW(nullptr),settings,login::LoginMode::startup);
     check(manual&&!manual->adopted_source&&manual->code==L"T123"&&calls==2,"manual authentication remains independent of source");
+    phase=12;recMode=0;
+    auto unavailable=login::show_dialog(GetModuleHandleW(nullptr),settings,login::LoginMode::recommend);
+    check(!unavailable&&phase==13,"source failure diagnostic displayed without identity");
+    WNDCLASSW frameClass{};frameClass.lpfnWndProc=sessionFrameProc;
+    frameClass.hInstance=GetModuleHandleW(nullptr);frameClass.lpszClassName=L"SessionTransitionTestFrame";
+    check(RegisterClassW(&frameClass)!=0,"session test class registered");
+    // Repeat the frame -> login boundary, including the first transition.
+    for(int round=0;round<3;++round){
+        HWND frame=CreateWindowW(frameClass.lpszClassName,L"",WS_OVERLAPPEDWINDOW,0,0,100,100,nullptr,nullptr,frameClass.hInstance,nullptr);
+        check(frame!=nullptr&&SetTimer(frame,1,1,nullptr)!=0,"session frame and switch timer created");
+        MSG message{};
+        while(IsWindow(frame)&&GetMessageW(&message,nullptr,0,0)>0){TranslateMessage(&message);DispatchMessageW(&message);}
+        check(!PeekMessageW(&message,nullptr,WM_QUIT,WM_QUIT,PM_NOREMOVE),"closing session frame never posts a thread quit");
+        phase=12;recMode=0;
+        auto next=login::show_dialog(GetModuleHandleW(nullptr),settings,login::LoginMode::recommend);
+        check(!next&&phase==13,"first and repeated switches reopen an interactive login");
+    }
+    UnregisterClassW(frameClass.lpszClassName,frameClass.hInstance);
+    phase=14;PostQuitMessage(0);
+    check(!login::show_dialog(GetModuleHandleW(nullptr),settings),"explicit application quit still terminates login");
     KillTimer(nullptr,timer);
     std::cout<<"Login dialog gating, empty input, cancel and async success passed\n";
 }

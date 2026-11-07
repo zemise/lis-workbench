@@ -15,7 +15,7 @@ struct Recommendation {
 // Candidates must remain stable across process snapshots and database validation.
 std::vector<Recommendation> recommendations(
     const search::DbSettings& settings, const std::wstring& directory,
-    const std::function<bool()>& cancelled);
+    const std::function<bool()>& cancelled, std::wstring* diagnostic = nullptr);
 
 // Startup requires a unique instance. Explicit selection may choose among several.
 // Resume permits ordinary modal windows, while source lock detection still applies.

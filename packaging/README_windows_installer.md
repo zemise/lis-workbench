@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.10` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。常用电话 RTF 文件同样不随安装包发布，现场可在 `常用电话` 页面上传，或自行放入安装目录 `documents`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.10.15.1`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.11.07`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -106,7 +106,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.10.15.1 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.11.07 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
@@ -149,14 +149,16 @@ New-Item -ItemType Directory -Force out\windows\installer
 
 登录窗口采用左侧工作台标识、右侧账号表单的双栏布局；姓名作为账号预览信息，已有登录在独立区域选择。窗口保留原生输入控件，支持高对比度与 DPI 变化；来源模式在常规高度超过屏幕工作区时改用紧凑布局。小屏幕高 DPI 下收起左侧品牌栏，表单支持滚动，Tab 切换会将获得焦点的控件自动滚入可见区域。
 
-启动主程序后必须先通过员工账号登录。登录窗口使用程序目录现有的`ClientConfig.ini`数据库连接，不提供连接设置入口；首次部署应在启动前准备连接配置。输入账号后会显示匹配的员工姓名，取消登录退出程序。认证采用只读查询，不修改账号错误次数、在线状态或密码。已核实的本机来源登录可在启动时自动采用；多实例由用户选择，切换入口只推荐、不直接提交。采用来源的会话锁屏暂停，同实例同账号解锁后复核恢复；手动认证会话独立。部署时须保证原程序与工作台同库，使用已核实版本，必要时在`[Authentication] SourceDirectory`指定安装目录。
+同一 Windows 会话只允许一个工作台实例，重复启动会恢复已有窗口；不同目录的程序副本共用此限制。
+
+启动主程序后必须先通过员工账号登录。登录窗口使用程序目录现有的`ClientConfig.ini`数据库连接，不提供连接设置入口；首次部署应在启动前准备连接配置。输入账号后会显示匹配的员工姓名，取消登录退出程序。认证采用只读查询，不修改账号错误次数、在线状态或密码。已核实的本机来源登录可在启动时自动采用；检测到多个登录来源时由用户选择，切换入口只推荐、不直接提交。采用来源的会话在本机来源锁屏时暂停，同实例同账号解锁后复核恢复；手动认证会话独立。数据库账号级在线机器、端口和在线标志不作为本机采用或恢复的条件，同账号在其他电脑登录或退出不影响本机来源会话。部署时须保证原程序与工作台同库，使用已核实版本，默认自动发现正在运行的来源程序 所在目录；`[Authentication] SourceDirectory` 非空时限制安装目录范围，留空或删除该项启用自动发现。
 
 
-来源识别要求工作台与来源运行在同一 Windows 用户和会话中。版本或权限不匹配时改用手动登录；不需要安装额外服务。测试构建目录通常没有连接配置，不能直接用该目录启动来判断现场自动采用是否可用。来源目录设置示例：
+来源识别要求工作台与来源运行在同一 Windows 用户和会话中。版本或权限不匹配时改用手动登录；不需要安装额外服务。测试构建目录通常没有连接配置，不能直接用该目录启动来判断现场自动采用是否可用。来源目录自动发现设置示例（只有确需限制范围时填写路径）：
 
 ```ini
 [Authentication]
-SourceDirectory=C:\LIS\创星医疗管理系统（标准）
+SourceDirectory=
 ```
 
 ## 运行时依赖
@@ -186,9 +188,11 @@ nmake
 
 版本日期使用发布当天（项目按 Asia/Shanghai），首次发布为 `vYYYY.MM.DD`，后续依次 `.1`、`.2`。修订号为 1～999999999 的整数，不补零，不使用 `.0`；不修改已有标签或包内容。主程序、安装包、ZIP、manifest 和 Release 标签必须一致。
 
-当前源码及发布标签版本为 `v2026.10.15.1`。本版包含双栏员工登录、已有登录采用与会话隔离，以及查询诊断和测试加固。旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
+当前源码版本为 `v2026.11.07`，发布时使用同名标签。本版新增 666“血库手工”虚拟仪器与 PRP 无条形码标签，并整理映射、打印路由和测试；不需要数据库结构迁移。打包前须重新编译主程序，不能将前次试印的 `blood-manual-666-layout-v*` 安装包直接作为本版发布包。安装或替换前退出已有工作台进程，安装后可在打印提示中核对“标签样式：微生物（无条形码）”。
 
-旧客户端和旧 Updater 仅接受三段版本，首次迁移至日期修订版本需完整安装一次。已完成该迁移、具备更新器能力 `1.1.0` 的客户端，本次登录界面与主程序更新不增加重装要求，Updater 和更新协议保持原样。本版生成 manifest 的 `minUpdaterVersion` 为 `1.1.0`；客户端与更新器仍可读取旧 `1.0.0` manifest。数据库表结构不变，发布脚本在事务内按日期及修订号比较，并兼容上述三项旧标识，不允许降级；必须重新生成并复制整个上传目录，不能沿用旧版上传脚本。
+旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
+
+旧客户端和旧 Updater 仅接受三段版本，首次迁移至日期修订版本需完整安装一次。已完成该迁移、具备更新器能力 `1.1.0` 的客户端，本次血库手工功能更新不增加重装要求，Updater 和更新协议保持原样。Windows 发布脚本生成 manifest 的 `minUpdaterVersion` 为 `1.1.0`，macOS Makefile 目前沿用 `1.0.0` 声明；客户端与更新器兼容两种 manifest。数据库表结构不变，发布脚本在事务内按日期及修订号比较，并兼容上述三项旧标识，不允许降级；必须重新生成并复制整个上传目录，不能沿用旧版上传脚本。
 
 ### 发布阶段 SQL 错误 195
 

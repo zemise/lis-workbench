@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <optional>
 #include <functional>
 #include <string>
 #include <vector>
@@ -75,6 +77,7 @@ struct ReportRow {
     std::string mach_name;
     std::string room_code;
     std::string group_code;           // LS_AS_REPORT.GROUP_CODE，报告项目代码
+    std::string view_machine_code;    // Virtual report view; mach_code retains database identity.
 };
 
 struct RoomOption {
@@ -499,84 +502,63 @@ struct EmergencyStatQuery {
     bool only_unfinished = false;
 };
 
-struct TatThresholds {
-    int collection_to_receive_minutes = 30;
-    int receive_to_machine_minutes = 30;
-    int receive_to_review_minutes = 180;
-    int collection_to_review_minutes = 240;
-};
+enum class TatMode { compatibility, improved };
+enum class TatFilter { all, normal, overtime, missing_time, missing_marks, abnormal };
 
 struct TatStatQuery {
     std::string connection_string;
-    std::string start_time;
-    std::string end_time;
+    std::string start_time; // Inclusive calendar day, yyyy-MM-dd.
+    std::string end_time;   // Inclusive calendar day; SQL upper bound is next midnight.
     std::string room_code;
-    std::string department_keyword;
-    std::string order_keyword;
+    std::string department_code;
+    std::string order_group_id;
+    std::string sign_department_code;
+    std::string order_keyword; // Exact ORDER_TEXT values separated by 、 or newline.
     std::string patient_type;  // 全部/住院/门诊
     bool emergency_only = false;
-    TatThresholds thresholds;
-    std::string current_time;  // Tests may inject a stable clock; empty uses local current time.
+    bool minutes_only = false; // Loaded read-only from JC_CONFIG 4852 by the query.
+};
+
+struct TatCodeOption { std::string code, name; };
+struct TatPickerOptions {
+    std::vector<TatCodeOption> rooms, departments, order_groups;
+};
+
+struct TatSqlPlan {
+    std::string sql;
+    std::vector<std::string> parameters;
 };
 
 struct TatStatRawRow {
-    std::string barcode;
-    std::string patient_type;
-    std::string reg_no;
-    std::string name;
-    std::string sex;
-    std::string diagnosis;
-    std::string bed_no;
-    std::string age;
-    std::string sample_name;
-    std::string department_name;
-    std::string room_code;
-    std::string room_name;
-    std::string order_text;
-    std::string collection_time;
-    std::string receive_time;
-    std::string receiver;
-    std::string report_no;
-    std::string oper_no;
-    std::string machine_code;
-    std::string machine_name;
-    std::string inspect_date;
-    std::string machine_time;
-    std::string review_time;
-    std::string reviewer;
-    std::string chk_flag;
-    std::string conf;
-    int barcode_oper_state = -1;
-    bool barcode_emergency = false;
+    std::string barcode, patient_type, reg_no, name, sex, diagnosis, bed_no, age;
+    std::string sample_name, department_name, room_name, order_text;
+    std::string collection_time, receive_time, machine_time, send_time;
+    std::string receiver, reviewer;
+    std::string receive_source, send_source;
+    // Main stages: collection-receive, receive-send, collection-send; auxiliary receive-machine.
+    std::array<std::optional<std::string>, 4> stored_times;
     bool report_emergency = false;
-    bool has_report = false;
-    bool report_reviewed = false;
-    bool report_sent = false;
+    bool order_text_is_null = false;
+    int report_count = 0;
 };
 
 struct TatStatDetailRow : TatStatRawRow {
-    std::string workflow_status;
-    std::string tat_status;
-    long long collection_to_receive_seconds = -1;
-    long long receive_to_machine_seconds = -1;
-    long long receive_to_review_seconds = -1;
-    long long collection_to_review_seconds = -1;
-    std::string collection_to_receive;
-    std::string receive_to_machine;
-    std::string receive_to_review;
-    std::string collection_to_review;
-    bool machine_waiting = false;
-    bool review_waiting = false;
-    bool time_abnormal = false;
+    std::array<long long, 4> duration_seconds{{-1, -1, -1, -1}};
+    std::array<std::string, 4> display_times;
+    std::string tat_status, quality_note;
+    bool normal_candidate = false, overtime = false, all_marks_null = false;
+    bool missing_time = false, missing_marks = false, time_abnormal = false;
+    bool multiple_reports = false;
 };
 
 struct TatStatSummary {
-    int total_count = 0;
-    int normal_count = 0;
-    int overtime_count = 0;
-    int time_abnormal_count = 0;
-    int waiting_machine_count = 0;
-    int waiting_review_count = 0;
+    int total_count = 0, detail_count = 0;
+    int normal_count = 0, overtime_count = 0;
+    int missing_time_count = 0, missing_marks_count = 0, time_abnormal_count = 0;
+    int visible_count = 0, visible_barcode_count = 0, eligible_count = 0;
+    std::array<int, 3> stage_overtime_count{{0, 0, 0}};
+    std::string overtime_rate = "-";
+    std::array<std::string, 3> stage_overtime_rate{{"-", "-", "-"}};
 };
 
 struct BackupBloodStatQuery {
@@ -978,10 +960,12 @@ bool build_tat_statistics(const TatStatQuery& query,
                           TatStatSummary& summary,
                           std::vector<TatStatDetailRow>& rows,
                           std::string& error);
-void refresh_tat_statistics(const TatThresholds& thresholds,
-                            const std::string& current_time,
-                            TatStatSummary& summary,
-                            std::vector<TatStatDetailRow>& rows);
+void select_tat_statistics(TatMode mode, TatFilter filter,
+                           const std::vector<TatStatDetailRow>& all_rows,
+                           TatStatSummary& summary, std::vector<TatStatDetailRow>& visible);
+bool build_tat_sql_plan(const TatStatQuery& query, TatSqlPlan& plan, std::string& error);
+bool tat_is_overtime_marker(const std::string& value);
+bool query_tat_picker_options(const std::string& connection_string, TatPickerOptions& options, std::string& error);
 bool query_tat_statistics(const TatStatQuery& query, TatStatSummary& summary,
                           std::vector<TatStatDetailRow>& rows,
                           std::string& error, LogFn log = {});

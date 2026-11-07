@@ -123,13 +123,15 @@ std::wstring configured_zebra_chinese_font() {
 
 std::wstring barcode_label_details(const BarcodeLabelPayload& payload) {
     std::wstring message;
+    if (uses_microbiology_label(payload)) message += L"标签样式：微生物（无条形码）\n";
     append_detail_line(message, L"样本号：", payload.sample_no);
     append_detail_line(message, L"组合项目：", payload.test_item);
     append_detail_line(message, L"条码号：", payload.barcode_value);
     append_detail_line(message, L"姓名：", payload.patient_name);
     append_detail_line(message, L"标本：", payload.specimen_type);
-    if (payload.label_template == BarcodeLabelTemplate::Microbiology) {
-        append_detail_line(message, L"医嘱内容：", payload.order_text);
+    if (uses_microbiology_label(payload)) {
+        if (payload.view_machine_code != blood_manual::view_code)
+            append_detail_line(message, L"医嘱内容：", payload.order_text);
         append_detail_line(message, L"性别：", payload.sex);
         append_detail_line(message, L"年龄：", payload.age);
     }
@@ -150,7 +152,7 @@ bool barcode_label_printing_available() {
 
 void print_barcode_label(const BarcodeLabelPayload& payload, const std::wstring& printer_name) {
 #if defined(LIS_HAS_LABELPRINT)
-    if (payload.label_template == BarcodeLabelTemplate::Microbiology) {
+    if (uses_microbiology_label(payload)) {
         printMicrobiologyLabel(payload, printer_name);
         return;
     }
