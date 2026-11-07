@@ -147,5 +147,20 @@ int main() {
         app::SingleInstance recovered(name.c_str());
         check(recovered.primary(), "abnormal exit leaves no stale lock");
     }
-    std::cout << "Single instance, concurrent launch and exit recovery passed\n";
+    {
+        // A duplicate launch during a long download must find the pre-login UI.
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"LISWorkbenchStartupUpdate";
+        check(RegisterClassW(&wc) != 0, "register startup update fixture");
+        HWND window = CreateWindowExW(0, wc.lpszClassName, L"Startup update fixture",
+            WS_OVERLAPPEDWINDOW, 0, 0, 320, 120, nullptr, nullptr, wc.hInstance, nullptr);
+        check(window != nullptr, "create startup update fixture");
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        check(app::activate_workbench(), "duplicate launch finds startup update window");
+        DestroyWindow(window);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    }
+    std::cout << "Single instance, concurrent launch, startup activation and exit recovery passed\n";
 }

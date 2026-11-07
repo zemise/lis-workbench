@@ -65,6 +65,10 @@ inline HWND makeDatePicker(HWND p, int x, int y, int w, int h,
 
 // Forward decls for functions defined later in this file
 constexpr int REGULAR_IDC_COMPARISON_LIST = 5230;
+void layout(HWND hwnd, RegularReportState* st);
+void enterCompactMode(RegularReportState* st);
+void leaveCompactMode(RegularReportState* st, bool activate = true);
+void updateCompactSummary(RegularReportState* st, int selected);
 void resetComparison(RegularReportState* st);
 void loadComparison(RegularReportState* st);
 void setCell(HWND list, int row, int col, const wchar_t* text);
@@ -93,6 +97,17 @@ LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 // ============================================================================
 // Local helpers
 // ============================================================================
+
+int compactRightWidth(HWND hwnd) {
+    return regularS(hwnd, REGULAR_COMPACT_TOOLBAR_W + REGULAR_PAD * 2) +
+           GetSystemMetrics(SM_CXEDGE) * 2;
+}
+int compactMinWidth(HWND hwnd) { return regularS(hwnd, 360 + REGULAR_GAP) + compactRightWidth(hwnd); }
+bool compactReportColumnVisible(int column) { return column >= 1 && column <= 5; }
+
+HWND reportOwner(const RegularReportState* st) {
+    return st ? (st->compactWindow ? st->compactWindow : st->hwnd) : nullptr;
+}
 
 HWND makeButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
     return CreateWindowExW(0, L"BUTTON", text,
@@ -593,28 +608,6 @@ void showMachinePicker(RegularReportState* st, HWND anchor) {
 // Left panel — scroll + subclass + creation
 // ============================================================================
 
-void clearLeftPanel(RegularReportState* st) {
-    if (!st) return;
-    for (HWND child : st->leftControls)
-        if (IsWindow(child)) DestroyWindow(child);
-    st->leftControls.clear();
-    st->leftTabControls.clear();
-    st->leftGroupFrames.clear();
-    // Null out all left-side HWND members
-    st->machineEdit = nullptr; st->machinePickerButton = nullptr; st->groupEdit = nullptr;
-    st->sampleEdit = nullptr; st->reportNoEdit = nullptr; st->operNoEdit = nullptr;
-    st->patientTypeCombo = nullptr; st->urgentCheck = nullptr; st->urgentLabel = nullptr;
-    st->urgentEdit = nullptr; st->barcodeEdit = nullptr; st->regNoEdit = nullptr;
-    st->patientNameEdit = nullptr; st->sexEdit = nullptr; st->ageEdit = nullptr;
-    st->ageUnitCombo = nullptr; st->bedEdit = nullptr; st->phoneEdit = nullptr;
-    st->deptEdit = nullptr; st->diagEdit = nullptr; st->reqDoctorEdit = nullptr;
-    st->feeEdit = nullptr; st->testerEdit = nullptr; st->auditEdit = nullptr;
-    st->noteCodeEdit = nullptr; st->noteEdit = nullptr;
-    st->applyDatePicker = nullptr; st->receiveDatePicker = nullptr;
-    st->machineDatePicker = nullptr; st->reportDatePicker = nullptr;
-    st->inspectDatePicker = nullptr; st->collectDateEdit = nullptr;
-}
-
 void updateLeftScrollBar(RegularReportState* st) {
     if (!st || !st->leftPanel || !st->leftContent || !st->leftScrollBar) return;
     RECT rc{}; GetClientRect(st->leftPanel, &rc);
@@ -961,10 +954,15 @@ void loadComparison(RegularReportState* st) {
 
 void showRightInfoPage(RegularReportState* st) {
     if (!st || !st->rightTab) return;
-    const bool show = TabCtrl_GetCurSel(st->rightTab) == 0;
+    const bool show = st->compactAttached || TabCtrl_GetCurSel(st->rightTab) == 0;
     for (HWND c : st->rightInfoControls)
         if (IsWindow(c)) ShowWindow(c, show ? SW_SHOW : SW_HIDE);
     if (IsWindow(st->reportList)) ShowWindow(st->reportList, show ? SW_SHOW : SW_HIDE);
+    if (st->compactAttached) {
+        for (HWND control : {st->rightSearchLabel, st->rightSearchEdit, st->rightSearchIndexButton,
+                             st->rightSearchUpButton, st->rightSearchDownButton, st->rightSearchMenuButton})
+            ShowWindow(control, SW_HIDE);
+    }
     for (HWND c : {st->comparisonMode, st->comparisonTitle,
                    st->comparisonList, st->comparisonStatus})
         if (IsWindow(c)) ShowWindow(c, show ? SW_HIDE : SW_SHOW);
@@ -982,7 +980,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             RECT c{}; GetClientRect(hwnd, &c);
             FillRect(dc, &c, st && st->panelBrush ? st->panelBrush
                                                    : GetSysColorBrush(COLOR_BTNFACE));
-            if (st) {
+            if (st && !st->compactAttached) {
                 const auto s1 = regularRightSummaryLine1(st);
                 const auto s2 = regularRightSummaryLine2(st);
                 const auto hdr = regularRightHeaderLayout(hwnd, st->ctx.uiFont,
@@ -1003,6 +1001,10 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         }
         case WM_COMMAND: {
             const int id = LOWORD(wp);
+            if (st && id == REGULAR_IDC_COMPACT_REFRESH) {
+                SendMessageW(st->bottomPanel, WM_COMMAND, REGULAR_IDC_BOTTOM_REFRESH, 0);
+                return 0;
+            }
             if (st && id == REGULAR_IDC_REPORT_FIRST_BUTTON) { selectReportRow(st, 0); return 0; }
             if (st && id == REGULAR_IDC_REPORT_LAST_BUTTON) {
                 if (st->reportList) {
@@ -1126,7 +1128,7 @@ void showMiddleResultPage(RegularReportState* st) {
     for (HWND c : st->middlePictureControls)
         if (IsWindow(c)) ShowWindow(c, showPic ? SW_SHOW : SW_HIDE);
     if (IsWindow(st->resultList)) ShowWindow(st->resultList, showRes ? SW_SHOW : SW_HIDE);
-    if (IsWindow(st->status)) ShowWindow(st->status, showRes ? SW_SHOW : SW_HIDE);
+    if (IsWindow(st->status)) ShowWindow(st->status, showRes && !st->compactAttached ? SW_SHOW : SW_HIDE);
     InvalidateRect(st->middlePanel, nullptr, TRUE);
     if (showPic) {
         regularUpdatePictureViewport(st);
@@ -1221,6 +1223,9 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     auto* st = reinterpret_cast<RegularReportState*>(data);
     switch (msg) {
         case WM_COMMAND:
+            if (st && LOWORD(wp) == REGULAR_IDC_COMPACT) {
+                enterCompactMode(st); return 0;
+            }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_1) {
                 regularApplyQuickMachine(st, 0); return 0;
             }
@@ -1232,24 +1237,24 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_REFRESH) {
                 if (search::trim(st->selectedMachineCode).empty())
-                    MessageBoxW(st->hwnd, L"请先选择检验仪器。", L"常规报告", MB_ICONWARNING);
+                    MessageBoxW(reportOwner(st), L"请先选择检验仪器。", L"常规报告", MB_ICONWARNING);
                 else
                     runReportQuery(st, true);
                 return 0;
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_PRINT_BARCODE) {
                 if (st->barcodePrintTask.active()) {
-                    MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
+                    MessageBoxW(reportOwner(st), L"已有批量条码正在提交到打印队列。",
                                 L"常规报告", MB_ICONINFORMATION);
                     return 0;
                 }
                 const int index = currentReportIndex(st);
                 if (index < 0) {
-                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"常规报告",
+                    MessageBoxW(reportOwner(st), L"请先选择一条报告记录。", L"常规报告",
                                 MB_ICONINFORMATION);
                 } else {
                     st->contextReportIndex = index;
-                    MessageBoxW(st->hwnd, regularPrintBarcodeForContext(st).c_str(),
+                    MessageBoxW(reportOwner(st), regularPrintBarcodeForContext(st).c_str(),
                                 L"常规报告", MB_ICONINFORMATION);
                 }
                 return 0;
@@ -1270,7 +1275,7 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TRACKING) {
                 const int index = currentReportIndex(st);
                 if (index < 0) {
-                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"追踪", MB_ICONINFORMATION);
+                    MessageBoxW(reportOwner(st), L"请先选择一条报告记录。", L"追踪", MB_ICONINFORMATION);
                 } else {
                     regularShowTrackingWindow(st->hwnd, st->ctx.uiFont, st->reportConnectionString,
                         st->reportRows[static_cast<size_t>(index)],
@@ -1281,7 +1286,7 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_TREND) {
                 const int index = currentReportIndex(st);
                 if (index < 0) {
-                    MessageBoxW(st->hwnd, L"请先选择一条报告记录。", L"趋势图提示", MB_ICONINFORMATION);
+                    MessageBoxW(reportOwner(st), L"请先选择一条报告记录。", L"趋势图提示", MB_ICONINFORMATION);
                 } else {
                     st->contextReportIndex = index;
                     regularShowTrendForContext(st);
@@ -1731,7 +1736,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
         {REGULAR_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"},
         {5414, L"批录入"}, {5415, L"批调整"},
         {REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码"}, {5417, L"批删除"},
-        {5418, L"医嘱"}, {5419, L"汇总(F6)"},
+        {5418, L"医嘱"}, {5419, L"汇总(F6)"}, {REGULAR_IDC_COMPACT, L"精简置顶"},
     };
     const ButtonDef row3[] = {
         {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {REGULAR_IDC_BOTTOM_TRACKING, L"追踪(Z)"}, {5422, L"计算(F8)"},
@@ -1750,6 +1755,7 @@ void createBottomPanel(HWND parent, RegularReportState* st) {
     cr(row1, static_cast<int>(sizeof(row1) / sizeof(row1[0])), 4);
     cr(row2, static_cast<int>(sizeof(row2) / sizeof(row2[0])), 36);
     cr(row3, static_cast<int>(sizeof(row3) / sizeof(row3[0])), 68);
+    st->compactButton = GetDlgItem(p, REGULAR_IDC_COMPACT);
     regularUpdateQuickMachineButtonLabels(st);
 }
 
@@ -1803,41 +1809,73 @@ void createControls(HWND hwnd, RegularReportState* st) {
     updateLeftScrollBar(st);
 }
 
+void layoutCompactReportColumns(RegularReportState* st, int listWidth) {
+    if (st->compactSavedColumnWidths.size() != REGULAR_REPORT_COLUMN_COUNT) return;
+    // Fit the five visible fields into the button-width pane, reserving a vertical scrollbar.
+    const int available = std::max(5, listWidth - GetSystemMetrics(SM_CXEDGE) * 2 - GetSystemMetrics(SM_CXVSCROLL));
+    int total = 0, used = 0;
+    for (int col = 1; col <= 5; ++col) total += std::max(1, st->compactSavedColumnWidths[col]);
+    for (int col = 1; col <= 5; ++col) {
+        const int width = col == 5 ? available - used :
+            std::max(1, available * std::max(1, st->compactSavedColumnWidths[col]) / total);
+        ListView_SetColumnWidth(st->reportList, col, width);
+        used += width;
+    }
+}
+
 void layout(HWND hwnd, RegularReportState* st) {
-    if (!st) return;
-    RECT rc{}; GetClientRect(hwnd, &rc);
+    if (!st || st->compactRestoring) return;
+    const bool compact = st->compactAttached;
+    HWND surface = compact ? st->compactWindow : hwnd;
+    RECT rc{}; GetClientRect(surface, &rc);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    const int bottomH = S(hwnd, REGULAR_BOTTOM_PANEL_H);
-    const int gap = S(hwnd, REGULAR_GAP), splitterW = S(hwnd, REGULAR_SPLITTER_W);
-    const int leftW = std::min(std::max(S(hwnd, REGULAR_LEFT_PANEL_MIN_W), w * 21 / 100),
+    const int bottomH = S(surface, REGULAR_BOTTOM_PANEL_H);
+    const int gap = S(surface, REGULAR_GAP), splitterW = S(surface, REGULAR_SPLITTER_W);
+    const int leftW = compact ? 0 : std::min(std::max(S(hwnd, REGULAR_LEFT_PANEL_MIN_W), w * 21 / 100),
                                S(hwnd, REGULAR_LEFT_PANEL_MAX_W));
-    const int topH = std::max(S(hwnd, 420), h - bottomH - gap);
-    const int centerX = leftW + gap;
-    const int minCW = S(hwnd, 460), minRW = S(hwnd, 360);
-    const int availW = std::max(S(hwnd, 760), w - centerX - gap);
-    const int defCW = std::max(S(hwnd, 500), availW * 46 / 100);
-    const int minSX = centerX + minCW;
-    int maxSX = w - gap - minRW - splitterW - gap;
-    if (maxSX < minSX) maxSX = minSX;
-    if (!st->splitterUserSet) st->splitterX = centerX + defCW;
-    st->splitterX = std::clamp(st->splitterX, minSX, maxSX);
+    const int panelY = compact ? S(surface, 36) : 0;
+    const int topH = compact ? std::max(1, h - panelY) : std::max(S(hwnd, 420), h - bottomH - gap);
+    const int centerX = compact ? 0 : leftW + gap;
+    int splitX;
+    if (compact) {
+        splitX = std::max(S(surface, 360), w - compactRightWidth(surface) - gap);
+    } else {
+        const int minCW = S(surface, 460), minRW = S(surface, 360);
+        const int availW = std::max(S(surface, 760), w - centerX - gap);
+        const int defCW = std::max(S(surface, 500), availW * 46 / 100);
+        const int minSX = centerX + minCW;
+        const int maxSX = std::max(minSX, w - gap - minRW - splitterW - gap);
+        if (!st->splitterUserSet) st->splitterX = centerX + defCW;
+        st->splitterX = std::clamp(st->splitterX, minSX, maxSX);
+        splitX = st->splitterX;
+    }
 
-    const int centerW = st->splitterX - centerX;
-    const int rightX = st->splitterX + splitterW + gap;
-    const int rightW = std::max(S(hwnd, 200), w - rightX - gap);
+    const int centerW = splitX - centerX;
+    const int rightX = splitX + (compact ? gap : splitterW + gap);
+    const int rightW = compact ? compactRightWidth(surface) :
+        std::max(S(surface, 200), w - rightX - gap);
 
-    MoveWindow(st->leftPanel, 0, 0, leftW, h, TRUE);
-    scrollLeftPanelTo(st, st->leftScrollY);
-    MoveWindow(st->middlePanel, centerX, 0, centerW, topH, TRUE);
-    MoveWindow(st->splitter, st->splitterX, 0, splitterW, topH, TRUE);
-    MoveWindow(st->rightPanel, rightX, 0, rightW, topH, TRUE);
-    MoveWindow(st->bottomPanel, centerX, topH + gap, w - centerX - gap, bottomH, TRUE);
+    if (compact) {
+        MoveWindow(st->compactSummary, S(surface, 8), S(surface, 8),
+                   std::max(1, w - S(surface, 16)), S(surface, 26), TRUE);
+    } else {
+        MoveWindow(st->leftPanel, 0, 0, leftW, h, TRUE);
+        scrollLeftPanelTo(st, st->leftScrollY);
+        MoveWindow(st->bottomPanel, centerX, topH + gap, w - centerX - gap, bottomH, TRUE);
+    }
+    MoveWindow(st->middlePanel, centerX, panelY, centerW, topH, TRUE);
+    MoveWindow(st->splitter, splitX, panelY, splitterW, topH, TRUE);
+    ShowWindow(st->splitter, compact ? SW_HIDE : SW_SHOW);
+    MoveWindow(st->rightPanel, rightX, panelY, rightW, topH, TRUE);
 
+    hwnd = surface;
+    const int resultY = compact ? 8 : REGULAR_MIDDLE_LIST_Y;
+    const int resultMargin = compact ? REGULAR_PAD * 2 : REGULAR_MIDDLE_LIST_BOTTOM_MARGIN;
     MoveWindow(st->middleTab, S(hwnd, REGULAR_PAD), S(hwnd, 0),
                centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_TAB_H), TRUE);
-    MoveWindow(st->resultList, S(hwnd, REGULAR_PAD), S(hwnd, REGULAR_MIDDLE_LIST_Y),
+    MoveWindow(st->resultList, S(hwnd, REGULAR_PAD), S(hwnd, resultY),
                centerW - S(hwnd, REGULAR_PAD * 2),
-               topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN), TRUE);
+               std::max(1, topH - S(hwnd, resultMargin)), TRUE);
     const int phX = S(hwnd, REGULAR_PAD), phY = S(hwnd, REGULAR_MIDDLE_LIST_Y);
     const int phW = centerW - S(hwnd, REGULAR_PAD * 2);
     const int phH = topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN);
@@ -1850,20 +1888,24 @@ void layout(HWND hwnd, RegularReportState* st) {
     MoveWindow(st->pictureViewport, phX, phY, pvW, pvH, TRUE);
     MoveWindow(st->pictureHScroll, phX, phY + pvH, pvW, pscH, TRUE);
     MoveWindow(st->pictureVScroll, phX + pvW, phY, pscW, pvH, TRUE);
-    ShowWindow(st->pictureHScroll, nh ? SW_SHOW : SW_HIDE);
-    ShowWindow(st->pictureVScroll, nv ? SW_SHOW : SW_HIDE);
+    const bool showPicture = !compact && TabCtrl_GetCurSel(st->middleTab) == 1;
+    ShowWindow(st->pictureHScroll, showPicture && nh ? SW_SHOW : SW_HIDE);
+    ShowWindow(st->pictureVScroll, showPicture && nv ? SW_SHOW : SW_HIDE);
     regularUpdatePictureViewport(st);
     MoveWindow(st->status, S(hwnd, REGULAR_PAD), topH - S(hwnd, REGULAR_MIDDLE_STATUS_BOTTOM),
                centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_MIDDLE_STATUS_H), TRUE);
 
     const int riX = S(hwnd, REGULAR_PAD);
-    const int riW = std::max(S(hwnd, 80), rightW - S(hwnd, REGULAR_PAD * 2));
-    const auto rhdr = regularRightHeaderLayout(hwnd, st->ctx.uiFont, rightW,
-        regularRightSummaryLine1(st), regularRightSummaryLine2(st));
+    const int riW = std::max(S(hwnd, 80), rightW - S(hwnd, REGULAR_PAD * 2) -
+        (compact ? GetSystemMetrics(SM_CXEDGE) * 2 : 0));
+    const auto rhdr = compact ? RightHeaderLayout{} : regularRightHeaderLayout(
+        hwnd, st->ctx.uiFont, rightW, regularRightSummaryLine1(st), regularRightSummaryLine2(st));
     const int rtY = rhdr.bottom + S(hwnd, 6);
-    const int rslY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_LABEL_Y - REGULAR_RIGHT_TAB_Y);
-    const int rscY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_CONTROL_Y - REGULAR_RIGHT_TAB_Y);
-    const int rlY = rtY + S(hwnd, REGULAR_RIGHT_LIST_Y - REGULAR_RIGHT_TAB_Y);
+    const int hiddenTabH = compact ? S(hwnd, REGULAR_TAB_H) : 0;
+    const int rslY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_LABEL_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
+    const int rscY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_CONTROL_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
+    const int rlY = compact ? S(hwnd, REGULAR_PAD) :
+        rtY + S(hwnd, REGULAR_RIGHT_LIST_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
     MoveWindow(st->rightTab, riX, rtY, riW, S(hwnd, REGULAR_TAB_H), TRUE);
     MoveWindow(st->rightSearchLabel, S(hwnd, REGULAR_PAD), rslY, S(hwnd, 70), S(hwnd, 24), TRUE);
     MoveWindow(st->rightSearchEdit, S(hwnd, 82), rscY, S(hwnd, 84), S(hwnd, 26), TRUE);
@@ -1887,26 +1929,301 @@ void layout(HWND hwnd, RegularReportState* st) {
     for (int col = 1; col <= 4; ++col)
         ListView_SetColumnWidth(st->comparisonList, col, comparisonColumnWidth);
 
-    const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H);
+    const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H + (compact ? 34 : 0));
     const int rdbG = S(hwnd, 8), rdbW = S(hwnd, REGULAR_RIGHT_DATE_BUTTON_W);
-    const int arX = riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
+    const int arX = compact ? riX : riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
+    const int arY = rdbY + (compact ? S(hwnd, 34) : 0);
+    if (compact)
+        MoveWindow(st->compactRefreshButton, riX + (rdbW + rdbG) * 3, rdbY,
+                   S(hwnd, REGULAR_COMPACT_REFRESH_W), S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
     MoveWindow(st->reportList, riX, rlY, riW,
                std::max(S(hwnd, 80), rdbY - rlY - S(hwnd, REGULAR_GAP)), TRUE);
+    if (compact) layoutCompactReportColumns(st, riW);
     MoveWindow(st->rightDateTodayButton, riX, rdbY, rdbW,
                S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
     MoveWindow(st->rightDatePrevButton, riX + rdbW + rdbG, rdbY, rdbW,
                S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
     MoveWindow(st->rightDateNextButton, riX + (rdbW + rdbG) * 2, rdbY, rdbW,
                S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
-    MoveWindow(st->rightAutoRefreshCheck, arX, rdbY + S(hwnd, 4), S(hwnd, 18),
+    MoveWindow(st->rightAutoRefreshCheck, arX, arY + S(hwnd, 4), S(hwnd, 18),
                S(hwnd, 20), TRUE);
-    MoveWindow(st->rightAutoRefreshLabel, arX + S(hwnd, 20), rdbY + S(hwnd, 2),
+    MoveWindow(st->rightAutoRefreshLabel, arX + S(hwnd, 20), arY + S(hwnd, 2),
                S(hwnd, 66), S(hwnd, 24), TRUE);
-    MoveWindow(st->rightAutoRefreshEdit, arX + S(hwnd, 82), rdbY + S(hwnd, 2),
+    MoveWindow(st->rightAutoRefreshEdit, arX + S(hwnd, 82), arY + S(hwnd, 2),
                S(hwnd, 38), S(hwnd, 24), TRUE);
-    MoveWindow(st->rightAutoRefreshUnitLabel, arX + S(hwnd, 124), rdbY + S(hwnd, 2),
+    MoveWindow(st->rightAutoRefreshUnitLabel, arX + S(hwnd, 124), arY + S(hwnd, 2),
                S(hwnd, 24), S(hwnd, 24), TRUE);
     InvalidateRect(st->rightPanel, nullptr, TRUE);
+}
+
+// ============================================================================
+// Compact topmost host. The original MDI HWND continues to own data and tasks.
+// ============================================================================
+
+void updateCompactSummary(RegularReportState* st, int selected) {
+    if (!st || !st->compactSummary) return;
+    std::wstring text = L"仪器：" + regularWindowText(st->machineEdit) +
+                        L"  日期：" + search::utf8_to_wide(regularDatePickerValue(st->inspectDatePicker));
+    if (selected >= 0 && selected < static_cast<int>(st->reportRows.size())) {
+        const auto& row = st->reportRows[static_cast<size_t>(selected)];
+        text = L"当前报告：" + search::utf8_to_wide(row.name) +
+               L"  样本号：" + search::utf8_to_wide(row.oper_no) + L"  " + text;
+    } else {
+        text = L"未选择报告  " + text;
+    }
+    SetWindowTextW(st->compactSummary, text.c_str());
+}
+
+constexpr UINT_PTR REGULAR_COMPACT_REPORT_SUBCLASS = 6217;
+
+LRESULT CALLBACK compactReportListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                       UINT_PTR id, DWORD_PTR data) {
+    auto* st = reinterpret_cast<RegularReportState*>(data);
+    if (msg == WM_NOTIFY && st && st->compactAttached) {
+        auto* header = reinterpret_cast<NMHEADERW*>(lp);
+        if (header->hdr.hwndFrom == ListView_GetHeader(hwnd) &&
+            (header->hdr.code == HDN_ITEMCHANGINGW || header->hdr.code == HDN_ITEMCHANGINGA) &&
+            !compactReportColumnVisible(header->iItem) && header->pitem && (header->pitem->mask & HDI_WIDTH) &&
+            header->pitem->cxy != 0) return TRUE;
+    }
+    if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, compactReportListProc, id);
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void hideOtherProgramWindows(RegularReportState* st) {
+    st->compactHiddenWindows.clear();
+    st->compactSession = app::window_task_detail::sessionGeneration();
+    // Collect first: hiding an owner can also hide its owned windows.
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM parameter) -> BOOL {
+        auto* state = reinterpret_cast<RegularReportState*>(parameter);
+        if (window != state->compactWindow && IsWindowVisible(window)) {
+            WINDOWPLACEMENT placement{};
+            placement.length = sizeof(placement);
+            if (GetWindowPlacement(window, &placement))
+                state->compactHiddenWindows.push_back({window, static_cast<int>(placement.showCmd)});
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(st));
+    for (const auto& window : st->compactHiddenWindows) ShowWindow(window.hwnd, SW_HIDE);
+}
+
+void restoreOtherProgramWindows(RegularReportState* st) {
+    // Frame teardown invalidates the session before destroying its MDI children.
+    // Closing only the report should still bring back the rest of the application.
+    if (st->compactSession == app::window_task_detail::sessionGeneration() &&
+        IsWindow(st->hwnd) && !app::window_task_detail::sessionSuspended()) {
+        for (const auto& window : st->compactHiddenWindows) {
+            if (!IsWindow(window.hwnd)) continue;
+            const int command = window.showCommand == SW_SHOWMINIMIZED ? SW_SHOWMINNOACTIVE :
+                window.showCommand == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNOACTIVATE;
+            ShowWindow(window.hwnd, command);
+        }
+    }
+    st->compactHiddenWindows.clear();
+    if (!st->destroying && !st->compactAttached) {
+        layout(st->hwnd, st);
+        RedrawWindow(st->hwnd, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+}
+
+void restoreCompactPanels(RegularReportState* st) {
+    if (!st || !st->compactAttached) return;
+    st->compactRestoring = true;
+    st->compactAttached = false;
+    HWND panels[] = {st->middlePanel, st->rightPanel, st->splitter};
+    for (int index = 0; index < 3; ++index) {
+        HWND panel = panels[index];
+        if (!IsWindow(panel)) continue;
+        ShowWindow(panel, SW_HIDE);
+        SetParent(panel, st->hwnd);
+        SetWindowLongPtrW(panel, GWL_EXSTYLE, st->compactPanelExStyles[index]);
+        SetWindowPos(panel, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    RemoveWindowSubclass(st->reportList, compactReportListProc, REGULAR_COMPACT_REPORT_SUBCLASS);
+    if (IsWindow(st->compactRefreshButton)) DestroyWindow(st->compactRefreshButton);
+    st->compactRefreshButton = nullptr;
+    TabCtrl_SetCurSel(st->middleTab, st->savedMiddleTab);
+    TabCtrl_SetCurSel(st->rightTab, st->savedRightTab);
+    st->compactRestoring = false;
+    if (!st->destroying) {
+        showMiddleResultPage(st);
+        showRightInfoPage(st);
+        layout(st->hwnd, st);
+    }
+    // Restore widths after the list has its full-page viewport again.
+    for (int col = 0; col < static_cast<int>(st->compactSavedColumnWidths.size()); ++col)
+        ListView_SetColumnWidth(st->reportList, col, st->compactSavedColumnWidths[col]);
+    if (!st->compactSavedColumnWidths.empty())
+        ListView_Scroll(st->reportList,
+            st->compactSavedHorizontalOffset - GetScrollPos(st->reportList, SB_HORZ), 0);
+    st->compactSavedColumnWidths.clear();
+    for (HWND control : {st->leftPanel, st->bottomPanel, st->middlePanel, st->rightPanel,
+                         st->splitter, st->middleTab, st->rightTab, st->compactButton})
+        ShowWindow(control, SW_SHOW);
+}
+
+void leaveCompactMode(RegularReportState* st, bool activate) {
+    if (!st || !st->compactWindow) return;
+    finishResultEdit(st, true, false, false);
+    HWND floating = st->compactWindow;
+    restoreCompactPanels(st);
+    // A creation failure can leave this button on the original, still-attached panel.
+    if (IsWindow(st->compactRefreshButton)) DestroyWindow(st->compactRefreshButton);
+    st->compactRefreshButton = nullptr;
+    restoreOtherProgramWindows(st);
+    st->compactWindow = nullptr;
+    st->compactSummary = nullptr;
+    // Prevent destruction callbacks from accessing state during owner teardown.
+    SetWindowLongPtrW(floating, GWLP_USERDATA, 0);
+    DestroyWindow(floating);
+    if (activate && !st->destroying) {
+        HWND frame = GetAncestor(st->hwnd, GA_ROOT);
+        ShowWindow(frame, IsIconic(frame) ? SW_RESTORE : SW_SHOW);
+        SendMessageW(st->ctx.mdiClient, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(st->hwnd), 0);
+        layout(st->hwnd, st);
+        RedrawWindow(frame, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        SetForegroundWindow(frame);
+        SetFocus(st->reportList);
+    }
+}
+
+LRESULT CALLBACK compactWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* st = reinterpret_cast<RegularReportState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        st = static_cast<RegularReportState*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+    }
+    switch (msg) {
+        case WM_GETMINMAXINFO: {
+            RECT bounds{0, 0, compactMinWidth(hwnd), S(hwnd, 400)};
+            AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_APPWINDOW);
+            auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+            limits->ptMinTrackSize = {bounds.right - bounds.left, bounds.bottom - bounds.top};
+            return 0;
+        }
+        case WM_SIZE:
+            if (st && st->compactAttached && wp != SIZE_MINIMIZED) layout(st->hwnd, st);
+            return 0;
+        case WM_DPICHANGED: {
+            const auto* bounds = reinterpret_cast<RECT*>(lp);
+            SetWindowPos(hwnd, nullptr, bounds->left, bounds->top,
+                         bounds->right - bounds->left, bounds->bottom - bounds->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            if (st && st->compactAttached) layout(st->hwnd, st);
+            return 0;
+        }
+        case WM_COMMAND:
+            if (!st || app::window_task_detail::sessionSuspended()) return 0;
+            switch (LOWORD(wp)) {
+                case REGULAR_IDC_COMPACT_REFRESH:
+                    SendMessageW(st->bottomPanel, WM_COMMAND, REGULAR_IDC_BOTTOM_REFRESH, 0);
+                    return 0;
+            }
+            break;
+        case WM_CLOSE:
+            if (st && !app::window_task_detail::sessionSuspended()) leaveCompactMode(st);
+            return 0;
+        case WM_DESTROY:
+            // Also restore controls if the host is destroyed directly.
+            if (st) {
+                restoreCompactPanels(st);
+                restoreOtherProgramWindows(st);
+                st->compactWindow = nullptr;
+                st->compactSummary = nullptr;
+            }
+            return 0;
+        case WM_NCDESTROY:
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void enterCompactMode(RegularReportState* st) {
+    if (!st || st->destroying || app::window_task_detail::sessionSuspended()) return;
+    if (IsWindow(st->compactWindow)) {
+        ShowWindow(st->compactWindow, SW_RESTORE);
+        SetForegroundWindow(st->compactWindow);
+        return;
+    }
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = compactWindowProc;
+    wc.hInstance = st->ctx.instance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(st->ctx.instance, MAKEINTRESOURCEW(IDI_APP));
+    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    wc.lpszClassName = REGULAR_REPORT_COMPACT_CLASS;
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
+    finishResultEdit(st, true, false, false);
+    RECT owner{}; GetWindowRect(GetAncestor(st->hwnd, GA_ROOT), &owner);
+    MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
+    if (!GetMonitorInfoW(MonitorFromWindow(st->hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &monitor.rcWork, 0);
+    RECT bounds{0, 0, S(st->hwnd, 520 + REGULAR_GAP) + compactRightWidth(st->hwnd), S(st->hwnd, 560)};
+    AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_APPWINDOW);
+    const int width = std::min(int(bounds.right - bounds.left), int(monitor.rcWork.right - monitor.rcWork.left));
+    const int height = std::min(int(bounds.bottom - bounds.top), int(monitor.rcWork.bottom - monitor.rcWork.top));
+    const int x = std::max(int(monitor.rcWork.left), std::min(int(owner.left + S(st->hwnd, 32)), int(monitor.rcWork.right) - width));
+    const int y = std::max(int(monitor.rcWork.top), std::min(int(owner.top + S(st->hwnd, 32)), int(monitor.rcWork.bottom) - height));
+    HWND floating = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_TOPMOST | WS_EX_CONTROLPARENT,
+        REGULAR_REPORT_COMPACT_CLASS, L"常规报告 · 已置顶",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height,
+        nullptr, nullptr, st->ctx.instance, st);
+    if (!floating) {
+        MessageBoxW(reportOwner(st), L"无法打开精简置顶窗口，请重试。", L"常规报告", MB_ICONERROR);
+        return;
+    }
+    st->compactWindow = floating;
+    st->compactRefreshButton = makeButton(st->rightPanel, REGULAR_IDC_COMPACT_REFRESH, L"刷新(F5)", 0, 0, 0, 0);
+    st->compactSummary = makeStatic(floating, L"", 0, 0, 0, 0, SS_LEFT | SS_ENDELLIPSIS);
+    if (!st->compactRefreshButton || !st->compactSummary) {
+        leaveCompactMode(st, false);
+        return;
+    }
+    st->savedMiddleTab = TabCtrl_GetCurSel(st->middleTab);
+    st->savedRightTab = TabCtrl_GetCurSel(st->rightTab);
+    HWND panels[] = {st->middlePanel, st->rightPanel, st->splitter};
+    for (int index = 0; index < 3; ++index)
+        st->compactPanelExStyles[index] = GetWindowLongPtrW(panels[index], GWL_EXSTYLE);
+    st->compactAttached = true;
+    bool attached = true;
+    for (HWND panel : panels) {
+        if (!SetParent(panel, floating)) { attached = false; break; }
+        SetWindowLongPtrW(panel, GWL_EXSTYLE, GetWindowLongPtrW(panel, GWL_EXSTYLE) | WS_EX_CONTROLPARENT);
+    }
+    if (!attached) {
+        leaveCompactMode(st);
+        return;
+    }
+    TabCtrl_SetCurSel(st->middleTab, 0);
+    TabCtrl_SetCurSel(st->rightTab, 0);
+    showMiddleResultPage(st);
+    showRightInfoPage(st);
+    st->compactSavedHorizontalOffset = GetScrollPos(st->reportList, SB_HORZ);
+    st->compactSavedColumnWidths.clear();
+    for (int col = 0; col < REGULAR_REPORT_COLUMN_COUNT; ++col) {
+        st->compactSavedColumnWidths.push_back(ListView_GetColumnWidth(st->reportList, col));
+        if (!compactReportColumnVisible(col)) ListView_SetColumnWidth(st->reportList, col, 0);
+    }
+    SetWindowSubclass(st->reportList, compactReportListProc, REGULAR_COMPACT_REPORT_SUBCLASS,
+                      reinterpret_cast<DWORD_PTR>(st));
+    // Start at the sample column even if the full page had scrolled horizontally.
+    const int horizontalOffset = GetScrollPos(st->reportList, SB_HORZ);
+    ListView_Scroll(st->reportList, -horizontalOffset, 0);
+    for (HWND control : {st->leftPanel, st->bottomPanel, st->middleTab,
+                         st->rightTab, st->compactButton}) ShowWindow(control, SW_HIDE);
+    regularApplyFont(floating, st->ctx.uiFont);
+    updateCompactSummary(st, currentReportIndex(st));
+    layout(st->hwnd, st);
+    hideOtherProgramWindows(st);
+    ShowWindow(floating, SW_SHOW);
+    SetForegroundWindow(floating);
+    SetFocus(st->reportList);
 }
 
 // ============================================================================
@@ -1927,7 +2244,7 @@ search::QueryInput buildReportQueryInput(RegularReportState* st) {
 void runReportQuery(RegularReportState* st, bool preserveState) {
     if (!st || search::trim(st->selectedMachineCode).empty()) return;
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
-        MessageBoxW(st->hwnd, L"请先在\"设置\"中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
+        MessageBoxW(reportOwner(st), L"请先在\"设置\"中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return;
     }
     if (!preserveState) {
@@ -1940,6 +2257,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         ListView_DeleteAllItems(st->reportList);
         ListView_DeleteAllItems(st->resultList);
         st->reportRows.clear(); st->resultRows.clear();
+        updateCompactSummary(st, -1);
         InvalidateRect(st->rightPanel, nullptr, TRUE);
         st->pictureQueryLoading = false; st->pictureRepNo.clear();
         ++st->pictureQueryGeneration;
@@ -2017,7 +2335,9 @@ void selectReportRow(RegularReportState* st, int index) {
     ListView_SetItemState(st->reportList, index, LVIS_SELECTED | LVIS_FOCUSED,
                           LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(st->reportList, index, FALSE);
-    SetFocus(st->reportList);
+    // Auto-refresh restores selection while the user may be typing in another app.
+    if (!st->compactAttached || GetForegroundWindow() == st->compactWindow)
+        SetFocus(st->reportList);
 }
 
 void selectAdjacentReportRow(RegularReportState* st, int delta) {
@@ -2305,7 +2625,10 @@ void populateLeftPanelFromReport(RegularReportState* st, int sel) {
         regularClearDatePickerValue(st->reportDatePicker);
         regularSetControlText(st->collectDateEdit, "");
     };
-    if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) { if (st) clr(); return; }
+    if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) {
+        if (st) { clr(); updateCompactSummary(st, -1); }
+        return;
+    }
     const auto& r = st->reportRows[static_cast<size_t>(sel)];
     regularSetControlText(st->groupEdit, r.group_name);
     regularSetControlText(st->sampleEdit, r.sample_name);
@@ -2340,6 +2663,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int sel) {
     regularSetDatePickerValue(st->inspectDatePicker, r.inspect_date);
     st->suppressInspectDateQuery = false;
     regularSetControlText(st->collectDateEdit, "");
+    updateCompactSummary(st, sel);
 }
 
 // ============================================================================
@@ -2359,7 +2683,9 @@ void finishResultEdit(RegularReportState* st, bool commit, bool moveNext, bool r
         ListView_RedrawItems(st->resultList, row, row);
     }
     DestroyWindow(ed);
-    if (restore && st->resultList) SetFocus(st->resultList);
+    if (restore && st->resultList &&
+        (!st->compactAttached || GetForegroundWindow() == st->compactWindow))
+        SetFocus(st->resultList);
     if (commit && moveNext && row + 1 < static_cast<int>(st->resultRows.size())) {
         selectReportRow(st, row + 1);
         beginResultEdit(st, row + 1);
@@ -2578,7 +2904,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
     st->reportQueryLoading = false;
     if (!result->ok) {
         SetWindowTextW(st->status, L"样本列表查询失败");
-        MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
+        MessageBoxW(reportOwner(st), search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
     // A successful list refresh is an explicit boundary for result freshness,
@@ -2640,7 +2966,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
             querySelectedResults(st, pendingTarget);
         } else {
             querySelectedResults(st, -1);
-            MessageBoxW(hwnd, L"已打开常规报告，但未在当前日期和仪器下找到目标报告。",
+            MessageBoxW(reportOwner(st), L"已打开常规报告，但未在当前日期和仪器下找到目标报告。",
                         L"常规报告", MB_ICONINFORMATION);
         }
         st->pendingOpenRepNo.clear();
@@ -2670,7 +2996,7 @@ void finishResultQuery(RegularReportState* st, HWND hwnd,
     if (!result->ok) {
         st->resultCache.current = regular_comparison::LoadPhase::Failed;
         if (TabCtrl_GetCurSel(st->rightTab) == 1) loadComparison(st);
-        MessageBoxW(hwnd, search::utf8_to_wide(result->error).c_str(),
+        MessageBoxW(reportOwner(st), search::utf8_to_wide(result->error).c_str(),
                     L"查询项目明细失败", MB_ICONERROR);
         return;
     }
@@ -2715,7 +3041,7 @@ bool applyQuickMachineSlot(RegularReportState* st, int slot, bool showMissingMes
         L"RegularReport", regularQuickMachineRoomKey(slot), L"");
     if (search::trim(search::wide_to_utf8(code)).empty()) {
         if (showMissingMessage)
-            MessageBoxW(st->hwnd, L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
+            MessageBoxW(reportOwner(st), L"请先在系统设置中配置该快捷检验仪器。", L"常规报告", MB_ICONINFORMATION);
         return false;
     }
     const std::string nextCode = search::wide_to_utf8(code);
@@ -2739,7 +3065,7 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     const std::string machCode = search::trim(target.mach_code);
     const std::string repNo = search::trim(target.rep_no);
     if (machCode.empty() || repNo.empty()) {
-        MessageBoxW(st->hwnd,
+        MessageBoxW(reportOwner(st),
                     L"目标报告缺少检验仪器或报告号，无法跳转到常规报告。",
                     L"常规报告", MB_ICONWARNING);
         return;
@@ -2748,7 +3074,7 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     SYSTEMTIME date{};
     const std::string dateText = search::trim(target.inspect_date);
     if (!regularParseDateTimeText(dateText, date)) {
-        MessageBoxW(st->hwnd,
+        MessageBoxW(reportOwner(st),
                     L"目标报告缺少有效检验日期，无法跳转到常规报告。",
                     L"常规报告", MB_ICONWARNING);
         return;
@@ -2912,7 +3238,7 @@ std::wstring startBarcodeBatch(RegularReportState* st,
             setBarcodePrintControlsEnabled(state, true);
             if (error || !result) {
                 SetWindowTextW(state->status, L"批量条码打印任务异常终止。");
-                MessageBoxW(hwnd, L"批量条码打印任务异常终止。", L"常规报告",
+                MessageBoxW(reportOwner(state), L"批量条码打印任务异常终止。", L"常规报告",
                             MB_ICONERROR);
                 return;
             }
@@ -2931,7 +3257,7 @@ std::wstring startBarcodeBatch(RegularReportState* st,
             SetWindowTextW(state->status,
                            result->error.empty() ? L"批量条码已全部提交到打印队列。"
                                                  : L"批量条码在中途停止。");
-            MessageBoxW(hwnd, message.c_str(), L"常规报告",
+            MessageBoxW(reportOwner(state), message.c_str(), L"常规报告",
                         result->error.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
         });
     if (!started) {
@@ -2950,7 +3276,7 @@ std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
         const std::wstring warning = L"即将向打印队列提交 " +
             std::to_wstring(indexes.size()) +
             L" 张勾选条码。\n\n提交后无法在本页面撤销，确定继续吗？";
-        if (MessageBoxW(st->hwnd, warning.c_str(), L"确认大批量打印",
+        if (MessageBoxW(reportOwner(st), warning.c_str(), L"确认大批量打印",
                         MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
             return L"";
     }
@@ -3327,7 +3653,7 @@ void ensureBatchBarcodeDialogClass() {
 bool showBatchBarcodeDialog(RegularReportState* st,
                             std::vector<search::BarcodeLabelPayload>& payloads) {
     ensureBatchBarcodeDialogClass();
-    const HWND ownerHwnd = st->hwnd;
+    const HWND ownerHwnd = reportOwner(st);
     BatchBarcodeDialogState state;
     state.font = st->ctx.uiFont;
     state.machine_code = st->selectedMachineCode;
@@ -3399,22 +3725,22 @@ bool showBatchBarcodeDialog(RegularReportState* st,
 void regularShowBatchBarcodeDialog(RegularReportState* st) {
     if (!st) return;
     if (st->barcodePrintTask.active()) {
-        MessageBoxW(st->hwnd, L"已有批量条码正在提交到打印队列。",
+        MessageBoxW(reportOwner(st), L"已有批量条码正在提交到打印队列。",
                     L"常规报告", MB_ICONINFORMATION);
         return;
     }
     if (st->reportQueryLoading) {
-        MessageBoxW(st->hwnd, L"报告列表正在刷新，请等待查询完成后再批量打印。",
+        MessageBoxW(reportOwner(st), L"报告列表正在刷新，请等待查询完成后再批量打印。",
                     L"常规报告", MB_ICONINFORMATION);
         return;
     }
     if (st->reportRows.empty()) {
-        MessageBoxW(st->hwnd, L"当前页面没有可用的报告记录。", L"常规报告",
+        MessageBoxW(reportOwner(st), L"当前页面没有可用的报告记录。", L"常规报告",
                     MB_ICONINFORMATION);
         return;
     }
     if (!search::barcode_label_printing_available()) {
-        MessageBoxW(st->hwnd, L"打印条码功能不可用：构建时未找到 LabelPrint 项目。",
+        MessageBoxW(reportOwner(st), L"打印条码功能不可用：构建时未找到 LabelPrint 项目。",
                     L"常规报告", MB_ICONWARNING);
         return;
     }
@@ -3422,25 +3748,25 @@ void regularShowBatchBarcodeDialog(RegularReportState* st) {
     if (!showBatchBarcodeDialog(st, payloads)) return;
     const std::wstring error = startBarcodeBatch(st, std::move(payloads));
     if (!error.empty())
-        MessageBoxW(st->hwnd, error.c_str(), L"常规报告", MB_ICONWARNING);
+        MessageBoxW(reportOwner(st), error.c_str(), L"常规报告", MB_ICONWARNING);
 }
 
 void regularShowTrendForContext(RegularReportState* st) {
     const search::ReportRow* row = contextReportRow(st);
     if (!st || !row) {
-        MessageBoxW(st ? st->hwnd : nullptr, L"请先右键选择一条报告记录。",
+        MessageBoxW(reportOwner(st), L"请先右键选择一条报告记录。",
                     L"趋势图提示", MB_ICONINFORMATION);
         return;
     }
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
-        MessageBoxW(st->hwnd, L"请先在“设置”中填写数据库连接信息。",
+        MessageBoxW(reportOwner(st), L"请先在“设置”中填写数据库连接信息。",
                     L"缺少数据库设置", MB_ICONWARNING);
         return;
     }
     const std::string patientId = search::trim(row->reg_no);
     const std::string patientName = search::trim(row->name);
     if (patientId.empty() && patientName.empty()) {
-        MessageBoxW(st->hwnd, L"当前报告缺少病人号和姓名，无法打开趋势图。",
+        MessageBoxW(reportOwner(st), L"当前报告缺少病人号和姓名，无法打开趋势图。",
                     L"趋势图提示", MB_ICONWARNING);
         return;
     }
@@ -3458,11 +3784,11 @@ void regularShowTrendForContext(RegularReportState* st) {
     input.limit = 0;
 
     if (patientId.empty()) {
-        MessageBoxW(st->hwnd,
+        MessageBoxW(reportOwner(st),
                     L"当前报告缺少病人号，将按姓名查询趋势，可能包含同名病人结果。",
                     L"趋势图提示", MB_ICONINFORMATION);
     }
-    search::show_trend_window(st->hwnd,
+    search::show_trend_window(reportOwner(st),
                               st->ctx.uiFont ? st->ctx.uiFont :
                                   static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)),
                               st->ctx.dbSettings, input);
@@ -3473,7 +3799,7 @@ void regularSelectReportRowBySampleInput(RegularReportState* st) {
     const std::string input = search::wide_to_utf8(regularWindowText(st->operNoEdit));
     const int index = findReportIndexBySampleNo(st, input);
     if (index < 0) {
-        MessageBoxW(st->hwnd, L"当前右侧列表中未找到该样本号。", L"常规报告", MB_ICONINFORMATION);
+        MessageBoxW(reportOwner(st), L"当前右侧列表中未找到该样本号。", L"常规报告", MB_ICONINFORMATION);
         return;
     }
     const int current = st->reportList ?
@@ -3567,15 +3893,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_COMMAND:
+            if (st && LOWORD(wp) == REGULAR_IDC_COMPACT) {
+                enterCompactMode(st); return 0;
+            }
             if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_BARCODE) {
-                MessageBoxW(hwnd, regularPrintBarcodeForContext(st).c_str(),
+                MessageBoxW(reportOwner(st), regularPrintBarcodeForContext(st).c_str(),
                             L"常规报告", MB_ICONINFORMATION);
                 return 0;
             }
             if (LOWORD(wp) == REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES) {
                 const std::wstring message = regularPrintCheckedBarcodes(st);
                 if (!message.empty())
-                    MessageBoxW(hwnd, message.c_str(), L"常规报告",
+                    MessageBoxW(reportOwner(st), message.c_str(), L"常规报告",
                                 MB_ICONINFORMATION);
                 return 0;
             }
@@ -3588,8 +3917,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case app::WM_APP_FONT_CHANGED:
             if (st && lp) {
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
+                // Update existing controls so detached panels and selections survive.
                 st->ctx.uiFont = reinterpret_cast<HFONT>(lp);
-                clearLeftPanel(st); createControls(hwnd, st);
+                if (st->compactWindow) regularApplyFont(st->compactWindow, st->ctx.uiFont);
                 regularApplyFont(hwnd, st->ctx.uiFont);
                 regularRefreshLeftGroupTitleFont(st);
                 layout(hwnd, st);
@@ -3626,6 +3956,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             RemovePropW(hwnd, REGULAR_REPORT_PROP_STATE);
             if (st) {
+                st->destroying = true;
+                leaveCompactMode(st, false);
                 st->reportQueryTask.cancel();
                 st->resultQueryTask.cancel();
                 st->pictureQueryTask.cancel();
@@ -3662,10 +3994,39 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // Public entry point
 // ============================================================================
 
+bool regular_report_translate_compact_message(MSG* message) {
+    if (!message || !message->hwnd) return false;
+    HWND root = GetAncestor(message->hwnd, GA_ROOT);
+    wchar_t className[64]{};
+    GetClassNameW(root, className, 64);
+    if (lstrcmpW(className, REGULAR_REPORT_COMPACT_CLASS) != 0) return false;
+    auto* st = reinterpret_cast<RegularReportState*>(GetWindowLongPtrW(root, GWLP_USERDATA));
+    if (!st || !st->compactAttached || !IsWindowEnabled(root) ||
+        app::window_task_detail::sessionSuspended()) return false;
+    if (message->message == WM_KEYDOWN) {
+        if (message->wParam == VK_F5) {
+            finishResultEdit(st, true, false, false);
+            SendMessageW(root, WM_COMMAND, REGULAR_IDC_COMPACT_REFRESH, 0);
+            return true;
+        }
+        // Let the in-cell editor handle its own Enter/Escape/Tab keys.
+        if (message->hwnd == st->resultEdit) return false;
+        if (message->wParam == VK_ESCAPE ||
+            (message->wParam == VK_F4 && GetKeyState(VK_CONTROL) < 0)) {
+            leaveCompactMode(st);
+            return true;
+        }
+    }
+    return IsDialogMessageW(root, message) != FALSE;
+}
+
 HWND create_regular_report_module(const ModuleContext& ctx) {
     if (HWND ex = activate_existing_mdi_child_by_title(
-            ctx.mdiClient, REGULAR_REPORT_WINDOW_TITLE))
+            ctx.mdiClient, REGULAR_REPORT_WINDOW_TITLE)) {
+        auto* existing = reinterpret_cast<RegularReportState*>(GetPropW(ex, REGULAR_REPORT_PROP_STATE));
+        if (existing && existing->compactWindow) enterCompactMode(existing);
         return ex;
+    }
 
     static bool reg = false;
     if (!reg) {

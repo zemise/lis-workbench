@@ -34,7 +34,8 @@ BOOL CALLBACK find_workbench(HWND window, LPARAM parameter) {
     int priority = 0;
     if (std::wcscmp(name, L"LISWorkbenchSourceGuard") == 0)
         priority = 3;
-    else if (std::wcscmp(name, L"LISWorkbenchLogin") == 0)
+    else if (std::wcscmp(name, L"LISWorkbenchLogin") == 0 ||
+             std::wcscmp(name, L"LISWorkbenchStartupUpdate") == 0)
         priority = 2;
     else if (std::wcscmp(name, L"LISWorkbenchMainWindow") == 0)
         priority = 1;

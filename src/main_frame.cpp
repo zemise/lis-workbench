@@ -510,7 +510,7 @@ bool enoughInstallSpace(const std::wstring& package_path) {
 }
 
 bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path,
-                             const std::wstring &manifest_path = {}) {
+                             const std::wstring &manifest_path = {}, bool closeWindow = true) {
   const std::wstring app_dir = search::module_dir();
   const std::wstring updater_path =
       lis_update::join_update_path(app_dir, UPDATE_UPDATER_EXE_NAME);
@@ -543,7 +543,7 @@ bool launchUpdaterForPackage(HWND hwnd, const std::wstring &package_path,
     return false;
   }
 
-  PostMessageW(hwnd, WM_CLOSE, 0, 0);
+  if (closeWindow) PostMessageW(hwnd, WM_CLOSE, 0, 0);
   return true;
 }
 
@@ -570,6 +570,172 @@ struct LisUpdateActivity {
     if(outcome=="failed") LOG_WARN(message); else LOG_INFO(message);
   }
 };
+
+// Shared by manual updates and the pre-login startup check.
+ManualUpdateCheckDone downloadLisUpdate(const UpdateSourceConfig& cfg,
+    const lis_update::UpdateManifest& manifest,
+    const std::shared_ptr<std::atomic<bool>>& cancel, const std::wstring& root) {
+  ManualUpdateCheckDone downloaded;
+  downloaded.result.manifest = manifest;
+  LisUpdateActivity activity("cache_prepare");
+  activity.capture(manifest);
+  GUID guid{};
+  if (FAILED(CoCreateGuid(&guid))) { downloaded.error="cannot create cache identity"; return downloaded; }
+  wchar_t guidText[40]{}; StringFromGUID2(guid, guidText, 40);
+  const auto sharedDir = lis_update::join_update_path(root, L"db\\" + std::to_wstring(manifest.database_package_id) +
+      L"-" + search::utf8_to_wide(manifest.package.sha256));
+  const auto packageDir = lis_update::join_update_path(sharedDir, guidText);
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(packageDir), ec);
+  if (ec) { downloaded.error="cannot create update cache"; return downloaded; }
+  ULARGE_INTEGER free{};
+  if (!GetDiskFreeSpaceExW(packageDir.c_str(),&free,nullptr,nullptr) || free.QuadPart<manifest.package.size+1024*1024) {
+    downloaded.error="insufficient update cache disk space";
+    std::filesystem::remove_all(std::filesystem::path(packageDir),ec);
+    return downloaded;
+  }
+  const auto target = lis_update::join_update_path(packageDir, search::utf8_to_wide(manifest.package.file));
+  lis_update::DatabaseUpdateSource source(cfg.db, [cancel]{return cancel->load();});
+  const auto reusable = lis_update::join_update_path(sharedDir, search::utf8_to_wide(manifest.package.file));
+  lis_update::UpdateZipInfo zip;
+  std::string cacheError;
+  if (!cancel->load() && lis_update::verify_update_package(reusable, manifest, cacheError) &&
+      lis_update::validate_update_zip(reusable, zip, cacheError) && CopyFileW(reusable.c_str(), target.c_str(), TRUE)) {
+    downloaded.ok = lis_update::verify_update_package(target, manifest, cacheError) &&
+                    lis_update::validate_update_zip(target, zip, cacheError);
+    if (!downloaded.ok) DeleteFileW(target.c_str());
+  }
+  activity.phase="download";
+  if (!downloaded.ok) downloaded.ok = source.fetch_package(manifest, target, downloaded.error);
+  if (downloaded.ok) {
+    activity.phase="snapshot_write";
+    // Never overwrite another process's reusable cache; each installer uses its own copy.
+    CopyFileW(target.c_str(), reusable.c_str(), TRUE);
+    std::ofstream metadata(std::filesystem::path(target+L".json"), std::ios::binary);
+    metadata << lis_update::serialize_update_manifest(manifest);
+    metadata.close();
+    if (!metadata) { downloaded.ok=false; downloaded.error="cannot save update snapshot"; }
+  }
+  if (!downloaded.ok || cancel->load()) std::filesystem::remove_all(std::filesystem::path(packageDir), ec);
+  downloaded.result.package_path=target;
+  activity.outcome=cancel->load()?"cancelled":(downloaded.ok?"success":"failed");
+  if(downloaded.ok) activity.phase="download_verified";
+  return downloaded;
+}
+
+struct StartupUpdateState {
+  std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
+  bool updaterLaunched = false;
+  bool closed = false;
+  HWND status = nullptr;
+};
+
+LRESULT CALLBACK startupUpdateWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  auto* state = reinterpret_cast<StartupUpdateState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_NCCREATE) {
+    state = static_cast<StartupUpdateState*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+  }
+  if (msg == WM_CLOSE && state) {
+    state->closed = true;
+    state->cancelled->store(true);
+    SetWindowTextW(state->status, L"正在取消更新，请稍候…");
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Returns true when the current process must exit for installation or cancellation.
+// Run only once per process, before any login (including adoption of an LIS session).
+bool runStartupLisUpdate(HINSTANCE instance) {
+  const auto cfg = loadUpdateSourceConfig();
+  if (cfg.sourceType != lis_update::kSourceLis || cfg.db.server.empty() ||
+      cfg.db.initial_database.empty() || cfg.db.user.empty()) return false;
+
+  WNDCLASSW wc{};
+  wc.lpfnWndProc = startupUpdateWndProc;
+  wc.hInstance = instance;
+  wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
+  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.lpszClassName = L"LISWorkbenchStartupUpdate";
+  if (!RegisterClassW(&wc)) return false;
+
+  StartupUpdateState state;
+  HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"LIS 工作台 - 启动更新",
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+      (GetSystemMetrics(SM_CXSCREEN) - 480) / 2,
+      (GetSystemMetrics(SM_CYSCREEN) - 150) / 2, 480, 150,
+      nullptr, nullptr, instance, &state);
+  if (!hwnd) return false;
+  HWND status = CreateWindowExW(0, L"STATIC", L"正在检查 LIS 更新，请稍候…",
+      WS_CHILD | WS_VISIBLE, 24, 24, 420, 60, hwnd, nullptr, instance, nullptr);
+  state.status = status;
+  SendMessageW(status, WM_SETFONT, reinterpret_cast<WPARAM>(g_ctx.uiFont), TRUE);
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  app::WindowTask task;
+  const auto cancel = state.cancelled;
+  const auto root = programDataUpdateCacheDir();
+  const bool queued = task.start<ManualUpdateCheckDone>(
+      [cfg, cancel, root, status](app::WindowTaskContext context) {
+        ManualUpdateCheckDone done;
+        LisUpdateActivity activity("startup_metadata");
+        lis_update::DatabaseUpdateSource source(cfg.db, [cancel] { return cancel->load(); });
+        done.ok = source.fetch_manifest(done.result.manifest, done.error);
+        if (done.ok) activity.capture(done.result.manifest);
+        activity.outcome = cancel->load() ? "cancelled" : (done.ok ? "success" : "failed");
+        done.result.update_available = done.ok && lis_update::compare_version_strings(
+            done.result.manifest.version, search::kVersion) > 0;
+        if (!done.result.update_available || cancel->load()) return done;
+        if (!hasCompatibleUpdater()) {
+          done.ok = false;
+          done.error = "updater capability is missing; upgrade using the complete installer first";
+          return done;
+        }
+        context.post([status, cancel] {
+          if (!cancel->load()) SetWindowTextW(status, L"发现 LIS 新版本，正在下载并校验，完成后将自动安装重启…");
+        });
+        return downloadLisUpdate(cfg, done.result.manifest, cancel, root);
+      },
+      [hwnd, cfg, &state](std::optional<ManualUpdateCheckDone> done, std::exception_ptr error) {
+        if (!IsWindow(hwnd)) return;
+        if (!state.closed && !error && done && done->ok && !done->result.package_path.empty() &&
+            sameLisConfig(cfg, loadUpdateSourceConfig())) {
+          const auto& path = done->result.package_path;
+          state.updaterLaunched = launchUpdaterForPackage(hwnd, path, path + L".json", false);
+          LOG_INFO(std::string("LIS update phase=startup_updater_launch outcome=") +
+                   (state.updaterLaunched ? "success" : "failed"));
+        } else if (!state.closed && (error || !done || !done->ok)) {
+          LOG_WARN("LIS startup update failed; continuing to login");
+          // Metadata failures (offline/unpublished) should not interrupt startup.
+          // A failed download of an available version deserves a visible explanation.
+          if (done && !done->result.manifest.version.empty()) {
+            const auto message = L"自动更新未完成，将继续登录。\r\n" + search::utf8_to_wide(done->error);
+            MessageBoxW(hwnd, message.c_str(), L"LIS 更新", MB_OK | MB_ICONWARNING);
+          }
+        }
+        if (!state.updaterLaunched && done && !done->result.package_path.empty()) {
+          std::error_code ec;
+          std::filesystem::remove_all(std::filesystem::path(done->result.package_path).parent_path(), ec);
+        }
+        DestroyWindow(hwnd);
+        app::wake_window_message_loop();
+      });
+  if (!queued) DestroyWindow(hwnd);
+  MSG msg{};
+  while (IsWindow(hwnd)) {
+    const auto result = GetMessageW(&msg, nullptr, 0, 0);
+    if (result <= 0) { state.closed = true; break; }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  cancel->store(true);
+  task.cancel();
+  if (IsWindow(hwnd)) DestroyWindow(hwnd);
+  return state.updaterLaunched || state.closed;
+}
 
 void startLisUpdateCheck(HWND hwnd, const UpdateSourceConfig& cfg) {
   if (cfg.db.server.empty() || cfg.db.initial_database.empty() || cfg.db.user.empty()) {
@@ -627,52 +793,7 @@ void startLisUpdateCheck(HWND hwnd, const UpdateSourceConfig& cfg) {
         const auto root = programDataUpdateCacheDir();
         bool downloading = g_manualUpdateTask.start<ManualUpdateCheckDone>(
             [cfg, manifest, cancel, root] {
-              ManualUpdateCheckDone downloaded;
-              downloaded.result.manifest = manifest;
-              LisUpdateActivity activity("cache_prepare");
-              activity.capture(manifest);
-              GUID guid{};
-              if (FAILED(CoCreateGuid(&guid))) { downloaded.error="cannot create cache identity"; return downloaded; }
-              wchar_t guidText[40]{}; StringFromGUID2(guid, guidText, 40);
-              const auto sharedDir = lis_update::join_update_path(root, L"db\\" + std::to_wstring(manifest.database_package_id) +
-                  L"-" + search::utf8_to_wide(manifest.package.sha256));
-              const auto packageDir = lis_update::join_update_path(sharedDir, guidText);
-              std::error_code ec;
-              std::filesystem::create_directories(std::filesystem::path(packageDir), ec);
-              if (ec) { downloaded.error="cannot create update cache"; return downloaded; }
-              ULARGE_INTEGER free{};
-              if (!GetDiskFreeSpaceExW(packageDir.c_str(),&free,nullptr,nullptr) || free.QuadPart<manifest.package.size+1024*1024) {
-                downloaded.error="insufficient update cache disk space";
-                std::filesystem::remove_all(std::filesystem::path(packageDir),ec);
-                return downloaded;
-              }
-              const auto target = lis_update::join_update_path(packageDir, search::utf8_to_wide(manifest.package.file));
-              lis_update::DatabaseUpdateSource source(cfg.db, [cancel]{return cancel->load();});
-              const auto reusable = lis_update::join_update_path(sharedDir, search::utf8_to_wide(manifest.package.file));
-              lis_update::UpdateZipInfo zip;
-              std::string cacheError;
-              if (!cancel->load() && lis_update::verify_update_package(reusable, manifest, cacheError) &&
-                  lis_update::validate_update_zip(reusable, zip, cacheError) && CopyFileW(reusable.c_str(), target.c_str(), TRUE)) {
-                downloaded.ok = lis_update::verify_update_package(target, manifest, cacheError) &&
-                                lis_update::validate_update_zip(target, zip, cacheError);
-                if (!downloaded.ok) DeleteFileW(target.c_str());
-              }
-              activity.phase="download";
-              if (!downloaded.ok) downloaded.ok = source.fetch_package(manifest, target, downloaded.error);
-              if (downloaded.ok) {
-                activity.phase="snapshot_write";
-                // Never overwrite another process's reusable cache; each installer uses its own copy.
-                CopyFileW(target.c_str(), reusable.c_str(), TRUE);
-                std::ofstream metadata(std::filesystem::path(target+L".json"), std::ios::binary);
-                metadata << lis_update::serialize_update_manifest(manifest);
-                metadata.close();
-                if (!metadata) { downloaded.ok=false; downloaded.error="cannot save update snapshot"; }
-              }
-              if (!downloaded.ok || cancel->load()) std::filesystem::remove_all(std::filesystem::path(packageDir), ec);
-              downloaded.result.package_path=target;
-              activity.outcome=cancel->load()?"cancelled":(downloaded.ok?"success":"failed");
-              if(downloaded.ok) activity.phase="download_verified";
-              return downloaded;
+              return downloadLisUpdate(cfg, manifest, cancel, root);
             },
             [hwnd, cfg, cancel](std::optional<ManualUpdateCheckDone> downloaded, std::exception_ptr exception) {
               g_manualUpdateChecking=false; setMainStatusText(L"就绪");
@@ -1295,6 +1416,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
   InitCommonControlsEx(&icc);
 
+  if (runStartupLisUpdate(instance)) {
+    DeleteObject(g_ctx.uiFont);
+    DeleteObject(g_ctx.menuFont);
+    return 0;
+  }
+
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = wndProc;
@@ -1351,7 +1478,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     MSG msg{};
     while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-      if (!TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
+      if (!regular_report_translate_compact_message(&msg) &&
+          !TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
       }

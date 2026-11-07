@@ -30,6 +30,10 @@ constexpr const wchar_t* REGULAR_REPORT_BLANK_DATE_FORMAT = L" ";
 constexpr UINT_PTR IDT_REPORT_AUTO_REFRESH = 6310;
 constexpr UINT_PTR IDT_REPORT_INITIAL_QUICK_MACHINE = 6311;
 
+constexpr int REGULAR_IDC_COMPACT = 5430;
+constexpr int REGULAR_IDC_COMPACT_REFRESH = 5432;
+constexpr const wchar_t* REGULAR_REPORT_COMPACT_CLASS = L"RegularReportCompactWindow";
+
 constexpr int REGULAR_IDC_RESULT_LIST = 5201;
 constexpr int REGULAR_IDC_REPORT_LIST = 5202;
 constexpr int REGULAR_IDC_SPLITTER = 5204;
@@ -109,6 +113,8 @@ constexpr int REGULAR_RIGHT_SEARCH_CONTROL_Y = 90;
 constexpr int REGULAR_RIGHT_LIST_Y = 128;
 constexpr int REGULAR_RIGHT_DATE_BUTTON_H = 28;
 constexpr int REGULAR_RIGHT_DATE_BUTTON_W = 72;
+constexpr int REGULAR_COMPACT_REFRESH_W = 88;
+constexpr int REGULAR_COMPACT_TOOLBAR_W = (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + REGULAR_COMPACT_REFRESH_W;
 constexpr int REGULAR_AUTO_REFRESH_DEFAULT_SECONDS = 10;
 constexpr int REGULAR_AUTO_REFRESH_MIN_SECONDS = 5;
 constexpr int REGULAR_AUTO_REFRESH_MAX_SECONDS = 3600;
@@ -251,6 +257,25 @@ struct PicturePopupState {
 struct RegularReportState {
     ModuleContext ctx;
     HWND hwnd = nullptr;
+    // The MDI child remains the state/task owner while these panels are detached.
+    HWND compactWindow = nullptr;
+    HWND compactButton = nullptr;
+    HWND compactRefreshButton = nullptr;
+    HWND compactSummary = nullptr;
+    struct HiddenWindow {
+        HWND hwnd;
+        int showCommand;
+    };
+    std::vector<HiddenWindow> compactHiddenWindows;
+    std::uint64_t compactSession = 0;
+    std::vector<int> compactSavedColumnWidths;
+    int compactSavedHorizontalOffset = 0;
+    int savedMiddleTab = 0;
+    int savedRightTab = 0;
+    LONG_PTR compactPanelExStyles[3]{};
+    bool compactRestoring = false;
+    bool compactAttached = false;
+    bool destroying = false;
     HWND leftPanel = nullptr;
     HWND leftContent = nullptr;
     HWND leftScrollBar = nullptr;

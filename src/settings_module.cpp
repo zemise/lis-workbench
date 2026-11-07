@@ -637,7 +637,7 @@ void updateSourceFieldVisibility(HWND hwnd) {
     if (st && st->updateAutoCheck) EnableWindow(st->updateAutoCheck, source != lis_update::kSourceLis);
     if (HWND hint = GetDlgItem(hwnd, IDC_TEXT_UPDATE_HINT)) {
         SetWindowTextW(hint, source == lis_update::kSourceLis
-            ? L"LIS 使用现有数据库连接；通过系统菜单手动检查更新。"
+            ? L"LIS 使用现有数据库连接；登录前自动更新，也可通过系统菜单手动检查。"
             : L"设置共享目录或 HTTP manifest，并控制启动后自动检查。");
         // Erase the complete old text area when the source changes.
         InvalidateRect(hint, nullptr, TRUE);

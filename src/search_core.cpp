@@ -1,5 +1,6 @@
 #include "query_diagnostics.h"
 #include "search_core.h"
+#include "barcode_report_query.h"
 #include "odbc_connection_policy.h"
 #include "search_text.h"
 
@@ -2401,16 +2402,18 @@ bool query_blood_crossmatch_history(const std::string& connection_string, const 
 #endif
 }
 
-bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log) {
+bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log,
+                    const std::function<bool()>& cancelled) {
     querydiag::RequestScope request(__func__, error, log);
     log = request.log_callback();
     request.observe_rows(rows);
     rows.clear();
 #ifndef _WIN32
-    (void)filters; (void)log;
+    (void)filters; (void)log; (void)cancelled;
     error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
+    if (cancelled && cancelled()) { error = "查询已取消。"; return false; }
     const auto query_started = std::chrono::steady_clock::now();
     DbContext db;
     if (!connect(filters.connection_string, db, error, log)) return false;
@@ -2453,10 +2456,14 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     add_eq(where, "CONVERT(varchar(20),b.ROOM_CODE)", filters.room_code);
     add_in(where, "CONVERT(varchar(20),b.ROOM_CODE)", filters.room_codes);
 
-    if (!filters.machine_statuses.empty()) {
-        add_barcode_machine_statuses(where, filters.machine_statuses);
-    } else {
-        add_barcode_machine_status(where, filters.machine_status);
+    // Direct links cannot change during supplementation, so safely avoid fetching
+    // their large display fields when their known status is outside the filter.
+    // Every unresolved row must still reach the matcher, regardless of its old status.
+    std::ostringstream direct_status;
+    if (!filters.machine_statuses.empty()) add_barcode_machine_statuses(direct_status, filters.machine_statuses);
+    else add_barcode_machine_status(direct_status, filters.machine_status);
+    if (!direct_status.str().empty()) {
+        where << " AND (ISNULL(rs.HAS_REPORT,0)=0 OR (1=1" << direct_status.str() << "))";
     }
 
     const std::string order_expr = "b.IN_DATE ASC,b.ID ASC";
@@ -2496,6 +2503,7 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
         << "isnull(nullif(LTRIM(RTRIM(rd.MACH_NAME)),''),isnull(LTRIM(RTRIM(CONVERT(varchar(20),rd.MACH_CODE))),'')) AS machine_name,"
         << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),rd.ROOM_CODE))),'') AS room_code,"
         << "isnull(CONVERT(varchar(19),rd.CHK_DATE,120),'') AS inspect_date"
+        << ",b.TYPE,b.MACH_CODE,b.GROUP_CODE,b.HOITEM_ID,b.ROOM_CODE"
         << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
         << " OUTER APPLY (SELECT"
         << " MAX(CASE WHEN NULLIF(LTRIM(RTRIM(CONVERT(varchar(30),r.REP_NO))),'') IS NOT NULL THEN 1 ELSE 0 END) AS HAS_REPORT,"
@@ -2522,52 +2530,81 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
-    while (SQLFetch(stmt) == SQL_SUCCESS) {
+    std::vector<BarcodeMatchSource> match_sources;
+    bool read_ok = true;
+    while (true) {
+        if (cancelled && cancelled()) { error = "查询已取消。"; read_ok = false; break; }
+        const auto fetched = SQLFetch(stmt);
+        if (fetched == SQL_NO_DATA) break;
+        if (!SQL_SUCCEEDED(fetched)) {
+            error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+            read_ok = false; break;
+        }
+        std::vector<std::string> columns;
+        if (!read_barcode_columns(stmt, 38, columns, error)) { read_ok = false; break; }
         BarcodeQueryRow row;
-        row.sample_no      = fetch_column(stmt, 1);
-        row.emergency      = fetch_column(stmt, 2);
-        row.barcode        = fetch_column(stmt, 3);
-        row.reg_no         = fetch_column(stmt, 4);
-        row.type_name      = fetch_column(stmt, 5);
-        row.name           = fetch_column(stmt, 6);
-        row.sex            = fetch_column(stmt, 7);
-        row.dept_name      = fetch_column(stmt, 8);
-        row.bed_no         = fetch_column(stmt, 9);
-        row.receiver       = fetch_column(stmt, 10);
-        row.receive_time   = fetch_column(stmt, 11);
-        row.order_text     = fetch_column(stmt, 12);
-        row.sample_name    = fetch_column(stmt, 13);
-        const std::string tester_code = fetch_column(stmt, 14);
-        const std::string reviewer_code = fetch_column(stmt, 15);
+        row.sample_no      = columns[0];
+        row.emergency      = columns[1];
+        row.barcode        = columns[2];
+        row.reg_no         = columns[3];
+        row.type_name      = columns[4];
+        row.name           = columns[5];
+        row.sex            = columns[6];
+        row.dept_name      = columns[7];
+        row.bed_no         = columns[8];
+        row.receiver       = columns[9];
+        row.receive_time   = columns[10];
+        row.order_text     = columns[11];
+        row.sample_name    = columns[12];
+        const std::string tester_code = columns[13];
+        const std::string reviewer_code = columns[14];
         const auto tester_name = employee_names->find(tester_code);
         const auto reviewer_name = employee_names->find(reviewer_code);
         row.tester         = employee_display_name(
             tester_code, tester_name != employee_names->end() ? tester_name->second : "");
         row.reviewer       = employee_display_name(
             reviewer_code, reviewer_name != employee_names->end() ? reviewer_name->second : "");
-        row.review_time    = fetch_column(stmt, 16);
-        row.fee            = fetch_column(stmt, 17);
-        row.request_doctor = fetch_column(stmt, 18);
-        row.status         = fetch_column(stmt, 19);
-        row.note           = fetch_column(stmt, 20);
-        row.reason         = fetch_column(stmt, 21);
-        row.submitter      = fetch_column(stmt, 22);
-        row.submit_time    = fetch_column(stmt, 23);
-        row.request_time   = fetch_column(stmt, 24);
-        row.cancel_time    = fetch_column(stmt, 25);
-        row.cancel_operator = fetch_column(stmt, 26);
-        row.hzid           = fetch_column(stmt, 27);
-        row.machine_status = fetch_column(stmt, 28);
-        row.report_no      = fetch_column(stmt, 29);
-        row.machine_code   = fetch_column(stmt, 30);
-        row.machine_name   = fetch_column(stmt, 31);
-        row.room_code      = fetch_column(stmt, 32);
-        row.inspect_date   = fetch_column(stmt, 33);
+        row.review_time    = columns[15];
+        row.fee            = columns[16];
+        row.request_doctor = columns[17];
+        row.status         = columns[18];
+        row.note           = columns[19];
+        row.reason         = columns[20];
+        row.submitter      = columns[21];
+        row.submit_time    = columns[22];
+        row.request_time   = columns[23];
+        row.cancel_time    = columns[24];
+        row.cancel_operator = columns[25];
+        row.hzid           = columns[26];
+        row.machine_status = columns[27];
+        row.report_no      = columns[28];
+        row.machine_code   = columns[29];
+        row.machine_name   = columns[30];
+        row.room_code      = columns[31];
+        row.inspect_date   = columns[32];
         if (!campus_matches(row.dept_name)) continue;
-        rows.push_back(row);
+        match_sources.push_back({row.barcode, row.reg_no, columns[33], columns[34], columns[37],
+                                 columns[35], columns[36], row.receive_time});
+        rows.push_back(std::move(row));
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    if (!read_ok) { rows.clear(); return false; }
+    const auto coverage_started = std::chrono::steady_clock::now();
+    if (!supplement_barcode_reports(db.dbc, filters, match_sources, rows, error, cancelled)) {
+        rows.clear(); return false;
+    }
+    // The provider returns raw employee codes for recovered reports. Use the same
+    // dictionary/fallback as directly associated reports, without caching statuses.
+    for (auto& row : rows) {
+        if (row.report_link != "项目匹配关联") continue;
+        const auto tester = employee_names->find(row.tester), reviewer = employee_names->find(row.reviewer);
+        row.tester = employee_display_name(row.tester, tester == employee_names->end() ? "" : tester->second);
+        row.reviewer = employee_display_name(row.reviewer, reviewer == employee_names->end() ? "" : reviewer->second);
+    }
+    rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const auto& row) {
+        return !barcode_status_matches(row, filters);
+    }), rows.end());
     const auto database_finished = std::chrono::steady_clock::now();
 
     struct CachedReviewElapsed {
@@ -2599,6 +2636,9 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
             employee_dictionary_finished - employee_dictionary_started).count();
         const auto main_query_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             database_finished - employee_dictionary_finished).count();
+        const auto coverage_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            database_finished - coverage_started).count();
+        log("barcode report matching: duration_ms=" + std::to_string(coverage_ms) + "\n");
         log("barcode query timing: database_and_fetch_ms=" + std::to_string(database_ms) +
             ", main_query_and_fetch_ms=" + std::to_string(main_query_ms) +
             ", employee_dictionary_ms=" + std::to_string(employee_dictionary_ms) +

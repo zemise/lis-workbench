@@ -299,6 +299,7 @@ struct BarcodeQueryRow {
     std::string machine_name;    // 跳转常规报告用 MACH_NAME
     std::string room_code;       // 跳转常规报告用 ROOM_CODE
     std::string inspect_date;    // 跳转常规报告用 CHK_DATE
+    std::string report_link;     // 主条码/项目匹配关联，或未采用候选的原因
 };
 
 struct BarcodeQueryFilters {
@@ -315,6 +316,7 @@ struct BarcodeQueryFilters {
     std::vector<std::string> machine_statuses;
     std::vector<std::string> room_codes;
     bool canceled = false;       // true: CANCEL_DATE IS NOT NULL; false: CANCEL_DATE IS NULL
+    bool refresh_report_dictionary = false; // 刷新操作使项目/医嘱映射缓存失效
 };
 
 struct SpecimenOrderRow {
@@ -950,7 +952,8 @@ bool query_report_picture(const std::string& connection_string, const std::strin
 bool query_lis_summary(const QueryFilters& filters, LisSummary& summary, std::string& error, LogFn log = {});
 bool query_blood_requests(const BloodQueryFilters& filters, std::vector<BloodRequestRow>& rows, std::string& error, LogFn log = {});
 bool query_blood_crossmatch_history(const std::string& connection_string, const std::string& patient_no, std::vector<BloodCrossMatchRow>& rows, std::string& error, LogFn log = {});
-bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {});
+bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQueryRow>& rows, std::string& error, LogFn log = {},
+                    const std::function<bool()>& cancelled = {});
 bool query_specimen_barcode(const SpecimenBarcodeQuery& query, SpecimenBarcodeResult& result, std::string& error, LogFn log = {});
 bool query_specimen_signed_list(const SpecimenSignedListQuery& query, std::vector<SpecimenSignedListRow>& rows, std::string& error, LogFn log = {});
 bool query_hiv_statistics(const HivStatQuery& query, HivStatSummary& summary, std::vector<HivStatDetailRow>& rows, std::string& error, LogFn log = {});
