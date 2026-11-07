@@ -179,6 +179,16 @@ target_compile_definitions(login_source_runtime PRIVATE NOMINMAX)
 target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuuid ole32 oleaut32 shell32 advapi32 version)
 
 # ── Main application (Win32 MDI shell) ────────────────────────
+set(LIS_REGULAR_REPORT_SOURCES
+    src/regular_report_barcode_range.cpp
+    src/regular_report_comparison.cpp
+    src/regular_report_module.cpp
+    src/regular_report_tracking.cpp
+    src/regular_report_tracking_window.cpp
+    src/regular_report_utils.cpp
+    src/regular_report_picture.cpp
+)
+
 add_executable(main_app WIN32
     src/login_database.cpp
     src/login_dialog.cpp
@@ -206,13 +216,7 @@ add_executable(main_app WIN32
     src/quality_control_settings_dialog.cpp
     src/quality_control_store.cpp
     src/query_module.cpp
-    src/regular_report_barcode_range.cpp
-    src/regular_report_comparison.cpp
-    src/regular_report_module.cpp
-    src/regular_report_tracking.cpp
-    src/regular_report_tracking_window.cpp
-    src/regular_report_utils.cpp
-    src/regular_report_picture.cpp
+    ${LIS_REGULAR_REPORT_SOURCES}
     src/scheduled_result_check_core.cpp
     src/scheduled_result_check_module.cpp
     src/scheduled_result_check_store.cpp
@@ -431,6 +435,19 @@ if(BUILD_TESTING)
         add_test(NAME window_task_failure_probe COMMAND window_task_tests --fail-worker)
         set_tests_properties(window_task_tests window_task_failure_probe PROPERTIES TIMEOUT 30)
         set_tests_properties(window_task_failure_probe PROPERTIES WILL_FAIL TRUE)
+        add_executable(regular_report_compact_tests
+            tests/regular_report_compact_test.cpp
+            ${LIS_REGULAR_REPORT_SOURCES}
+            src/barcode_label_printing.cpp
+            src/search_splitter.cpp
+            resource/app.rc
+        )
+        target_link_libraries(regular_report_compact_tests PRIVATE search_ui_core uxtheme winspool)
+        if(MSVC)
+            target_link_options(regular_report_compact_tests PRIVATE /MANIFEST:NO)
+        endif()
+        add_test(NAME regular_report_compact_tests COMMAND regular_report_compact_tests)
+        set_tests_properties(regular_report_compact_tests PROPERTIES TIMEOUT 30)
     endif()
     add_executable(log_tests tests/log_test.cpp)
     target_link_libraries(log_tests PRIVATE search_core)
@@ -442,7 +459,7 @@ if(BUILD_TESTING)
     target_link_libraries(login_core_tests PRIVATE search_core)
     add_test(NAME login_core_tests COMMAND login_core_tests)
     if(MINGW)
-        foreach(login_test barcode_report_matching_tests single_instance_tests login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
+        foreach(login_test barcode_report_matching_tests single_instance_tests login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests regular_report_compact_tests)
             target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
         endforeach()
     endif()
@@ -461,7 +478,7 @@ if(BUILD_TESTING)
             update_database_tests update_package_tests db_update_upload_offline_tests
             db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
             microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests
-            regular_report_machine_tests
+            regular_report_machine_tests regular_report_compact_tests
             scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests barcode_report_matching_tests
             tat_statistics_tests tat_no_log_tests massive_transfusion_core_tests xlsx_writer_tests
             window_task_tests window_task_failure_probe log_tests)

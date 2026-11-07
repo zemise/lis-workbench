@@ -1351,7 +1351,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     MSG msg{};
     while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-      if (!TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
+      if (!regular_report_translate_compact_message(&msg) &&
+          !TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
       }

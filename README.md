@@ -4,7 +4,7 @@ LIS 工作台是基于 C++17、原生 Win32 和 SQL Server ODBC 的 Windows 桌�
 
 ## 功能
 
-- 常规、微生物及检验结果查询，支持历史比较、追踪、趋势图和导出。
+- 常规、微生物及检验结果查询，支持历史比较、追踪、趋势图和导出；常规报告支持精简置顶查看。
 - 标本签收、条码查询与标签打印；支持按项目覆盖补关联多条码合并报告。
 - 输血查询及备血、大量输血、HIV、急诊、免疫重复项目、TAT 统计。
 - 质控分析、定时结果核查、门诊查询、常用电话和本机设置。
@@ -15,7 +15,7 @@ LIS 工作台是基于 C++17、原生 Win32 和 SQL Server ODBC 的 Windows 桌�
 
 需安装可用的 SQL Server ODBC 驱动，并在程序目录配置 `ClientConfig.ini`。现场打印模板与业务资料按需配置。
 
-登录、查询规则、血库手工标签及 TAT 口径见[使用与配置](docs/USAGE.md)；部署与旧客户端升级见[安装与打包说明](packaging/README_windows_installer.md)。
+登录、精简置顶、查询规则、血库手工标签及 TAT 口径见[使用与配置](docs/USAGE.md)；部署与旧客户端升级见[安装与打包说明](packaging/README_windows_installer.md)。
 
 ## 构建
 

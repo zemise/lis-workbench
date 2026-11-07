@@ -23,6 +23,8 @@ struct RegularReportOpenTarget {
 
 constexpr UINT WM_REGULAR_OPEN_REPORT = WM_APP + 175;
 
+bool regular_report_translate_compact_message(MSG* message);
+
 HWND create_regular_report_module(const ModuleContext& ctx);
 
 #endif
