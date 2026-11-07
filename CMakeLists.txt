@@ -64,6 +64,8 @@ add_library(search_core STATIC
     src/login_core.cpp
     src/login_source.cpp
     src/search_core.cpp
+    src/barcode_report_matching.cpp
+    src/barcode_report_query.cpp
     src/search_app.cpp
     src/search_controller.cpp
     src/search_text.cpp
@@ -358,6 +360,10 @@ if(BUILD_TESTING)
     target_link_libraries(transfusion_order_core_tests PRIVATE search_core)
     add_test(NAME transfusion_order_core_tests COMMAND transfusion_order_core_tests)
 
+    add_executable(barcode_report_matching_tests tests/barcode_report_matching_test.cpp)
+    target_link_libraries(barcode_report_matching_tests PRIVATE search_core)
+    add_test(NAME barcode_report_matching_tests COMMAND barcode_report_matching_tests)
+
     add_executable(search_datetime_tests tests/search_datetime_test.cpp)
     target_link_libraries(search_datetime_tests PRIVATE search_core)
     add_test(NAME search_datetime_tests COMMAND search_datetime_tests)
@@ -436,7 +442,7 @@ if(BUILD_TESTING)
     target_link_libraries(login_core_tests PRIVATE search_core)
     add_test(NAME login_core_tests COMMAND login_core_tests)
     if(MINGW)
-        foreach(login_test single_instance_tests login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
+        foreach(login_test barcode_report_matching_tests single_instance_tests login_source_runtime_tests login_source_guard_tests login_core_tests login_source_tests login_adoption_tests login_database_tests login_dialog_tests window_task_tests)
             target_link_options(${login_test} PRIVATE -static -static-libgcc -static-libstdc++)
         endforeach()
     endif()
@@ -456,7 +462,7 @@ if(BUILD_TESTING)
             db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
             microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests
             regular_report_machine_tests
-            scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests
+            scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests barcode_report_matching_tests
             tat_statistics_tests tat_no_log_tests massive_transfusion_core_tests xlsx_writer_tests
             window_task_tests window_task_failure_probe log_tests)
         foreach(test_name IN LISTS LIS_REQUIRED_TESTS)

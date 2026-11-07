@@ -66,7 +66,7 @@ constexpr int IDC_DROPDOWN_LIST = 4510;
 constexpr int FIRST_DATA_COLUMN = 0;
 constexpr int FIRST_SHARED_BARCODE_COLUMN = 0;
 constexpr int LAST_SHARED_BARCODE_COLUMN = 7;
-constexpr int LAST_DATA_COLUMN = 28;
+constexpr int LAST_DATA_COLUMN = 29;
 constexpr int REVIEW_ELAPSED_COLUMN = 16;
 constexpr int FEE_COLUMN = 18;
 constexpr UINT IDM_COPY_CELL = 41201;
@@ -179,9 +179,10 @@ const ListColumn BARCODE_COLUMNS[] = {
     {26, L"取消时间", 140},
     {27, L"取消人", 82},
     {28, L"HZID", 70},
+    {29, L"报告关联", 260},
 };
 
-void runQuery(HWND hwnd, BarcodeState* st);
+void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary = false);
 
 std::string textOf(HWND hwnd) {
     wchar_t buf[512]{};
@@ -1150,6 +1151,7 @@ const std::string& barcodeSortValue(const search::BarcodeQueryRow& row, int col)
         case 26: return row.cancel_time;
         case 27: return row.cancel_operator;
         case 28: return row.hzid;
+        case 29: return row.report_link;
         default: return empty;
     }
 }
@@ -1232,7 +1234,13 @@ const std::string& displayedCellValue(const BarcodeState* st, int displayIndex, 
     if (column >= FIRST_SHARED_BARCODE_COLUMN && column <= LAST_SHARED_BARCODE_COLUMN &&
         displayIndex > 0) {
         const auto* previous = displayedRow(st, displayIndex - 1);
-        if (previous && sameNonEmptyBarcodeGroup(*previous, *row)) return empty;
+        if (previous && sameNonEmptyBarcodeGroup(*previous, *row) &&
+            barcodeSortValue(*previous, column) == barcodeSortValue(*row, column)) {
+            // One barcode can now lead to different reports per order. Keep the
+            // sample number visible at each report boundary, even if both use e.g. 1.
+            if (column != 0 || (previous->report_no == row->report_no &&
+                                previous->machine_code == row->machine_code)) return empty;
+        }
     }
     return barcodeSortValue(*row, column);
 }
@@ -1336,7 +1344,7 @@ void openRegularReportForRow(HWND owner, BarcodeState* st, int index) {
     const auto& row = *displayed;
     if (search::trim(row.report_no).empty() || search::trim(row.machine_code).empty() ||
         search::trim(row.inspect_date).empty()) {
-        MessageBoxW(owner, L"该条码为已签收未上机，无法跳转到常规报告。", WINDOW_TITLE, MB_ICONINFORMATION);
+        MessageBoxW(owner, L"未找到可定位的报告，请查看“报告关联”列核实。", WINDOW_TITLE, MB_ICONINFORMATION);
         return;
     }
 
@@ -1417,23 +1425,24 @@ search::BarcodeQueryFilters collectFilters(BarcodeState* st) {
     return f;
 }
 
-void runQuery(HWND hwnd, BarcodeState* st) {
+void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary) {
     if (!st || st->querying || st->exporting) return;
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
         MessageBoxW(hwnd, L"请先在系统设置中配置数据库连接。", WINDOW_TITLE, MB_ICONWARNING);
         return;
     }
     auto filters = collectFilters(st);
+    filters.refresh_report_dictionary = refresh_dictionary;
     st->querying = true;
     updateActionButtons(st);
     setStatus(st, L"正在查询...");
     showQueryActivity(hwnd, st);
 
     const bool queued = st->queryTask.start<BarcodeQueryResult>(
-        [filters] {
+        [filters](app::WindowTaskContext task) {
             BarcodeQueryResult result;
             result.ok = search::query_barcodes(
-                filters, result.rows, result.error);
+                filters, result.rows, result.error, {}, [task] { return task.cancelled(); });
             return result;
         },
         [hwnd](std::optional<BarcodeQueryResult> result, std::exception_ptr error) {
@@ -1685,7 +1694,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case IDC_QUERY:
                 case IDC_REFRESH:
-                    runQuery(hwnd, st);
+                    runQuery(hwnd, st, LOWORD(wp) == IDC_REFRESH);
                     return 0;
                 case IDC_EXPORT:
                     exportRowsXlsx(hwnd, st);
