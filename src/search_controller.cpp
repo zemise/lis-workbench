@@ -1,6 +1,7 @@
 #include "search_controller.h"
 #include "query_diagnostics.h"
 #include "search_text.h"
+#include "regular_report_machine.h"
 
 namespace search {
 namespace {
@@ -67,7 +68,10 @@ bool load_report_machine_picker_machine_options(const DbSettings& settings, cons
         rows.clear();
         return true;
     }
-    return query_report_machine_picker_machines(connection_string, room_code, rows, error, {});
+    if (!query_report_machine_picker_machines(connection_string, room_code, rows, error, {}))
+        return false;
+    regular_machine::append_blood_manual(rows);
+    return true;
 }
 
 bool load_microbiology_report_machine_picker_machine_options(
@@ -84,14 +88,17 @@ bool load_microbiology_report_machine_picker_machine_options(
 }
 
 bool run_report_query(const DbSettings& settings, const QueryInput& input, std::vector<ReportRow>& rows, std::string& connection_string, std::string& error) {
-    const auto filters = make_query_filters(settings, input);
+    auto filters = make_query_filters(settings, input);
+    filters.mach_code = regular_machine::query_code(input.mach_code);
     connection_string = filters.connection_string;
     if (connection_string.empty()) {
         error = "missing connection string";
         rows.clear();
         return false;
     }
-    return query_reports(filters, rows, error, {});
+    if (!query_reports(filters, rows, error, {})) return false;
+    regular_machine::present_reports(rows, input.mach_code);
+    return true;
 }
 
 bool load_result_rows(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error) {

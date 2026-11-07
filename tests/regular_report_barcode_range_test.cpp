@@ -48,6 +48,17 @@ int main() {
     CHECK(numeric.duplicate_count == 1);
     CHECK(!numeric.candidates[1].default_selected && numeric.candidates[1].duplicate);
 
+    const auto textOnly = regular_barcode::select_range(rows, "1", "10", false);
+    CHECK(textOnly.error.empty() && textOnly.invalid_count == 0);
+    CHECK(textOnly.candidates.size() == numeric.candidates.size());
+    CHECK(textOnly.candidates[2].source_index == 2);
+    CHECK(textOnly.candidates[2].printable && textOnly.candidates[2].default_selected);
+    CHECK(textOnly.duplicate_count == 1);
+    rows[2].view_machine_code = "666";
+    const auto virtualReport = regular_barcode::select_range(rows, "1", "10");
+    CHECK(virtualReport.invalid_count == 0);
+    CHECK(virtualReport.candidates[2].printable);
+
     auto alpha = regular_barcode::select_range(rows, "A2", "A10");
     CHECK(alpha.error.empty() && alpha.candidates.size() == 2);
     CHECK(alpha.candidates[0].source_index == 3 && alpha.candidates[1].source_index == 4);

@@ -1,4 +1,5 @@
 #include "regular_report_barcode_range.h"
+#include "blood_bank_manual.h"
 
 #include <algorithm>
 #include <cctype>
@@ -78,7 +79,7 @@ int compare_sample_numbers(const std::string& leftValue,
 
 RangeSelection select_range(const std::vector<search::ReportRow>& rows,
                             const std::string& firstValue,
-                            const std::string& lastValue) {
+                            const std::string& lastValue, bool require_barcode) {
     RangeSelection result;
     const std::string first = trim(firstValue);
     const std::string last = trim(lastValue);
@@ -100,7 +101,9 @@ RangeSelection select_range(const std::vector<search::ReportRow>& rows,
         }
         RangeCandidate candidate;
         candidate.source_index = index;
-        candidate.printable = !trim(row.txm_no).empty();
+        candidate.printable = !require_barcode ||
+                              trim(row.view_machine_code) == blood_manual::view_code ||
+                              !trim(row.txm_no).empty();
         candidate.default_selected = candidate.printable;
         if (!candidate.printable) {
             candidate.reason = "barcode is empty";

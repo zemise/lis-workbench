@@ -26,6 +26,7 @@ struct RangeSelection {
 int compare_sample_numbers(const std::string& left, const std::string& right);
 RangeSelection select_range(const std::vector<search::ReportRow>& rows,
                             const std::string& first,
-                            const std::string& last);
+                            const std::string& last,
+                            bool require_barcode = true);
 
 }  // namespace regular_barcode

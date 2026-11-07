@@ -8,6 +8,7 @@
 #include "main_app.h"
 #include "log.h"
 #include "regular_report_barcode_range.h"
+#include "regular_report_machine.h"
 #include "regular_report_tracking_window.h"
 #include "resource.h"
 #include "search_controller.h"
@@ -1273,7 +1274,7 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 } else {
                     regularShowTrackingWindow(st->hwnd, st->ctx.uiFont, st->reportConnectionString,
                         st->reportRows[static_cast<size_t>(index)],
-                        st->selectedRoomCode, st->selectedMachineCode);
+                        st->selectedRoomCode, regular_machine::query_code(st->selectedMachineCode));
                 }
                 return 0;
             }
@@ -2692,22 +2693,10 @@ const search::ReportRow* contextReportRow(const RegularReportState* st) {
     return &st->reportRows[static_cast<size_t>(st->contextReportIndex)];
 }
 
-std::string barcodeGroupNameForReport(RegularReportState* st, int idx, std::string& err) {
-    err.clear();
-    if (!st || idx < 0 || idx >= static_cast<int>(st->reportRows.size())) {
-        err = "invalid report row"; return "";
-    }
-    return search::trim(st->reportRows[static_cast<size_t>(idx)].group_name);
-}
-
 search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
-                                                    const std::string& gn) {
-    search::BarcodeLabelPayload p;
-    p.sample_no = r.oper_no; p.test_item = gn; p.barcode_value = r.txm_no;
-    p.patient_name = r.name; p.specimen_type = r.sample_name;
-    p.department = r.dept_name; p.patient_id = r.reg_no;
-    p.timestamp = regularSlashDate(r.chk_date);
-    return p;
+                                                    const std::string& gn,
+                                                    const std::string& machineCode) {
+    return regular_machine::barcode_payload(r, gn, regularSlashDate(r.chk_date), machineCode);
 }
 
 }  // namespace
@@ -2834,15 +2823,8 @@ std::wstring regularPrintBarcodeForContext(RegularReportState* st) {
     const search::ReportRow* row = contextReportRow(st);
     if (!row) return L"请先右键选择一条报告记录。";
 
-    std::string groupError;
-    const std::string barcodeGroupName =
-        barcodeGroupNameForReport(st, st->contextReportIndex, groupError);
-    if (!groupError.empty()) {
-        std::wstring msg = L"打印条码失败：组合项目查询失败。";
-        msg += L"\n" + search::utf8_to_wide(groupError);
-        return msg;
-    }
-    const auto payload = barcodePayloadForReport(*row, barcodeGroupName);
+    const auto payload = barcodePayloadForReport(
+        *row, search::trim(row->group_name), st->selectedMachineCode);
     const std::wstring details = search::barcode_label_details(payload);
 
     if (!search::barcode_label_printing_available()) {
@@ -2976,17 +2958,13 @@ std::wstring regularPrintCheckedBarcodes(RegularReportState* st) {
     payloads.reserve(indexes.size());
     for (int idx : indexes) {
         const auto& report = st->reportRows[static_cast<std::size_t>(idx)];
-        if (search::trim(report.txm_no).empty()) {
+        if (!regular_machine::is_blood_manual_report(report, st->selectedMachineCode) &&
+            search::trim(report.txm_no).empty()) {
             return L"勾选记录中存在条码号为空的报告，请取消勾选后重试。\n样本号：" +
                    search::utf8_to_wide(report.oper_no);
         }
-        std::string groupError;
-        const std::string gn = barcodeGroupNameForReport(st, idx, groupError);
-        if (!groupError.empty()) {
-            return L"批量打印条码失败：组合项目查询失败。\n" +
-                   search::utf8_to_wide(groupError);
-        }
-        payloads.push_back(barcodePayloadForReport(report, gn));
+        payloads.push_back(barcodePayloadForReport(
+            report, search::trim(report.group_name), st->selectedMachineCode));
     }
     std::wstring error = startBarcodeBatch(st, std::move(payloads));
     if (error.empty()) regularClearReportChecks(st);
@@ -3004,6 +2982,7 @@ constexpr int IDC_BATCH_CLEAR = 5465;
 
 struct BatchBarcodeDialogState {
     HFONT font = nullptr;
+    std::string machine_code;
     std::vector<search::ReportRow> rows;
     regular_barcode::RangeSelection selection;
     std::vector<search::BarcodeLabelPayload> payloads;
@@ -3060,7 +3039,8 @@ void populateBatchPreview(BatchBarcodeDialogState* state) {
     state->preview_last = search::trim(
         search::wide_to_utf8(regularWindowText(state->end)));
     state->selection = regular_barcode::select_range(
-        state->rows, state->preview_first, state->preview_last);
+        state->rows, state->preview_first, state->preview_last,
+        !regular_machine::is_blood_manual(state->machine_code));
     state->syncing = true;
     ListView_DeleteAllItems(state->list);
     if (!state->selection.error.empty()) {
@@ -3272,7 +3252,8 @@ LRESULT CALLBACK batchBarcodeDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     if (!candidate.printable) continue;
                     const auto& report = state->rows[candidate.source_index];
                     state->payloads.push_back(
-                        barcodePayloadForReport(report, search::trim(report.group_name)));
+                        barcodePayloadForReport(report, search::trim(report.group_name),
+                                                state->machine_code));
                 }
                 if (state->payloads.empty()) {
                     MessageBoxW(hwnd, L"请至少选择一条可打印记录。",
@@ -3349,6 +3330,7 @@ bool showBatchBarcodeDialog(RegularReportState* st,
     const HWND ownerHwnd = st->hwnd;
     BatchBarcodeDialogState state;
     state.font = st->ctx.uiFont;
+    state.machine_code = st->selectedMachineCode;
     state.rows = st->reportRows;
     const int current = currentReportIndex(st);
     if (current >= 0 && current < static_cast<int>(state.rows.size()))
@@ -3470,7 +3452,7 @@ void regularShowTrendForContext(RegularReportState* st) {
     input.patient_id = patientId;
     input.patient_name = patientName;
     input.room_code = st->selectedRoomCode;
-    input.mach_code = st->selectedMachineCode;
+    input.mach_code = regular_machine::query_code(st->selectedMachineCode);
     input.start_date = regularDateText(startDate);
     input.end_date = regularDateText(endDate);
     input.limit = 0;

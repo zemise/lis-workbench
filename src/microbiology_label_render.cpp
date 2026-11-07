@@ -9,20 +9,20 @@ namespace search {
 namespace {
 
 #ifdef _WIN32
-struct OrderBitmap {
+struct TextBitmap {
     int width_bytes;
     std::string pixels;
 };
 
-OrderBitmap renderOrderBitmap(const labelprint::TextElement& text,
-                              const labelprint::LabelSettings& settings,
-                              const labelprint::PrinterProfile& profile) {
+TextBitmap renderTextBitmap(const labelprint::TextElement& text,
+                            const labelprint::LabelSettings& settings,
+                            const labelprint::PrinterProfile& profile) {
     labelprint::LabelDocument single(settings);
     single.addText(text);
     labelprint::TsplBitmapBackend rasterizer;
     const std::string raster = rasterizer.render(single, profile).asText();
     const auto start = raster.find("BITMAP ");
-    if (start == std::string::npos) throw std::runtime_error("医嘱文字位图生成失败");
+    if (start == std::string::npos) throw std::runtime_error("标签文字位图生成失败");
 
     // Read the five numeric header fields before the binary payload. In
     // particular, do not search for delimiters inside binary pixel data.
@@ -30,20 +30,20 @@ OrderBitmap renderOrderBitmap(const labelprint::TextElement& text,
     std::size_t position = start + 7;
     for (auto& field : fields) {
         const auto comma = raster.find(',', position);
-        if (comma == std::string::npos) throw std::runtime_error("医嘱文字位图格式异常");
+        if (comma == std::string::npos) throw std::runtime_error("标签文字位图格式异常");
         const auto parsed = std::from_chars(raster.data() + position,
                                             raster.data() + comma, field);
         if (parsed.ec != std::errc{} || parsed.ptr != raster.data() + comma)
-            throw std::runtime_error("医嘱文字位图格式异常");
+            throw std::runtime_error("标签文字位图格式异常");
         position = comma + 1;
     }
     const int widthBytes = fields[2];
     const int rasterHeight = fields[3];
     if (widthBytes <= 0 || rasterHeight < text.height || text.height <= 0 || fields[4] != 0)
-        throw std::runtime_error("医嘱文字位图尺寸异常");
+        throw std::runtime_error("标签文字位图尺寸异常");
     const auto rasterBytes = static_cast<std::size_t>(widthBytes) * rasterHeight;
     if (rasterBytes > raster.size() - position)
-        throw std::runtime_error("医嘱文字位图数据不完整");
+        throw std::runtime_error("标签文字位图数据不完整");
 
     // LabelPrint allocates at least eight rows. Keep the requested height;
     // otherwise very small fonts would overlap following order lines.
@@ -78,7 +78,7 @@ labelprint::PrintJob render_microbiology_label(
     for (const auto& t : doc.texts()) {
         if (t.renderMode != labelprint::TextRenderMode::Bitmap) continue;
 #ifdef _WIN32
-        const auto bitmap = renderOrderBitmap(t, doc.settings(), profile);
+        const auto bitmap = renderTextBitmap(t, doc.settings(), profile);
         if (godex) {
             // EZPL Q pattern command: width is bytes; data length = width * height.
             // GoDEX EZPL programming manual, Qx,y,width,height (page 53).
@@ -96,7 +96,7 @@ labelprint::PrintJob render_microbiology_label(
             graphics += "\r\n";
         }
 #else
-        throw std::runtime_error("医嘱文字位图需要 Windows 打印环境");
+        throw std::runtime_error("标签文字位图需要 Windows 打印环境");
 #endif
     }
     if (!graphics.empty()) {
@@ -106,7 +106,7 @@ labelprint::PrintJob render_microbiology_label(
         commands.insert(printAt, graphics);
         job.data.assign(commands.begin(), commands.end());
         job.format = godex ? "ezpl-bitmap" : "tspl-bitmap";
-        job.debugText += "\n// Reduced order text rendered as bitmap\n";
+        job.debugText += "\n// Label text rendered as bitmap\n";
     }
     return job;
 }

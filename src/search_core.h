@@ -77,6 +77,7 @@ struct ReportRow {
     std::string mach_name;
     std::string room_code;
     std::string group_code;           // LS_AS_REPORT.GROUP_CODE，报告项目代码
+    std::string view_machine_code;    // Virtual report view; mach_code retains database identity.
 };
 
 struct RoomOption {

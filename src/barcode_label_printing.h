@@ -1,5 +1,7 @@
 #pragma once
 
+#include "blood_bank_manual.h"
+
 #include <string>
 
 namespace search {
@@ -20,7 +22,15 @@ struct BarcodeLabelPayload {
     std::string order_text;
     std::string sex;
     std::string age;
+    std::string view_machine_code;
 };
+
+// Keep virtual blood-bank labels on the text-only path even if a caller leaves
+// label_template at its default. The physical source instrument is irrelevant.
+inline bool uses_microbiology_label(const BarcodeLabelPayload& payload) {
+    return payload.view_machine_code == blood_manual::view_code ||
+           payload.label_template == BarcodeLabelTemplate::Microbiology;
+}
 
 std::wstring configured_barcode_printer_name();
 const wchar_t* default_barcode_printer_name();

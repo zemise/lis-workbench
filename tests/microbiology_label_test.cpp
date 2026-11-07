@@ -1,5 +1,6 @@
 #include "microbiology_label_template.h"
 #include "microbiology_report_barcode_range.h"
+#include "regular_report_machine.h"
 #include "labelprint/labelprint.h"
 
 #include <iostream>
@@ -154,5 +155,75 @@ int main() {
     CHECK(range.candidates[3].default_selected);
     CHECK(!range.candidates[4].default_selected);
     CHECK(range.candidates[5].default_selected);
+
+    // Blood-bank manual labels use the same text-only renderer on every printer.
+    std::vector<search::ReportRow> manualRows{row};
+    manualRows[0].mach_code = "626";
+    manualRows[0].name = "张三";
+    manualRows[0].reg_no = "202629988";
+    manualRows[0].dept_name = "检验科";
+    manualRows[0].sample_name = "全血";
+    regular_machine::present_reports(manualRows, "666");
+    auto manual = regular_machine::barcode_payload(manualRows[0], manualRows[0].group_name,
+                                                   "2026/11/6", "626");
+    CHECK(manual.label_template == search::BarcodeLabelTemplate::Microbiology);
+    CHECK(search::uses_microbiology_label(manual));
+    CHECK(manual.order_text.empty());
+    // Even stale callers supplying an order must not render it for this view.
+    manual.order_text = row.order_text;
+    // The dispatch layer must also enforce the virtual identity if the enum
+    // defaults to Standard during payload construction.
+    manual.label_template = search::BarcodeLabelTemplate::Standard;
+    CHECK(search::uses_microbiology_label(manual));
+    for (auto model : {labelprint::MedicalLabelPrinterModel::XprinterXp360b,
+                       labelprint::MedicalLabelPrinterModel::ZebraZd888,
+                       labelprint::MedicalLabelPrinterModel::GodexG500u}) {
+        const auto label = search::build_microbiology_label(manual, model);
+        CHECK(label.barcodes().empty());
+        CHECK(label.texts()[0].text == row.oper_no);
+        CHECK(label.texts()[1].text == "PRP");
+        bool nameFound = false, idFound = false, demographicsFound = false;
+        bool departmentFound = false, dateFound = false;
+        for (const auto& t : label.texts()) {
+            CHECK(t.text.find(row.txm_no) == std::string::npos);
+            CHECK(t.text.find("全血") == std::string::npos);
+            CHECK(t.text.find(row.order_text) == std::string::npos);
+            if (t.text == manual.patient_name) {
+                nameFound = true;
+                CHECK(t.x == 5 && t.y == 60 && t.height == 36 && t.width == 24);
+            }
+            if (t.text == manual.patient_id) {
+                idFound = true;
+                CHECK(t.x == 5 && t.y == 115 && t.height == 32 && t.width == 16);
+            }
+            if (t.text == manual.sex + " " + manual.age) {
+                demographicsFound = true;
+                CHECK(t.x == 221 && t.y == 60 && t.height == 36 && t.width == 16);
+            }
+            if (t.text == manual.patient_name || t.text == manual.patient_id ||
+                t.text == manual.sex + " " + manual.age) {
+                CHECK(t.renderMode != labelprint::TextRenderMode::Bitmap);
+            }
+            if (t.text == manual.department) {
+                departmentFound = true;
+                CHECK(t.x == 5 && t.y == 175);
+            }
+            if (t.text == manual.timestamp) {
+                dateFound = true;
+                CHECK(t.x == 183 && t.y == 205);
+            }
+        }
+        CHECK(nameFound && idFound && demographicsFound);
+        CHECK(departmentFound && dateFound);
+        const auto& profile = model == labelprint::MedicalLabelPrinterModel::XprinterXp360b
+            ? labelprint::PrinterProfiles::xprinter_xp360b()
+            : model == labelprint::MedicalLabelPrinterModel::ZebraZd888
+                ? labelprint::PrinterProfiles::zebra_zd888()
+                : labelprint::PrinterProfiles::godex_g500u();
+        const auto commands = search::render_microbiology_label(label, profile).asText();
+        CHECK(commands.find("^BC") == std::string::npos);
+        CHECK(commands.find("BARCODE") == std::string::npos);
+        CHECK(commands.find("BQ,") == std::string::npos);
+    }
     return 0;
 }
