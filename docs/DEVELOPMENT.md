@@ -15,7 +15,7 @@ ctest --test-dir build/native-tests --output-on-failure --no-tests=error --timeo
 
 原生测试需要 Python；Linux 的密码兼容测试还需要 OpenSSL Crypto 开发库，macOS 使用系统 CommonCrypto，Windows 使用系统 BCrypt。没有 PowerShell 时明确排除离线上传脚本测试。Windows UI、WindowTask、ODBC 连接诊断和 LabelPrint 测试必须在 Windows 验证，交叉编译不能替代运行。
 
-正式 Windows CI 配置 `-DBUILD_TESTING=ON -DLIS_REQUIRE_RELEASE_TESTS=ON`，要求 Python、PowerShell 和 LabelPrint，构建 `lis_tests` 后先执行测试清单检查，再运行 Release CTest；缺少必需测试即阻断打包。登录相关测试覆盖只读数据库认证、来源匹配、采用前后核实、登录窗口、暂停恢复及后台任务隔离。真实来源探测与原软件联动验收需在现场 Windows 环境完成；默认测试不连接生产数据库。
+正式 Windows CI 配置 `-DBUILD_TESTING=ON -DLIS_REQUIRE_RELEASE_TESTS=ON`，要求 Python、PowerShell 和 LabelPrint，构建 `lis_tests` 后先执行测试清单检查，再运行 Release CTest；缺少必需测试即阻断打包。登录相关测试覆盖只读数据库认证、来源匹配、采用前后核实、登录窗口、来源复核宽限期、自动换人、超时退出及后台任务隔离。真实来源探测与原软件联动验收需在现场 Windows 环境完成；默认测试不连接生产数据库。
 
 清单检查命令：
 
@@ -44,7 +44,7 @@ ctest --test-dir build/main-app -C Release -R "^regular_report_compact_tests$" -
 
 本次本地验证：MinGW 主程序及窗口回归目标交叉编译通过，常规报告比较、追踪、仪器映射和条码范围 4 项原生核心测试通过。Windows 窗口回归与现场界面验收尚未运行。
 
-现场另需验证：查询中进入/退出置顶、右侧切换报告和自动刷新、失败提示位于置顶窗口上方、操作其他软件时保持可见且不抢焦点、精简窗口任务栏最小化/恢复、多屏不同缩放、反复切换后的滚动位置与列宽，以及会话暂停/恢复、切换账号和退出时无残留窗口。
+现场另需验证：查询中进入/退出置顶、右侧切换报告和自动刷新、失败提示位于置顶窗口上方、操作其他软件时保持可见且不抢焦点、精简窗口任务栏最小化/恢复、多屏不同缩放、反复切换后的滚动位置与列宽，来源恢复时保留页面，以及切换账号和退出时无残留窗口。
 
 ## LIS 启动更新验收
 

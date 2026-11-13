@@ -105,10 +105,8 @@ app::Context g_ctx;
 std::optional<login::Identity> g_identity;
 search::DbSettings g_authenticatedDb;
 bool g_relogin = false;
-bool g_sourcePaused = false;
 login::LoginMode g_loginMode = login::LoginMode::startup;
 std::wstring g_sourceDirectory;
-std::unique_ptr<login::SourceGuard> g_sourceGuard;
 bool authenticatedConnectionChanged() {
   return g_ctx.dbSettings.server != g_authenticatedDb.server ||
          g_ctx.dbSettings.initial_database != g_authenticatedDb.initial_database ||
@@ -1235,7 +1233,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     updateToolbarState();
     break;
   case WM_TIMER: {
-    if (!g_identity || g_sourcePaused) return 0;
+    if (!g_identity) return 0;
     if (wp == ID_TIMER) {
       updateTimePane(hwnd);
     } else if (wp == ID_AUTO_UPDATE_TIMER) {
@@ -1276,7 +1274,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   case WM_COMMAND: {
     int id = LOWORD(wp);
     if (!g_identity) return 0;
-    if (g_sourcePaused && id != IDM_SWITCH_USER && id != IDM_LOGOUT && id != IDM_EXIT) return 0;
 
     // Module registry dispatch
     for (int i = 0; i < g_moduleCount; i++) {
@@ -1349,13 +1346,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       PostMessageW(hwnd, WM_CLOSE, 0, 0);
       return 0;
     }
-    if (g_sourcePaused) return 0;
     start_scheduled_result_check_monitor(hwnd, makeCtx());
     rebuildUiFont(g_ctx.fontSize);
     broadcastSettingsChangedToMdiChildren();
     return 0;
   case WM_SCHEDULED_RESULT_NOTIFICATION:
-    if (!g_sourcePaused) handle_scheduled_result_check_notification(lp);
+    if (g_identity) handle_scheduled_result_check_notification(lp);
     return 0;
   case WM_CLOSE:
     DestroyWindow(hwnd);
@@ -1433,11 +1429,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   RegisterClassExW(&wc);
 
   g_sourceDirectory = search::load_module_str(L"Authentication", L"SourceDirectory", L"");
+  std::optional<login::Identity> nextIdentity;
   do {
-    g_sourcePaused = false;
     g_relogin = false;
-    LOG_INFO("Session login opening");
-    g_identity = login::show_dialog(instance, g_ctx.dbSettings, g_loginMode, g_sourceDirectory);
+    if (nextIdentity) {
+      g_identity = std::move(nextIdentity);
+      nextIdentity.reset();
+    } else {
+      LOG_INFO("Session login opening");
+      g_identity = login::show_dialog(instance, g_ctx.dbSettings, g_loginMode, g_sourceDirectory);
+    }
     if (!g_identity) {
       LOG_INFO("Session login closed outcome=cancelled");
       break;
@@ -1455,36 +1456,62 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ShowWindow(hwnd, SW_MAXIMIZE);
     UpdateWindow(hwnd);
 
+    bool sourceSessionEnding = false;
+    auto endSourceSession = [&](bool relogin) {
+      g_identity.reset();
+      g_relogin = relogin;
+      sourceSessionEnding = true;
+      app::window_task_detail::invalidateSession();
+      // Unwind any modal dialog before the outer loop destroys its owner.
+      PostQuitMessage(0);
+    };
+    std::unique_ptr<login::SourceGuard> sourceGuard;
     if (IsWindow(hwnd) && g_identity && g_identity->adopted_source) {
-      g_sourceGuard = std::make_unique<login::SourceGuard>(hwnd, *g_identity, g_ctx.dbSettings, g_sourceDirectory,
-        [hwnd](bool paused, const login::Identity& identity) {
-          if (!paused && authenticatedConnectionChanged()) {SendMessageW(hwnd, WM_COMMAND, IDM_LOGOUT, 0);return;}
-          g_sourcePaused = paused;
-          if (paused) {
-            pause_scheduled_result_check_monitor();
-            g_manualUpdateTask.cancel();g_autoUpdateTask.cancel();g_manualUpdateChecking = false;
-          } else {
+      sourceGuard = std::make_unique<login::SourceGuard>(
+          *g_identity, g_ctx.dbSettings, g_sourceDirectory,
+          [&](const login::Identity& identity) {
+            if (!g_identity) return;
+            if (authenticatedConnectionChanged()) {
+              g_loginMode = login::LoginMode::manual;
+              endSourceSession(true);
+              return;
+            }
+            if (identity.user_id != g_identity->user_id ||
+                identity.employee_id != g_identity->employee_id) {
+              LOG_INFO("Session transition requested mode=verified_source");
+              nextIdentity = identity;
+              endSourceSession(true);
+              return;
+            }
+            const bool nameChanged = identity.name != g_identity->name;
             g_identity = identity;
-            start_scheduled_result_check_monitor(hwnd, makeCtx());
-            const auto title = L"LIS 工作台 — " + identity.name + L"（采用已有登录）";
-            SetWindowTextW(hwnd, title.c_str());
-            const auto status = L"会话已恢复，可刷新已中断的查询";
-            SendMessageW(GetDlgItem(hwnd, ID_STATUS), SB_SETTEXT, 0, reinterpret_cast<LPARAM>(status));
-          }
-        },[hwnd](int action) {
-          SendMessageW(hwnd, WM_COMMAND, action == 1 ? IDM_SWITCH_USER : action == 2 ? IDM_LOGOUT : IDM_EXIT, 0);
-        });
-      if (!g_sourceGuard->start()) PostMessageW(hwnd, WM_COMMAND, IDM_LOGOUT, 0);
+            if (nameChanged) {
+              const auto title = L"LIS 工作台 — " + identity.name + L"（采用已有登录）";
+              SetWindowTextW(hwnd, title.c_str());
+              setMainStatusText((L"操作员：" + identity.name).c_str());
+            }
+          },
+          [&] {
+            if (!g_identity) return;
+            LOG_INFO("Session login source verification expired");
+            endSourceSession(false);
+          });
+      if (!sourceGuard->start()) endSourceSession(false);
     }
     MSG msg{};
-    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    while (!sourceSessionEnding && IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
       if (!regular_report_translate_compact_message(&msg) &&
           !TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
       }
     }
-    g_sourceGuard.reset();
+    sourceGuard.reset();
+    if (sourceSessionEnding) {
+      // A nested loop may have consumed or reposted the session's quit message.
+      PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE);
+      if (IsWindow(hwnd)) DestroyWindow(hwnd);
+    }
     // Destroy detached report/trend/settings windows as well as the MDI frame.
     // Invalidate all task generations before another user's login loop is created.
     app::window_task_detail::invalidateSession();
