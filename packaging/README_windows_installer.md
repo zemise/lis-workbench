@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.10` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。常用电话 RTF 文件同样不随安装包发布，现场可在 `常用电话` 页面上传，或自行放入安装目录 `documents`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.11.08`，CI 会自动创建或更新同名 GitHub Release，并上传；普通分支 push 和 PR 只生成 Actions artifact，不发布 Release。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.11.13`，CI 会自动创建或更新同名 GitHub Release 并上传产物。普通分支 push 和 PR 只生成 Actions artifact。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -106,7 +106,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.11.08 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.11.13 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
@@ -151,7 +151,7 @@ New-Item -ItemType Directory -Force out\windows\installer
 
 同一 Windows 会话只允许一个工作台实例，重复启动会恢复已有窗口；不同目录的程序副本共用此限制。
 
-启动主程序后必须先通过员工账号登录。登录窗口使用程序目录现有的`ClientConfig.ini`数据库连接，不提供连接设置入口；首次部署应在启动前准备连接配置。输入账号后会显示匹配的员工姓名，取消登录退出程序。认证采用只读查询，不修改账号错误次数、在线状态或密码。已核实的本机来源登录可在启动时自动采用；检测到多个登录来源时由用户选择，切换入口只推荐、不直接提交。采用来源的会话在本机来源锁屏时暂停，同实例同账号解锁后复核恢复；手动认证会话独立。数据库账号级在线机器、端口和在线标志不作为本机采用或恢复的条件，同账号在其他电脑登录或退出不影响本机来源会话。部署时须保证原程序与工作台同库，使用已核实版本，默认自动发现正在运行的来源程序 所在目录；`[Authentication] SourceDirectory` 非空时限制安装目录范围，留空或删除该项启用自动发现。
+启动主程序后必须先通过员工账号登录。登录窗口使用程序目录现有的`ClientConfig.ini`数据库连接，不提供连接设置入口；首次部署应在启动前准备连接配置。输入账号后会显示匹配的员工姓名，取消登录退出程序。认证采用只读查询，不修改账号错误次数、在线状态或密码。已核实的本机来源登录可在启动时自动采用；检测到多个登录来源时由用户选择，切换入口只推荐、不直接提交。采用已有登录后，来源暂时无法核实时工作台继续运行并在后台复核。10 分钟内核实到新账号时自动切换会话，期满仍未核实则直接退出。手动认证会话独立。数据库账号级在线机器、端口和在线标志不作为本机采用或恢复的条件，同账号在其他电脑登录或退出不影响本机来源会话。部署时须保证原程序与工作台同库，使用已核实版本，默认自动发现正在运行的来源程序 所在目录；`[Authentication] SourceDirectory` 非空时限制安装目录范围，留空或删除该项启用自动发现。
 
 
 来源识别要求工作台与来源运行在同一 Windows 用户和会话中。版本或权限不匹配时改用手动登录；不需要安装额外服务。测试构建目录通常没有连接配置，不能直接用该目录启动来判断现场自动采用是否可用。来源目录自动发现设置示例（只有确需限制范围时填写路径）：
@@ -188,7 +188,7 @@ nmake
 
 版本日期使用发布当天（项目按 Asia/Shanghai），首次发布为 `vYYYY.MM.DD`，后续依次 `.1`、`.2`。修订号为 1～999999999 的整数，不补零，不使用 `.0`；不修改已有标签或包内容。主程序、安装包、ZIP、manifest 和 Release 标签必须一致。
 
-当前源码版本为 `v2026.11.08`，发布时使用同名标签。本版新增 LIS 登录前自动更新、常规报告精简置顶及已签收条码的项目覆盖补关联；不需要数据库结构迁移或修改 LIS 数据。规则与操作见[使用说明](../docs/USAGE.md)，验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，不复用旧版本二进制；安装或替换前退出已有工作台进程。
+当前源码版本为 `v2026.11.13`，发布时使用同名标签。本版优化采用已有登录后的来源复核，并将已签收条码查询状态栏的总数改为按条码去重计数，无需迁移数据库。规则与操作见[使用说明](../docs/USAGE.md)，验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，安装或替换前退出已有工作台进程。
 
 旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
 

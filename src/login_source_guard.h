@@ -1,4 +1,5 @@
 #pragma once
+
 #ifdef _WIN32
 #include "app_settings.h"
 #include "login_core.h"
@@ -8,20 +9,18 @@
 
 namespace login {
 
-// Owns monitoring and business suspension for one adopted identity on the UI thread.
-// Manual login does not create a SourceGuard.
+// Rechecks an adopted login in the background. Callbacks run on the UI thread.
 class SourceGuard {
 public:
-    using StateChanged = std::function<void(bool, const Identity&)>;
-    // action: 1=recommend another source, 2=manual login, 3=exit.
-    using Leave = std::function<void(int)>;
+    using Verified = std::function<void(const Identity&)>;
+    using Expired = std::function<void()>;
+    using Clock = std::function<ULONGLONG()>;
 
-    SourceGuard(HWND main, Identity identity, search::DbSettings db,
-                std::wstring directory, StateChanged changed, Leave leave);
+    SourceGuard(Identity identity, search::DbSettings db, std::wstring directory,
+                Verified verified, Expired expired, Clock now = GetTickCount64);
     ~SourceGuard();
 
     bool start();
-    bool paused() const;
 
 private:
     struct Impl;

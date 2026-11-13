@@ -1245,8 +1245,8 @@ const std::string& displayedCellValue(const BarcodeState* st, int displayIndex, 
     return barcodeSortValue(*row, column);
 }
 
-void groupBarcodeRowsForDisplay(BarcodeState* st) {
-    if (!st) return;
+size_t groupBarcodeRowsForDisplay(BarcodeState* st) {
+    if (!st) return 0;
     struct BarcodeRowGroup {
         std::vector<size_t> rowIndexes;
     };
@@ -1279,10 +1279,11 @@ void groupBarcodeRowsForDisplay(BarcodeState* st) {
             st->displayOrder.push_back(rowIndex);
         }
     }
+    return groupIndexes.size();
 }
 
-void sortBarcodeRowsForDisplay(BarcodeState* st) {
-    if (!st) return;
+size_t sortBarcodeRowsForDisplay(BarcodeState* st) {
+    if (!st) return 0;
     st->displayOrder.resize(st->rows.size());
     for (size_t i = 0; i < st->rows.size(); ++i) st->displayOrder[i] = i;
     if (st->listSortColumn >= FIRST_DATA_COLUMN && st->listSortColumn <= LAST_DATA_COLUMN) {
@@ -1294,7 +1295,7 @@ void sortBarcodeRowsForDisplay(BarcodeState* st) {
                              return ascending ? cmp < 0 : cmp > 0;
                          });
     }
-    groupBarcodeRowsForDisplay(st);
+    return groupBarcodeRowsForDisplay(st);
 }
 
 void presentRows(BarcodeState* st) {
@@ -1477,7 +1478,7 @@ void finishQuery(HWND hwnd, BarcodeState* st, std::unique_ptr<BarcodeQueryResult
     }
     st->rows = std::move(result->rows);
     const auto sort_started = std::chrono::steady_clock::now();
-    sortBarcodeRowsForDisplay(st);
+    const size_t barcodeCount = sortBarcodeRowsForDisplay(st);
     const auto list_started = std::chrono::steady_clock::now();
     presentRows(st);
     const auto list_finished = std::chrono::steady_clock::now();
@@ -1492,7 +1493,7 @@ void finishQuery(HWND hwnd, BarcodeState* st, std::unique_ptr<BarcodeQueryResult
     setStatus(st, L"查询完成：院区 " + search::utf8_to_wide(comboText(st->campus)) +
               L"，专业组 " + roomSummary(st) +
               L"，上机状态 " + statusSummary(st) +
-              L"，共 " + std::to_wstring(st->rows.size()) + L" 条。");
+              L"，共 " + std::to_wstring(barcodeCount) + L" 个条码。");
 }
 
 void exportRowsXlsx(HWND hwnd, BarcodeState* st) {
