@@ -20,16 +20,18 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <climits>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <exception>
-#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -64,19 +66,28 @@ constexpr int IDC_ACTIVITY_PANEL = 4126;
 constexpr int IDC_ACTIVITY_LABEL = 4127;
 constexpr int IDC_DROPDOWN_LIST = 4510;
 constexpr int FIRST_DATA_COLUMN = 0;
-constexpr int FIRST_SHARED_BARCODE_COLUMN = 0;
-constexpr int LAST_SHARED_BARCODE_COLUMN = 7;
+constexpr int EMERGENCY_COLUMN = 1;
+constexpr int BARCODE_COLUMN = 2;
+constexpr int ORDER_COLUMN = 11;
 constexpr int LAST_DATA_COLUMN = 29;
 constexpr int REVIEW_ELAPSED_COLUMN = 16;
+constexpr int MACHINE_STATUS_COLUMN = 17;
 constexpr int FEE_COLUMN = 18;
 constexpr UINT IDM_COPY_CELL = 41201;
 const COLORREF COLOR_NOT_MACHINE = RGB(0xFF, 0xFF, 0x54);
 const COLORREF COLOR_LOADED_NOT_REVIEWED = RGB(0xFF, 0xFF, 0xFF);
 const COLORREF COLOR_REVIEWED_NOT_SENT = RGB(0x6F, 0x94, 0xE6);
 const COLORREF COLOR_SENT = RGB(0x99, 0xBB, 0x90);
+const COLORREF COLOR_EMERGENCY_TEXT = RGB(0xCC, 0x00, 0x00);
 const COLORREF COLOR_ALERT_BACKGROUND = RGB(0xFF, 0xE8, 0xE8);
 const COLORREF COLOR_ALERT_TEXT = RGB(0xA4, 0x00, 0x00);
 const COLORREF COLOR_ACTIVITY_BACKGROUND = RGB(0xFF, 0xFF, 0xFF);
+
+struct BarcodeDisplayRow {
+    std::vector<size_t> details;
+    std::vector<std::pair<int, std::string>> mergedCells;
+    bool isEmergency = false;
+};
 
 struct BarcodeState {
     ModuleContext ctx;
@@ -110,7 +121,7 @@ struct BarcodeState {
     std::vector<search::RoomOption> allRooms;
     std::vector<search::RoomOption> rooms;
     std::vector<search::BarcodeQueryRow> rows;
-    std::vector<size_t> displayOrder;
+    std::vector<BarcodeDisplayRow> displayRows;
     std::vector<std::string> selectedRoomCodes;
     std::vector<std::string> selectedMachineStatuses;
     bool roomDropdownOpen = false;
@@ -140,8 +151,8 @@ struct BarcodeExportResult {
     long long elapsedMs = 0;
 };
 
-void finishQuery(HWND hwnd, BarcodeState* st,
-                 std::unique_ptr<BarcodeQueryResult> result);
+void finishQuery(HWND hwnd, BarcodeState* st, BarcodeQueryResult&& result,
+                 std::chrono::steady_clock::time_point started);
 
 struct ListColumn {
     int index;
@@ -151,8 +162,8 @@ struct ListColumn {
 
 const ListColumn BARCODE_COLUMNS[] = {
     {0, L"样本号", 58},
-    {1, L"急诊", 44},
-    {2, L"条形码", 104},
+    {EMERGENCY_COLUMN, L"急诊", 44},
+    {BARCODE_COLUMN, L"条形码", 104},
     {3, L"病人号", 90},
     {4, L"类型", 56},
     {5, L"姓名", 86},
@@ -161,13 +172,13 @@ const ListColumn BARCODE_COLUMNS[] = {
     {8, L"床号", 70},
     {9, L"签收人", 100},
     {10, L"签收时间", 150},
-    {11, L"医嘱内容", 230},
+    {ORDER_COLUMN, L"医嘱内容", 230},
     {12, L"标本", 72},
     {13, L"检验者", 80},
     {14, L"审核者", 80},
     {15, L"审核时间", 150},
     {16, L"签收-审核时间差", 160},
-    {17, L"上机状态", 112},
+    {MACHINE_STATUS_COLUMN, L"上机状态", 112},
     {18, L"费用", 76},
     {19, L"申请医生", 90},
     {20, L"状态", 66},
@@ -1123,8 +1134,8 @@ const std::string& barcodeSortValue(const search::BarcodeQueryRow& row, int col)
     static const std::string empty;
     switch (col) {
         case 0: return row.sample_no;
-        case 1: return row.emergency;
-        case 2: return row.barcode;
+        case EMERGENCY_COLUMN: return row.emergency;
+        case BARCODE_COLUMN: return row.barcode;
         case 3: return row.reg_no;
         case 4: return row.type_name;
         case 5: return row.name;
@@ -1133,13 +1144,13 @@ const std::string& barcodeSortValue(const search::BarcodeQueryRow& row, int col)
         case 8: return row.bed_no;
         case 9: return row.receiver;
         case 10: return row.receive_time;
-        case 11: return row.order_text;
+        case ORDER_COLUMN: return row.order_text;
         case 12: return row.sample_name;
         case 13: return row.tester;
         case 14: return row.reviewer;
         case 15: return row.review_time;
         case 16: return row.review_elapsed;
-        case 17: return row.machine_status;
+        case MACHINE_STATUS_COLUMN: return row.machine_status;
         case 18: return row.fee;
         case 19: return row.request_doctor;
         case 20: return row.status;
@@ -1156,6 +1167,16 @@ const std::string& barcodeSortValue(const search::BarcodeQueryRow& row, int col)
     }
 }
 
+std::string_view trimmedBarcodeValue(std::string_view value) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
 bool parseDouble(const std::string& text, double& value) {
     const std::string trimmed = search::trim(text);
     if (trimmed.empty()) return false;
@@ -1167,8 +1188,8 @@ bool parseDouble(const std::string& text, double& value) {
 int compareBarcodeSortValue(const search::BarcodeQueryRow& a,
                             const search::BarcodeQueryRow& b,
                             int col) {
-    const std::string left = search::trim(barcodeSortValue(a, col));
-    const std::string right = search::trim(barcodeSortValue(b, col));
+    const auto& left = barcodeSortValue(a, col);
+    const auto& right = barcodeSortValue(b, col);
     if (col == REVIEW_ELAPSED_COLUMN) {
         const bool leftValid = a.review_elapsed_seconds >= 0;
         const bool rightValid = b.review_elapsed_seconds >= 0;
@@ -1190,13 +1211,7 @@ int compareBarcodeSortValue(const search::BarcodeQueryRow& a,
         }
         if (lok != rok) return lok ? -1 : 1;
     }
-    if (left < right) return -1;
-    if (left > right) return 1;
-    return 0;
-}
-
-std::string barcodeRowKey(const search::BarcodeQueryRow& row) {
-    return row.barcode + "|" + row.sample_no + "|" + row.reg_no + "|" + row.order_text;
+    return trimmedBarcodeValue(left).compare(trimmedBarcodeValue(right));
 }
 
 void updateActionButtons(BarcodeState* st) {
@@ -1207,101 +1222,109 @@ void updateActionButtons(BarcodeState* st) {
     if (st->exportExcel) EnableWindow(st->exportExcel, idle && !st->rows.empty());
 }
 
-std::string barcodeGroupKey(const search::BarcodeQueryRow& row) {
-    return search::trim(row.barcode);
+const BarcodeDisplayRow* displayedRow(const BarcodeState* st, int index) {
+    if (index < 0 || static_cast<size_t>(index) >= st->displayRows.size()) return nullptr;
+    return &st->displayRows[index];
 }
 
-bool sameNonEmptyBarcodeGroup(const search::BarcodeQueryRow& left,
-                              const search::BarcodeQueryRow& right) {
-    const std::string leftKey = barcodeGroupKey(left);
-    return !leftKey.empty() && leftKey == barcodeGroupKey(right);
+const std::string* mergedBarcodeCell(const BarcodeDisplayRow& group, int column) {
+    const auto cell = std::find_if(group.mergedCells.begin(), group.mergedCells.end(),
+                                  [column](const auto& value) { return value.first == column; });
+    return cell == group.mergedCells.end() ? nullptr : &cell->second;
 }
 
-const search::BarcodeQueryRow* displayedRow(const BarcodeState* st, int displayIndex) {
-    if (!st || displayIndex < 0 ||
-        displayIndex >= static_cast<int>(st->displayOrder.size())) {
-        return nullptr;
-    }
-    const size_t rowIndex = st->displayOrder[static_cast<size_t>(displayIndex)];
-    if (rowIndex >= st->rows.size()) return nullptr;
-    return &st->rows[rowIndex];
-}
-
-const std::string& displayedCellValue(const BarcodeState* st, int displayIndex, int column) {
+const std::string& barcodeCellValue(const BarcodeState* st, const BarcodeDisplayRow& group, int column) {
+    static const std::string emergency = "急";
     static const std::string empty;
-    const auto* row = displayedRow(st, displayIndex);
-    if (!row) return empty;
-    if (column >= FIRST_SHARED_BARCODE_COLUMN && column <= LAST_SHARED_BARCODE_COLUMN &&
-        displayIndex > 0) {
-        const auto* previous = displayedRow(st, displayIndex - 1);
-        if (previous && sameNonEmptyBarcodeGroup(*previous, *row) &&
-            barcodeSortValue(*previous, column) == barcodeSortValue(*row, column)) {
-            // One barcode can now lead to different reports per order. Keep the
-            // sample number visible at each report boundary, even if both use e.g. 1.
-            if (column != 0 || (previous->report_no == row->report_no &&
-                                previous->machine_code == row->machine_code)) return empty;
-        }
-    }
-    return barcodeSortValue(*row, column);
+    if (column == EMERGENCY_COLUMN) return group.isEmergency ? emergency : empty;
+    if (const auto* merged = mergedBarcodeCell(group, column)) return *merged;
+    return barcodeSortValue(st->rows[group.details.front()], column);
 }
 
-size_t groupBarcodeRowsForDisplay(BarcodeState* st) {
-    if (!st) return 0;
-    struct BarcodeRowGroup {
-        std::vector<size_t> rowIndexes;
-    };
+void mergeBarcodeCells(const std::vector<search::BarcodeQueryRow>& rows, BarcodeDisplayRow& group,
+                       std::vector<std::string_view>& values) {
+    const auto& first = rows[group.details.front()];
+    for (int column = FIRST_DATA_COLUMN; column <= LAST_DATA_COLUMN; ++column) {
+        if (column == BARCODE_COLUMN || column == EMERGENCY_COLUMN) continue;
+        const auto& firstValue = barcodeSortValue(first, column);
+        if (column != ORDER_COLUMN &&
+            std::all_of(group.details.begin() + 1, group.details.end(), [&](size_t index) {
+                return barcodeSortValue(rows[index], column) == firstValue;
+            })) continue;
 
-    std::vector<BarcodeRowGroup> groups;
-    groups.reserve(st->displayOrder.size());
+        values.clear();
+        for (const size_t index : group.details) {
+            const std::string_view value = barcodeSortValue(rows[index], column);
+            if (column == ORDER_COLUMN) {
+                if (!value.empty()) values.push_back(value);
+            } else if (std::find(values.begin(), values.end(), value) == values.end()) {
+                values.push_back(value);
+            }
+        }
+        std::string merged;
+        for (const auto value : values) {
+            if (!merged.empty()) merged += column == ORDER_COLUMN ? "/" : "、";
+            merged += value.empty() ? "—" : value;
+        }
+        group.mergedCells.emplace_back(column, std::move(merged));
+    }
+}
+
+size_t buildBarcodeDisplayRows(BarcodeState* st) {
+    st->displayRows.clear();
+    st->displayRows.reserve(st->rows.size());
     std::unordered_map<std::string, size_t> groupIndexes;
-    groupIndexes.reserve(st->displayOrder.size());
-
-    for (const size_t rowIndex : st->displayOrder) {
-        const auto& row = st->rows[rowIndex];
-        const std::string barcode = barcodeGroupKey(row);
+    groupIndexes.reserve(st->rows.size());
+    for (size_t i = 0; i < st->rows.size(); ++i) {
+        auto barcode = search::trim(st->rows[i].barcode);
         if (barcode.empty()) {
-            BarcodeRowGroup group;
-            group.rowIndexes.push_back(rowIndex);
-            groups.push_back(std::move(group));
+            st->displayRows.push_back({{i}, {}});
             continue;
         }
-
-        const auto inserted = groupIndexes.emplace(barcode, groups.size());
-        if (inserted.second) {
-            groups.push_back(BarcodeRowGroup{});
-        }
-        groups[inserted.first->second].rowIndexes.push_back(rowIndex);
+        const auto inserted = groupIndexes.try_emplace(std::move(barcode), st->displayRows.size());
+        if (inserted.second) st->displayRows.emplace_back();
+        auto& group = st->displayRows[inserted.first->second];
+        group.details.push_back(i);
+        group.isEmergency = group.isEmergency || st->rows[i].is_emergency_sample;
     }
-
-    st->displayOrder.clear();
-    for (auto& group : groups) {
-        for (const size_t rowIndex : group.rowIndexes) {
-            st->displayOrder.push_back(rowIndex);
-        }
+    std::vector<std::string_view> values;
+    for (auto& group : st->displayRows) {
+        if (group.details.size() > 1) mergeBarcodeCells(st->rows, group, values);
     }
     return groupIndexes.size();
 }
 
-size_t sortBarcodeRowsForDisplay(BarcodeState* st) {
-    if (!st) return 0;
-    st->displayOrder.resize(st->rows.size());
-    for (size_t i = 0; i < st->rows.size(); ++i) st->displayOrder[i] = i;
-    if (st->listSortColumn >= FIRST_DATA_COLUMN && st->listSortColumn <= LAST_DATA_COLUMN) {
-        const int col = st->listSortColumn;
-        const bool ascending = st->listSortAscending;
-        std::stable_sort(st->displayOrder.begin(), st->displayOrder.end(),
-                         [st, col, ascending](const size_t a, const size_t b) {
-                             const int cmp = compareBarcodeSortValue(st->rows[a], st->rows[b], col);
-                             return ascending ? cmp < 0 : cmp > 0;
-                         });
-    }
-    return groupBarcodeRowsForDisplay(st);
+void sortBarcodeDisplayRows(BarcodeState* st) {
+    const int column = st->listSortColumn;
+    if (column < FIRST_DATA_COLUMN || column > LAST_DATA_COLUMN) return;
+    const bool numeric = column == FEE_COLUMN || column == REVIEW_ELAPSED_COLUMN;
+    std::sort(st->displayRows.begin(), st->displayRows.end(), [st, column, numeric](const auto& a, const auto& b) {
+        const size_t firstA = a.details.front();
+        const size_t firstB = b.details.front();
+        int cmp;
+        if (numeric) {
+            const auto* mergedA = mergedBarcodeCell(a, column);
+            const auto* mergedB = mergedBarcodeCell(b, column);
+            if (mergedA && mergedB) {
+                cmp = mergedA->compare(*mergedB);
+            } else if (mergedA || mergedB) {
+                cmp = mergedA ? 1 : -1;
+            } else {
+                cmp = compareBarcodeSortValue(st->rows[firstA], st->rows[firstB], column);
+            }
+        } else {
+            cmp = trimmedBarcodeValue(barcodeCellValue(st, a, column)).compare(
+                trimmedBarcodeValue(barcodeCellValue(st, b, column)));
+        }
+        if (cmp == 0) return firstA < firstB;
+        return st->listSortAscending ? cmp < 0 : cmp > 0;
+    });
 }
 
 void presentRows(BarcodeState* st) {
     if (!st || !st->list) return;
     SendMessageW(st->list, WM_SETREDRAW, FALSE, 0);
-    ListView_SetItemCountEx(st->list, static_cast<int>(st->displayOrder.size()),
+    ListView_SetItemCountEx(st->list, static_cast<int>(st->displayRows.size()),
                             LVSICF_NOINVALIDATEALL);
     SendMessageW(st->list, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(st->list, nullptr, TRUE);
@@ -1317,46 +1340,70 @@ void sortRowsByColumn(BarcodeState* st, int col) {
         st->listSortAscending = true;
     }
 
-    std::string selectedKey;
     const int selected = ListView_GetNextItem(st->list, -1, LVNI_SELECTED);
-    if (const auto* row = displayedRow(st, selected)) {
-        selectedKey = barcodeRowKey(*row);
-    }
+    const auto* group = displayedRow(st, selected);
+    const size_t selectedDetail = group ? group->details.front() : st->rows.size();
 
-    sortBarcodeRowsForDisplay(st);
+    sortBarcodeDisplayRows(st);
     presentRows(st);
 
-    if (!selectedKey.empty()) {
-        for (int i = 0; i < static_cast<int>(st->displayOrder.size()); ++i) {
-            const auto* row = displayedRow(st, i);
-            if (row && barcodeRowKey(*row) == selectedKey) {
-                ListView_SetItemState(st->list, i, LVIS_SELECTED | LVIS_FOCUSED,
-                                      LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(st->list, i, FALSE);
-                break;
-            }
-        }
+    if (selectedDetail == st->rows.size()) return;
+    const auto it = std::find_if(st->displayRows.begin(), st->displayRows.end(),
+                                 [selectedDetail](const auto& row) {
+                                     return row.details.front() == selectedDetail;
+                                 });
+    if (it != st->displayRows.end()) {
+        const int index = static_cast<int>(it - st->displayRows.begin());
+        ListView_SetItemState(st->list, index, LVIS_SELECTED | LVIS_FOCUSED,
+                              LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(st->list, index, FALSE);
     }
 }
 
 void openRegularReportForRow(HWND owner, BarcodeState* st, int index) {
-    const auto* displayed = displayedRow(st, index);
-    if (!displayed) return;
-    const auto& row = *displayed;
-    if (search::trim(row.report_no).empty() || search::trim(row.machine_code).empty() ||
-        search::trim(row.inspect_date).empty()) {
+    const auto* group = displayedRow(st, index);
+    if (!group) return;
+    std::vector<RegularReportOpenTarget> reports;
+    for (const size_t detail : group->details) {
+        const auto& row = st->rows[detail];
+        RegularReportOpenTarget target;
+        target.rep_no = search::trim(row.report_no);
+        target.mach_code = search::trim(row.machine_code);
+        target.inspect_date = search::trim(row.inspect_date);
+        if (target.rep_no.empty() || target.mach_code.empty() || target.inspect_date.empty()) continue;
+        const auto existing = std::find_if(reports.begin(), reports.end(), [&](const auto& report) {
+            return report.rep_no == target.rep_no;
+        });
+        if (existing != reports.end()) continue;
+        target.oper_no = search::trim(row.sample_no);
+        target.mach_name = search::trim(row.machine_name);
+        target.room_code = search::trim(row.room_code);
+        reports.push_back(std::move(target));
+    }
+    if (reports.empty()) {
         MessageBoxW(owner, L"未找到可定位的报告，请查看“报告关联”列核实。", WINDOW_TITLE, MB_ICONINFORMATION);
         return;
     }
 
-    auto* target = new RegularReportOpenTarget;
-    target->rep_no = search::trim(row.report_no);
-    target->oper_no = search::trim(row.sample_no);
-    target->inspect_date = search::trim(row.inspect_date);
-    target->mach_code = search::trim(row.machine_code);
-    target->mach_name = search::trim(row.machine_name);
-    target->room_code = search::trim(row.room_code);
+    UINT selected = 1;
+    if (reports.size() > 1) {
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return;
+        for (size_t i = 0; i < reports.size(); ++i) {
+            const auto& report = reports[i];
+            const std::wstring label = L"打开报告 " + search::utf8_to_wide(report.rep_no);
+            AppendMenuW(menu, MF_STRING, i + 1, label.c_str());
+        }
+        POINT point{};
+        GetCursorPos(&point);
+        selected = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+                                  point.x, point.y, 0, owner, nullptr);
+        DestroyMenu(menu);
+        if (selected == 0 || selected > reports.size() ||
+            GetPropW(owner, PROP_STATE) != reinterpret_cast<HANDLE>(st)) return;
+    }
 
+    auto* target = new RegularReportOpenTarget(std::move(reports[selected - 1]));
     HWND regular = create_regular_report_module(st->ctx);
     if (!regular || !PostMessageW(regular, WM_REGULAR_OPEN_REPORT, 0, reinterpret_cast<LPARAM>(target))) {
         delete target;
@@ -1374,8 +1421,8 @@ void showCellContextMenu(HWND hwnd, BarcodeState* st) {
     LVHITTESTINFO hit{};
     hit.pt = listPt;
     const int row = ListView_SubItemHitTest(st->list, &hit);
-    if (row < 0 || row >= static_cast<int>(st->displayOrder.size()) ||
-        hit.iSubItem < FIRST_DATA_COLUMN || hit.iSubItem > LAST_DATA_COLUMN) {
+    const auto* displayed = displayedRow(st, row);
+    if (!displayed || hit.iSubItem < FIRST_DATA_COLUMN || hit.iSubItem > LAST_DATA_COLUMN) {
         return;
     }
 
@@ -1383,9 +1430,7 @@ void showCellContextMenu(HWND hwnd, BarcodeState* st) {
     ListView_SetItemState(st->list, row, LVIS_SELECTED | LVIS_FOCUSED,
                           LVIS_SELECTED | LVIS_FOCUSED);
 
-    const auto* displayed = displayedRow(st, row);
-    if (!displayed) return;
-    const std::wstring text = search::utf8_to_wide(barcodeSortValue(*displayed, hit.iSubItem));
+    const std::wstring text = search::utf8_to_wide(barcodeCellValue(st, *displayed, hit.iSubItem));
     const std::wstring menuLabel = search::copy_menu_label(text);
 
     HMENU menu = CreatePopupMenu();
@@ -1428,6 +1473,7 @@ search::BarcodeQueryFilters collectFilters(BarcodeState* st) {
 
 void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary) {
     if (!st || st->querying || st->exporting) return;
+    const auto started = std::chrono::steady_clock::now();
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) {
         MessageBoxW(hwnd, L"请先在系统设置中配置数据库连接。", WINDOW_TITLE, MB_ICONWARNING);
         return;
@@ -1446,7 +1492,7 @@ void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary) {
                 filters, result.rows, result.error, {}, [task] { return task.cancelled(); });
             return result;
         },
-        [hwnd](std::optional<BarcodeQueryResult> result, std::exception_ptr error) {
+        [hwnd, started](std::optional<BarcodeQueryResult> result, std::exception_ptr error) {
             auto* state = reinterpret_cast<BarcodeState*>(GetPropW(hwnd, PROP_STATE));
             if (!state) return;
             if (error || !result) {
@@ -1457,8 +1503,7 @@ void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary) {
                 LOG_ERROR("Barcode query task failed");
                 return;
             }
-            finishQuery(hwnd, state,
-                std::make_unique<BarcodeQueryResult>(std::move(*result)));
+            finishQuery(hwnd, state, std::move(*result), started);
         });
     if (!queued) {
         st->querying = false;
@@ -1468,32 +1513,42 @@ void runQuery(HWND hwnd, BarcodeState* st, bool refresh_dictionary) {
     }
 }
 
-void finishQuery(HWND hwnd, BarcodeState* st, std::unique_ptr<BarcodeQueryResult> result) {
+void finishQuery(HWND hwnd, BarcodeState* st, BarcodeQueryResult&& result,
+                 std::chrono::steady_clock::time_point started) {
     st->querying = false;
     hideActivity(hwnd, st);
-    if (!result->ok) {
-        showAlert(st, L"查询失败：" + search::utf8_to_wide(result->error));
+    if (!result.ok) {
+        showAlert(st, L"查询失败：" + search::utf8_to_wide(result.error));
         updateActionButtons(st);
         return;
     }
-    st->rows = std::move(result->rows);
+    const auto group_started = std::chrono::steady_clock::now();
+    st->rows = std::move(result.rows);
+    const size_t barcodeCount = buildBarcodeDisplayRows(st);
     const auto sort_started = std::chrono::steady_clock::now();
-    const size_t barcodeCount = sortBarcodeRowsForDisplay(st);
+    sortBarcodeDisplayRows(st);
     const auto list_started = std::chrono::steady_clock::now();
     presentRows(st);
     const auto list_finished = std::chrono::steady_clock::now();
     const auto sort_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         list_started - sort_started).count();
+    const auto group_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        sort_started - group_started).count();
     const auto list_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         list_finished - list_started).count();
-    LOG_DEBUG("barcode UI timing: sort_ms=" + std::to_string(sort_ms) +
-              ", listview_ms=" + std::to_string(list_ms) +
-              ", rows=" + std::to_string(st->rows.size()));
     updateActionButtons(st);
     setStatus(st, L"查询完成：院区 " + search::utf8_to_wide(comboText(st->campus)) +
               L"，专业组 " + roomSummary(st) +
               L"，上机状态 " + statusSummary(st) +
               L"，共 " + std::to_wstring(barcodeCount) + L" 个条码。");
+    const auto ready_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    LOG_DEBUG("barcode UI timing: query_to_ready_ms=" + std::to_string(ready_ms) +
+              ", group_ms=" + std::to_string(group_ms) +
+              ", sort_ms=" + std::to_string(sort_ms) +
+              ", listview_ms=" + std::to_string(list_ms) +
+              ", rows=" + std::to_string(st->rows.size()) +
+              ", display_rows=" + std::to_string(st->displayRows.size()));
 }
 
 void exportRowsXlsx(HWND hwnd, BarcodeState* st) {
@@ -1508,13 +1563,17 @@ void exportRowsXlsx(HWND hwnd, BarcodeState* st) {
 
     st->exporting = true;
     updateActionButtons(st);
-    setStatus(st, L"正在导出全部 " + std::to_wstring(st->displayOrder.size()) + L" 条记录...");
-    showExportActivity(hwnd, st, st->displayOrder.size());
+    setStatus(st, L"正在导出全部 " + std::to_wstring(st->rows.size()) + L" 条记录...");
+    showExportActivity(hwnd, st, st->rows.size());
 
-    const std::vector<size_t> exportOrder = st->displayOrder;
+    std::vector<size_t> exportOrder;
+    exportOrder.reserve(st->rows.size());
+    for (const auto& group : st->displayRows) {
+        exportOrder.insert(exportOrder.end(), group.details.begin(), group.details.end());
+    }
     const std::vector<search::BarcodeQueryRow> exportRows = st->rows;
     const bool queued = st->exportTask.start<BarcodeExportResult>(
-        [hwnd, path, exportOrder, exportRows](app::WindowTaskContext task) {
+        [hwnd, path, exportOrder = std::move(exportOrder), exportRows](app::WindowTaskContext task) {
             const auto started = std::chrono::steady_clock::now();
             BarcodeExportResult result;
             result.path = path;
@@ -1715,8 +1774,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     auto* info = reinterpret_cast<NMLVDISPINFOW*>(lp);
                     if ((info->item.mask & LVIF_TEXT) && info->item.pszText &&
                         info->item.cchTextMax > 0) {
-                        const auto text = search::utf8_to_wide(
-                            displayedCellValue(st, info->item.iItem, info->item.iSubItem));
+                        const auto* group = displayedRow(st, info->item.iItem);
+                        const auto text = group ? search::utf8_to_wide(
+                            barcodeCellValue(st, *group, info->item.iSubItem)) : std::wstring{};
                         lstrcpynW(info->item.pszText, text.c_str(), info->item.cchTextMax);
                     }
                     return 0;
@@ -1732,17 +1792,27 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 if (nm->idFrom == IDC_LIST && nm->code == NM_DBLCLK) {
                     auto* item = reinterpret_cast<NMITEMACTIVATE*>(lp);
-                    openRegularReportForRow(hwnd, st, item ? item->iItem : -1);
+                    LVHITTESTINFO hit{};
+                    hit.pt = item->ptAction;
+                    openRegularReportForRow(hwnd, st, ListView_SubItemHitTest(st->list, &hit));
                     return 0;
                 }
                 if (nm->idFrom == IDC_LIST && nm->code == NM_CUSTOMDRAW) {
                     auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
                     if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
-                    if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    const bool itemPaint = cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT;
+                    const bool subitemPaint = cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM);
+                    if (itemPaint || subitemPaint) {
                         const int idx = static_cast<int>(cd->nmcd.dwItemSpec);
                         if (const auto* row = displayedRow(st, idx)) {
-                            cd->clrTextBk = rowColor(*row);
-                            cd->clrText = RGB(0, 0, 0);
+                            cd->clrTextBk = mergedBarcodeCell(*row, MACHINE_STATUS_COLUMN)
+                                ? GetSysColor(COLOR_WINDOW)
+                                : rowColor(st->rows[row->details.front()]);
+                            cd->clrText = subitemPaint && cd->iSubItem == EMERGENCY_COLUMN && row->isEmergency
+                                ? COLOR_EMERGENCY_TEXT : RGB(0, 0, 0);
+                            if (itemPaint && row->isEmergency) {
+                                return CDRF_NEWFONT | CDRF_NOTIFYSUBITEMDRAW;
+                            }
                         }
                         return CDRF_NEWFONT;
                     }

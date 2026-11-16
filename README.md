@@ -48,4 +48,4 @@ ctest --test-dir build/native-tests --output-on-failure --no-tests=error --timeo
 - [变更日志](CHANGELOG.md)：版本与功能变化。
 - 本地设计资料入口：`docs/private/README.md`；不随 Git 或发布包分发，需单独备份。
 
-当前源码版本为 `v2026.11.13`，以 [src/version.h](src/version.h) 为准。构建产物、本机配置和私密排查资料由 `.gitignore` 排除。
+当前源码版本为 `v2026.11.16`，以 [src/version.h](src/version.h) 为准。构建产物、本机配置和私密排查资料由 `.gitignore` 排除。
