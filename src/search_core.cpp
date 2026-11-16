@@ -838,6 +838,11 @@ const char* barcode_machine_status_sql() {
            " ELSE '' END";
 }
 
+constexpr char kEmergencyReportSql[] = "r.assaypat_type='0'";
+constexpr char kEmergencyBarcodeExistsSql[] =
+    "EXISTS (SELECT 1 FROM LS_AS_BARCODE be WITH (NOLOCK)"
+    " WHERE isnull(be.DELETE_BIT,0)=0 AND be.BARCODE=b.BARCODE AND isnull(be.JZ_FLAG,0)=1)";
+
 void fill_if_empty(std::string& target, const std::string& value) {
     if (trim(target).empty() && !trim(value).empty()) {
         target = value;
@@ -2504,11 +2509,15 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
         << "isnull(LTRIM(RTRIM(CONVERT(varchar(20),rd.ROOM_CODE))),'') AS room_code,"
         << "isnull(CONVERT(varchar(19),rd.CHK_DATE,120),'') AS inspect_date"
         << ",b.TYPE,b.MACH_CODE,b.GROUP_CODE,b.HOITEM_ID,b.ROOM_CODE"
+        << ",CASE WHEN NULLIF(LTRIM(RTRIM(b.BARCODE)),'') IS NOT NULL"
+        << " AND (isnull(rs.REPORT_EMERGENCY,0)=1 OR " << kEmergencyBarcodeExistsSql << ")"
+        << " THEN '1' ELSE '0' END AS is_emergency_sample"
         << " FROM LS_AS_BARCODE b WITH (NOLOCK)"
         << " OUTER APPLY (SELECT"
         << " MAX(CASE WHEN NULLIF(LTRIM(RTRIM(CONVERT(varchar(30),r.REP_NO))),'') IS NOT NULL THEN 1 ELSE 0 END) AS HAS_REPORT,"
         << " MAX(CASE WHEN LTRIM(RTRIM(isnull(r.CHK_FLAG,'')))='T' THEN 1 ELSE 0 END) AS REPORT_REVIEWED,"
-        << " MAX(CASE WHEN LTRIM(RTRIM(isnull(r.CONF,'')))='S' THEN 1 ELSE 0 END) AS REPORT_SENT"
+        << " MAX(CASE WHEN LTRIM(RTRIM(isnull(r.CONF,'')))='S' THEN 1 ELSE 0 END) AS REPORT_SENT,"
+        << " MAX(CASE WHEN " << kEmergencyReportSql << " THEN 1 ELSE 0 END) AS REPORT_EMERGENCY"
         << " FROM LS_AS_REPORT r WITH (NOLOCK)"
         << " WHERE isnull(r.DELETE_BIT,0)=0"
         << " AND r.TXM_NO=b.BARCODE) rs"
@@ -2527,10 +2536,12 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
 
     if (log) log(std::string("query=") + __func__ + " event=execute\n");
 
+    const auto main_query_started = std::chrono::steady_clock::now();
     SQLHSTMT stmt = SQL_NULL_HSTMT;
     if (!exec_query(db.dbc, sql.str(), stmt, error)) { return false; }
 
     std::vector<BarcodeMatchSource> match_sources;
+    std::vector<std::string> columns;
     bool read_ok = true;
     while (true) {
         if (cancelled && cancelled()) { error = "查询已取消。"; read_ok = false; break; }
@@ -2540,60 +2551,62 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
             error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
             read_ok = false; break;
         }
-        std::vector<std::string> columns;
-        if (!read_barcode_columns(stmt, 38, columns, error)) { read_ok = false; break; }
+        if (!read_barcode_columns(stmt, 39, columns, error)) { read_ok = false; break; }
         BarcodeQueryRow row;
-        row.sample_no      = columns[0];
-        row.emergency      = columns[1];
-        row.barcode        = columns[2];
-        row.reg_no         = columns[3];
-        row.type_name      = columns[4];
-        row.name           = columns[5];
-        row.sex            = columns[6];
-        row.dept_name      = columns[7];
-        row.bed_no         = columns[8];
-        row.receiver       = columns[9];
-        row.receive_time   = columns[10];
-        row.order_text     = columns[11];
-        row.sample_name    = columns[12];
-        const std::string tester_code = columns[13];
-        const std::string reviewer_code = columns[14];
+        row.sample_no      = std::move(columns[0]);
+        row.emergency      = std::move(columns[1]);
+        row.barcode        = std::move(columns[2]);
+        row.reg_no         = std::move(columns[3]);
+        row.type_name      = std::move(columns[4]);
+        row.name           = std::move(columns[5]);
+        row.sex            = std::move(columns[6]);
+        row.dept_name      = std::move(columns[7]);
+        row.bed_no         = std::move(columns[8]);
+        row.receiver       = std::move(columns[9]);
+        row.receive_time   = std::move(columns[10]);
+        row.order_text     = std::move(columns[11]);
+        row.sample_name    = std::move(columns[12]);
+        const auto& tester_code = columns[13];
+        const auto& reviewer_code = columns[14];
         const auto tester_name = employee_names->find(tester_code);
         const auto reviewer_name = employee_names->find(reviewer_code);
         row.tester         = employee_display_name(
             tester_code, tester_name != employee_names->end() ? tester_name->second : "");
         row.reviewer       = employee_display_name(
             reviewer_code, reviewer_name != employee_names->end() ? reviewer_name->second : "");
-        row.review_time    = columns[15];
-        row.fee            = columns[16];
-        row.request_doctor = columns[17];
-        row.status         = columns[18];
-        row.note           = columns[19];
-        row.reason         = columns[20];
-        row.submitter      = columns[21];
-        row.submit_time    = columns[22];
-        row.request_time   = columns[23];
-        row.cancel_time    = columns[24];
-        row.cancel_operator = columns[25];
-        row.hzid           = columns[26];
-        row.machine_status = columns[27];
-        row.report_no      = columns[28];
-        row.machine_code   = columns[29];
-        row.machine_name   = columns[30];
-        row.room_code      = columns[31];
-        row.inspect_date   = columns[32];
+        row.review_time    = std::move(columns[15]);
+        row.fee            = std::move(columns[16]);
+        row.request_doctor = std::move(columns[17]);
+        row.status         = std::move(columns[18]);
+        row.note           = std::move(columns[19]);
+        row.reason         = std::move(columns[20]);
+        row.submitter      = std::move(columns[21]);
+        row.submit_time    = std::move(columns[22]);
+        row.request_time   = std::move(columns[23]);
+        row.cancel_time    = std::move(columns[24]);
+        row.cancel_operator = std::move(columns[25]);
+        row.hzid           = std::move(columns[26]);
+        row.machine_status = std::move(columns[27]);
+        row.report_no      = std::move(columns[28]);
+        row.machine_code   = std::move(columns[29]);
+        row.machine_name   = std::move(columns[30]);
+        row.room_code      = std::move(columns[31]);
+        row.inspect_date   = std::move(columns[32]);
+        row.is_emergency_sample = columns[38] == "1";
         if (!campus_matches(row.dept_name)) continue;
-        match_sources.push_back({row.barcode, row.reg_no, columns[33], columns[34], columns[37],
-                                 columns[35], columns[36], row.receive_time});
+        match_sources.push_back({row.barcode, row.reg_no, std::move(columns[33]),
+                                 std::move(columns[34]), std::move(columns[37]),
+                                 std::move(columns[35]), std::move(columns[36]), row.receive_time});
         rows.push_back(std::move(row));
     }
 
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     if (!read_ok) { rows.clear(); return false; }
-    const auto coverage_started = std::chrono::steady_clock::now();
+    const auto main_query_finished = std::chrono::steady_clock::now();
     if (!supplement_barcode_reports(db.dbc, filters, match_sources, rows, error, cancelled)) {
         rows.clear(); return false;
     }
+    const auto coverage_finished = std::chrono::steady_clock::now();
     // The provider returns raw employee codes for recovered reports. Use the same
     // dictionary/fallback as directly associated reports, without caching statuses.
     for (auto& row : rows) {
@@ -2635,9 +2648,9 @@ bool query_barcodes(const BarcodeQueryFilters& filters, std::vector<BarcodeQuery
         const auto employee_dictionary_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             employee_dictionary_finished - employee_dictionary_started).count();
         const auto main_query_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            database_finished - employee_dictionary_finished).count();
+            main_query_finished - main_query_started).count();
         const auto coverage_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            database_finished - coverage_started).count();
+            coverage_finished - main_query_finished).count();
         log("barcode report matching: duration_ms=" + std::to_string(coverage_ms) + "\n");
         log("barcode query timing: database_and_fetch_ms=" + std::to_string(database_ms) +
             ", main_query_and_fetch_ms=" + std::to_string(main_query_ms) +
@@ -3597,7 +3610,7 @@ bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSu
         << "SELECT"
         << " LTRIM(RTRIM(b.BARCODE)) AS BARCODE,"
         << " CAST(CASE WHEN isnull(b.JZ_FLAG,0)=1 THEN 1 ELSE 0 END AS varchar(10)) AS BARCODE_EMERGENCY,"
-        << " CAST(CASE WHEN r.assaypat_type='0' THEN 1 ELSE 0 END AS varchar(10)) AS REPORT_EMERGENCY,"
+        << " CAST(CASE WHEN " << kEmergencyReportSql << " THEN 1 ELSE 0 END AS varchar(10)) AS REPORT_EMERGENCY,"
         << " isnull(CONVERT(varchar(19),b.IN_DATE,120),'') AS IN_DATE,"
         << " isnull(CONVERT(varchar(19),r.REP_DATE,120),'') AS REQ_TIME,"
         << " isnull(CONVERT(varchar(20),b.OPER_STATE),'') AS OPER_STATE,"
@@ -3633,10 +3646,7 @@ bool query_emergency_statistics(const EmergencyStatQuery& query, EmergencyStatSu
         << " AND " << date_column << ">='" << sql_escape(start_time) << "'"
         << " AND " << date_column << "<DATEADD(minute,1,'" << sql_escape(end_time) << "')"
         << " AND b.CANCEL_DATE IS NULL"
-        << " AND (r.assaypat_type='0' OR EXISTS ("
-        << " SELECT 1 FROM LS_AS_BARCODE be WITH (NOLOCK)"
-        << " WHERE isnull(be.DELETE_BIT,0)=0 AND be.BARCODE=b.BARCODE AND isnull(be.JZ_FLAG,0)=1"
-        << " ))"
+        << " AND (" << kEmergencyReportSql << " OR " << kEmergencyBarcodeExistsSql << ")"
         << " ORDER BY LTRIM(RTRIM(b.BARCODE)), b.ID";
 
     if (log) {

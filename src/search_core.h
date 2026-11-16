@@ -265,7 +265,7 @@ struct BloodCrossMatchRow {
 
 struct BarcodeQueryRow {
     std::string sample_no;       // 样本号（OPER_NO）
-    std::string emergency;       // 急诊
+    std::string emergency;       // 原始 JZ_FLAG，用于明细导出
     std::string barcode;         // 条形码
     std::string reg_no;          // 病人号
     std::string type_name;       // 类型
@@ -300,6 +300,7 @@ struct BarcodeQueryRow {
     std::string room_code;       // 跳转常规报告用 ROOM_CODE
     std::string inspect_date;    // 跳转常规报告用 CHK_DATE
     std::string report_link;     // 主条码/项目匹配关联，或未采用候选的原因
+    bool is_emergency_sample = false; // 按急诊样本统计的条码级口径
 };
 
 struct BarcodeQueryFilters {
