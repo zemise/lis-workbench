@@ -1,13 +1,16 @@
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
+from subprocess import CompletedProcess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +18,56 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("packager", ROOT / "scripts/db_update_package.py")
 packager = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packager)
+
+
+class ReleaseApiTests(unittest.TestCase):
+    def test_uses_saved_gh_login(self):
+        result = CompletedProcess([], 0, stdout=b'{"id": 42}', stderr=b'')
+        with patch.dict(packager.os.environ, {}, clear=True), \
+                patch.object(packager.shutil, "which", return_value="gh"), \
+                patch.object(packager.subprocess, "run", return_value=result) as run, \
+                patch.object(packager.urllib.request, "urlopen") as open_url:
+            self.assertEqual(packager.api("releases/latest"), {"id": 42})
+        self.assertEqual(run.call_args.args[0],
+                         ["gh", "api", "--hostname", "github.com", f"repos/{packager.REPO}/releases/latest"])
+        open_url.assert_not_called()
+
+    def test_uses_explicit_token_without_gh(self):
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            with self.subTest(key=key), patch.dict(packager.os.environ, {key: "example-token"}, clear=True), \
+                    patch.object(packager.shutil, "which") as which, \
+                    patch.object(packager.urllib.request, "urlopen", return_value=io.BytesIO(b'{"id": 42}')) as open_url:
+                self.assertEqual(packager.api("releases/latest"), {"id": 42})
+                which.assert_not_called()
+                request = open_url.call_args.args[0]
+                self.assertEqual(request.unredirected_hdrs["Authorization"], "Bearer example-token")
+
+    def test_unauthenticated_gh_uses_public_api(self):
+        result = CompletedProcess([], 4, stdout=b'', stderr=b'Authentication required')
+        with patch.dict(packager.os.environ, {}, clear=True), \
+                patch.object(packager.shutil, "which", return_value="gh"), \
+                patch.object(packager.subprocess, "run", return_value=result), \
+                patch.object(packager.urllib.request, "urlopen", return_value=io.BytesIO(b'{"id": 42}')) as open_url:
+            self.assertEqual(packager.api("releases/latest"), {"id": 42})
+        self.assertFalse(open_url.call_args.args[0].has_header("Authorization"))
+
+    def test_rate_limit_provides_login_hint(self):
+        limited = HTTPError("https://api.github.com", 403, "Forbidden", {"X-RateLimit-Remaining": "0"}, None)
+        with patch.dict(packager.os.environ, {}, clear=True), \
+                patch.object(packager.shutil, "which", return_value=None), \
+                patch.object(packager.urllib.request, "urlopen", side_effect=limited):
+            with self.assertRaisesRegex(RuntimeError, "gh auth login"):
+                packager.api("releases/latest")
+
+    def test_rate_limited_gh_does_not_fall_back_to_anonymous_api(self):
+        result = CompletedProcess([], 1, stdout=b'', stderr=b'gh: API rate limit exceeded (HTTP 403)')
+        with patch.dict(packager.os.environ, {}, clear=True), \
+                patch.object(packager.shutil, "which", return_value="gh"), \
+                patch.object(packager.subprocess, "run", return_value=result), \
+                patch.object(packager.urllib.request, "urlopen") as open_url:
+            with self.assertRaisesRegex(RuntimeError, "rate limit"):
+                packager.api("releases/latest")
+        open_url.assert_not_called()
 
 
 class PackageTests(unittest.TestCase):

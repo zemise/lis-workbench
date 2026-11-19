@@ -68,7 +68,7 @@ constexpr int REGULAR_IDC_COMPARISON_LIST = 5230;
 void layout(HWND hwnd, RegularReportState* st);
 void enterCompactMode(RegularReportState* st);
 void leaveCompactMode(RegularReportState* st, bool activate = true);
-void updateCompactSummary(RegularReportState* st, int selected);
+void updateCompactSummary(RegularReportState* st);
 void resetComparison(RegularReportState* st);
 void loadComparison(RegularReportState* st);
 void setCell(HWND list, int row, int col, const wchar_t* text);
@@ -102,8 +102,20 @@ int compactRightWidth(HWND hwnd) {
     return regularS(hwnd, REGULAR_COMPACT_TOOLBAR_W + REGULAR_PAD * 2) +
            GetSystemMetrics(SM_CXEDGE) * 2;
 }
-int compactMinWidth(HWND hwnd) { return regularS(hwnd, 360 + REGULAR_GAP) + compactRightWidth(hwnd); }
-bool compactReportColumnVisible(int column) { return column >= 1 && column <= 5; }
+int compactMinWidth(HWND hwnd) { return regularS(hwnd, 200 + REGULAR_GAP) + compactRightWidth(hwnd); }
+bool compactReportColumnVisible(int column) { return column >= 1 && column <= 4; }
+bool compactResultColumnVisible(int column) { return column >= 1 && column < 9 && column != 3 && column != 8; }
+
+int compactResultMainColumnsWidth(const RegularReportState* st) {
+    int width = 0;
+    for (int column : {1, 2, 4}) width += ListView_GetColumnWidth(st->resultList, column);
+    return width;
+}
+
+int compactDefaultLeftWidth(const RegularReportState* st) {
+    return compactResultMainColumnsWidth(st) + regularS(st->hwnd, REGULAR_PAD * 2) +
+           GetSystemMetrics(SM_CXEDGE) * 4;
+}
 
 HWND reportOwner(const RegularReportState* st) {
     return st ? (st->compactWindow ? st->compactWindow : st->hwnd) : nullptr;
@@ -960,7 +972,8 @@ void showRightInfoPage(RegularReportState* st) {
     if (IsWindow(st->reportList)) ShowWindow(st->reportList, show ? SW_SHOW : SW_HIDE);
     if (st->compactAttached) {
         for (HWND control : {st->rightSearchLabel, st->rightSearchEdit, st->rightSearchIndexButton,
-                             st->rightSearchUpButton, st->rightSearchDownButton, st->rightSearchMenuButton})
+                             st->rightSearchUpButton, st->rightSearchDownButton, st->rightSearchMenuButton,
+                             st->rightDateTodayButton, st->rightDatePrevButton, st->rightDateNextButton})
             ShowWindow(control, SW_HIDE);
     }
     for (HWND c : {st->comparisonMode, st->comparisonTitle,
@@ -1404,9 +1417,9 @@ void setCellIfChanged(HWND list, int row, int col, const std::wstring& text) {
 
 void seedLists(RegularReportState* st) {
     const ColumnDef resCols[] = {
-        {0, L"", 32}, {1, L"", 44}, {2, L"组合项目", 82}, {3, L"英文", 72},
-        {4, L"项目名称", 132}, {5, L"结果", 96}, {6, L"偏", 36},
-        {7, L"参考区间", 112}, {8, L"单位", 76}, {9, L"说明", 96},
+        {0, L"", 44}, {1, L"组合项目", 82}, {2, L"英文", 72},
+        {3, L"项目名称", 132}, {4, L"结果", 96}, {5, L"偏", 36},
+        {6, L"参考区间", 112}, {7, L"单位", 76}, {8, L"说明", 96},
     };
     addColumns(st->resultList, resCols,
                static_cast<int>(sizeof(resCols) / sizeof(resCols[0])), st->resultList);
@@ -1809,76 +1822,97 @@ void createControls(HWND hwnd, RegularReportState* st) {
     updateLeftScrollBar(st);
 }
 
-void layoutCompactReportColumns(RegularReportState* st, int listWidth) {
+void layoutCompactReportColumns(RegularReportState* st) {
     if (st->compactSavedColumnWidths.size() != REGULAR_REPORT_COLUMN_COUNT) return;
-    // Fit the five visible fields into the button-width pane, reserving a vertical scrollbar.
-    const int available = std::max(5, listWidth - GetSystemMetrics(SM_CXEDGE) * 2 - GetSystemMetrics(SM_CXVSCROLL));
-    int total = 0, used = 0;
-    for (int col = 1; col <= 5; ++col) total += std::max(1, st->compactSavedColumnWidths[col]);
-    for (int col = 1; col <= 5; ++col) {
-        const int width = col == 5 ? available - used :
-            std::max(1, available * std::max(1, st->compactSavedColumnWidths[col]) / total);
-        ListView_SetColumnWidth(st->reportList, col, width);
-        used += width;
-    }
+    // Fill the actual viewport with sample number and name. Sex and age remain to the right.
+    RECT client{};
+    GetClientRect(st->reportList, &client);
+    const int available = std::max(2, int(client.right));
+    const int sampleWeight = std::max(1, st->compactSavedColumnWidths[1]);
+    const int nameWeight = std::max(1, st->compactSavedColumnWidths[2]);
+    const int sampleWidth = std::clamp(available * sampleWeight / (sampleWeight + nameWeight), 1, available - 1);
+    ListView_SetColumnWidth(st->reportList, 1, sampleWidth);
+    ListView_SetColumnWidth(st->reportList, 2, available - sampleWidth);
+}
+
+void layoutCompactPage(RegularReportState* st) {
+    HWND hwnd = st->compactWindow;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int summaryH = S(hwnd, 36), pad = S(hwnd, REGULAR_PAD);
+    const int gap = S(hwnd, REGULAR_GAP), rightW = compactRightWidth(hwnd);
+    const int leftW = std::max(S(hwnd, 200), int(client.right) - rightW - gap);
+    const int height = std::max(1, int(client.bottom) - summaryH);
+    MoveWindow(st->compactSummary, pad, S(hwnd, 8), std::max(1, int(client.right) - pad * 2), S(hwnd, 26), TRUE);
+    MoveWindow(st->middlePanel, 0, summaryH, leftW, height, TRUE);
+    MoveWindow(st->rightPanel, leftW + gap, summaryH, rightW, height, TRUE);
+    ShowWindow(st->splitter, SW_HIDE);
+    ShowWindow(st->status, SW_HIDE);
+
+    RECT middle{}, right{};
+    GetClientRect(st->middlePanel, &middle);
+    GetClientRect(st->rightPanel, &right);
+    MoveWindow(st->resultList, pad, pad, std::max(1, int(middle.right) - pad * 2),
+               std::max(1, int(middle.bottom) - pad * 2), TRUE);
+    const int contentW = std::max(1, int(right.right) - pad * 2);
+    const int buttonY = int(right.bottom) - pad - S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H + 34);
+    MoveWindow(st->reportList, pad, pad, contentW, std::max(1, buttonY - pad - gap), TRUE);
+    MoveWindow(st->compactRefreshButton, pad, buttonY, S(hwnd, REGULAR_COMPACT_REFRESH_W),
+               S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
+    const int autoX = pad, autoY = buttonY + S(hwnd, 34);
+    MoveWindow(st->rightAutoRefreshCheck, autoX, autoY + S(hwnd, 4), S(hwnd, 18), S(hwnd, 20), TRUE);
+    MoveWindow(st->rightAutoRefreshLabel, autoX + S(hwnd, 20), autoY + S(hwnd, 2), S(hwnd, 66), S(hwnd, 24), TRUE);
+    MoveWindow(st->rightAutoRefreshEdit, autoX + S(hwnd, 82), autoY + S(hwnd, 2), S(hwnd, 38), S(hwnd, 24), TRUE);
+    MoveWindow(st->rightAutoRefreshUnitLabel, autoX + S(hwnd, 124), autoY + S(hwnd, 2), S(hwnd, 24), S(hwnd, 24), TRUE);
+    layoutCompactReportColumns(st);
+    InvalidateRect(st->rightPanel, nullptr, TRUE);
 }
 
 void layout(HWND hwnd, RegularReportState* st) {
     if (!st || st->compactRestoring) return;
-    const bool compact = st->compactAttached;
-    HWND surface = compact ? st->compactWindow : hwnd;
-    RECT rc{}; GetClientRect(surface, &rc);
+    if (st->compactAttached) { layoutCompactPage(st); return; }
+    RECT rc{}; GetClientRect(hwnd, &rc);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    const int bottomH = S(surface, REGULAR_BOTTOM_PANEL_H);
-    const int gap = S(surface, REGULAR_GAP), splitterW = S(surface, REGULAR_SPLITTER_W);
-    const int leftW = compact ? 0 : std::min(std::max(S(hwnd, REGULAR_LEFT_PANEL_MIN_W), w * 21 / 100),
-                               S(hwnd, REGULAR_LEFT_PANEL_MAX_W));
-    const int panelY = compact ? S(surface, 36) : 0;
-    const int topH = compact ? std::max(1, h - panelY) : std::max(S(hwnd, 420), h - bottomH - gap);
-    const int centerX = compact ? 0 : leftW + gap;
-    int splitX;
-    if (compact) {
-        splitX = std::max(S(surface, 360), w - compactRightWidth(surface) - gap);
-    } else {
-        const int minCW = S(surface, 460), minRW = S(surface, 360);
-        const int availW = std::max(S(surface, 760), w - centerX - gap);
-        const int defCW = std::max(S(surface, 500), availW * 46 / 100);
-        const int minSX = centerX + minCW;
-        const int maxSX = std::max(minSX, w - gap - minRW - splitterW - gap);
-        if (!st->splitterUserSet) st->splitterX = centerX + defCW;
-        st->splitterX = std::clamp(st->splitterX, minSX, maxSX);
-        splitX = st->splitterX;
-    }
+    const int bottomH = S(hwnd, REGULAR_BOTTOM_PANEL_H);
+    const int gap = S(hwnd, REGULAR_GAP), splitterW = S(hwnd, REGULAR_SPLITTER_W);
+    const int desiredLeftW = std::min(std::max(S(hwnd, REGULAR_LEFT_PANEL_MIN_W), w * 21 / 100),
+                                      S(hwnd, REGULAR_LEFT_PANEL_MAX_W));
+    const int leftW = std::min(desiredLeftW, std::max(0, w - S(hwnd, 320)));
+    const int topH = std::max(1, h - bottomH - gap);
+    const int centerX = leftW + gap;
+    // Restoring a smaller frame must not push the report panel outside its client area.
+    const int paneSpace = std::max(0, w - centerX - splitterW - gap * 2);
+    const int minCW = std::min(S(hwnd, 460), paneSpace * 55 / 100);
+    const int minRW = std::min(S(hwnd, 360), paneSpace - minCW);
+    const int defCW = std::max(S(hwnd, 500), paneSpace * 46 / 100);
+    const int minSX = centerX + minCW;
+    const int maxSX = centerX + paneSpace - minRW;
+    if (!st->splitterUserSet) st->splitterX = centerX + defCW;
+    st->splitterX = std::clamp(st->splitterX, minSX, maxSX);
+    const int splitX = st->splitterX;
 
     const int centerW = splitX - centerX;
-    const int rightX = splitX + (compact ? gap : splitterW + gap);
-    const int rightW = compact ? compactRightWidth(surface) :
-        std::max(S(surface, 200), w - rightX - gap);
+    const int rightX = splitX + splitterW + gap;
+    const int rightW = std::max(0, w - rightX - gap);
 
-    if (compact) {
-        MoveWindow(st->compactSummary, S(surface, 8), S(surface, 8),
-                   std::max(1, w - S(surface, 16)), S(surface, 26), TRUE);
-    } else {
-        MoveWindow(st->leftPanel, 0, 0, leftW, h, TRUE);
-        scrollLeftPanelTo(st, st->leftScrollY);
-        MoveWindow(st->bottomPanel, centerX, topH + gap, w - centerX - gap, bottomH, TRUE);
-    }
-    MoveWindow(st->middlePanel, centerX, panelY, centerW, topH, TRUE);
-    MoveWindow(st->splitter, splitX, panelY, splitterW, topH, TRUE);
-    ShowWindow(st->splitter, compact ? SW_HIDE : SW_SHOW);
-    MoveWindow(st->rightPanel, rightX, panelY, rightW, topH, TRUE);
+    MoveWindow(st->leftPanel, 0, 0, leftW, h, TRUE);
+    scrollLeftPanelTo(st, st->leftScrollY);
+    MoveWindow(st->bottomPanel, centerX, topH + gap, w - centerX - gap, bottomH, TRUE);
+    MoveWindow(st->middlePanel, centerX, 0, centerW, topH, TRUE);
+    MoveWindow(st->splitter, splitX, 0, splitterW, topH, TRUE);
+    ShowWindow(st->splitter, SW_SHOW);
+    MoveWindow(st->rightPanel, rightX, 0, rightW, topH, TRUE);
 
-    hwnd = surface;
-    const int resultY = compact ? 8 : REGULAR_MIDDLE_LIST_Y;
-    const int resultMargin = compact ? REGULAR_PAD * 2 : REGULAR_MIDDLE_LIST_BOTTOM_MARGIN;
+    const int resultY = REGULAR_MIDDLE_LIST_Y;
+    const int resultMargin = REGULAR_MIDDLE_LIST_BOTTOM_MARGIN;
     MoveWindow(st->middleTab, S(hwnd, REGULAR_PAD), S(hwnd, 0),
                centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_TAB_H), TRUE);
     MoveWindow(st->resultList, S(hwnd, REGULAR_PAD), S(hwnd, resultY),
                centerW - S(hwnd, REGULAR_PAD * 2),
                std::max(1, topH - S(hwnd, resultMargin)), TRUE);
     const int phX = S(hwnd, REGULAR_PAD), phY = S(hwnd, REGULAR_MIDDLE_LIST_Y);
-    const int phW = centerW - S(hwnd, REGULAR_PAD * 2);
-    const int phH = topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN);
+    const int phW = std::max(1, centerW - S(hwnd, REGULAR_PAD * 2));
+    const int phH = std::max(1, topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN));
     const int pscW = GetSystemMetrics(SM_CXVSCROLL), pscH = GetSystemMetrics(SM_CYHSCROLL);
     const int pcW = S(hwnd, REGULAR_PICTURE_FIXED_W), pcH = S(hwnd, REGULAR_PICTURE_FIXED_H);
     bool nv = pcH > phH, nh = pcW > (phW - (nv ? pscW : 0));
@@ -1888,7 +1922,7 @@ void layout(HWND hwnd, RegularReportState* st) {
     MoveWindow(st->pictureViewport, phX, phY, pvW, pvH, TRUE);
     MoveWindow(st->pictureHScroll, phX, phY + pvH, pvW, pscH, TRUE);
     MoveWindow(st->pictureVScroll, phX + pvW, phY, pscW, pvH, TRUE);
-    const bool showPicture = !compact && TabCtrl_GetCurSel(st->middleTab) == 1;
+    const bool showPicture = TabCtrl_GetCurSel(st->middleTab) == 1;
     ShowWindow(st->pictureHScroll, showPicture && nh ? SW_SHOW : SW_HIDE);
     ShowWindow(st->pictureVScroll, showPicture && nv ? SW_SHOW : SW_HIDE);
     regularUpdatePictureViewport(st);
@@ -1896,16 +1930,16 @@ void layout(HWND hwnd, RegularReportState* st) {
                centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_MIDDLE_STATUS_H), TRUE);
 
     const int riX = S(hwnd, REGULAR_PAD);
-    const int riW = std::max(S(hwnd, 80), rightW - S(hwnd, REGULAR_PAD * 2) -
-        (compact ? GetSystemMetrics(SM_CXEDGE) * 2 : 0));
-    const auto rhdr = compact ? RightHeaderLayout{} : regularRightHeaderLayout(
-        hwnd, st->ctx.uiFont, rightW, regularRightSummaryLine1(st), regularRightSummaryLine2(st));
+    RECT rightClient{};
+    GetClientRect(st->rightPanel, &rightClient);
+    const int rightClientW = rightClient.right;
+    const int riW = std::max(1, rightClientW - S(hwnd, REGULAR_PAD * 2));
+    const auto rhdr = regularRightHeaderLayout(
+        hwnd, st->ctx.uiFont, rightClientW, regularRightSummaryLine1(st), regularRightSummaryLine2(st));
     const int rtY = rhdr.bottom + S(hwnd, 6);
-    const int hiddenTabH = compact ? S(hwnd, REGULAR_TAB_H) : 0;
-    const int rslY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_LABEL_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
-    const int rscY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_CONTROL_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
-    const int rlY = compact ? S(hwnd, REGULAR_PAD) :
-        rtY + S(hwnd, REGULAR_RIGHT_LIST_Y - REGULAR_RIGHT_TAB_Y) - hiddenTabH;
+    const int rslY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_LABEL_Y - REGULAR_RIGHT_TAB_Y);
+    const int rscY = rtY + S(hwnd, REGULAR_RIGHT_SEARCH_CONTROL_Y - REGULAR_RIGHT_TAB_Y);
+    const int rlY = rtY + S(hwnd, REGULAR_RIGHT_LIST_Y - REGULAR_RIGHT_TAB_Y);
     MoveWindow(st->rightTab, riX, rtY, riW, S(hwnd, REGULAR_TAB_H), TRUE);
     MoveWindow(st->rightSearchLabel, S(hwnd, REGULAR_PAD), rslY, S(hwnd, 70), S(hwnd, 24), TRUE);
     MoveWindow(st->rightSearchEdit, S(hwnd, 82), rscY, S(hwnd, 84), S(hwnd, 26), TRUE);
@@ -1915,7 +1949,7 @@ void layout(HWND hwnd, RegularReportState* st) {
                S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
     MoveWindow(st->rightSearchDownButton, S(hwnd, 266), rscY, S(hwnd, 38),
                S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
-    MoveWindow(st->rightSearchMenuButton, rightW - S(hwnd, REGULAR_PAD + 36), rscY,
+    MoveWindow(st->rightSearchMenuButton, rightClientW - S(hwnd, REGULAR_PAD + 36), rscY,
                S(hwnd, 36), S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
 
     MoveWindow(st->comparisonMode, riX, rscY, S(hwnd, 110), S(hwnd, 180), TRUE);
@@ -1929,16 +1963,15 @@ void layout(HWND hwnd, RegularReportState* st) {
     for (int col = 1; col <= 4; ++col)
         ListView_SetColumnWidth(st->comparisonList, col, comparisonColumnWidth);
 
-    const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H + (compact ? 34 : 0));
+    const bool wrapAutoRefresh = rightClientW < S(hwnd, REGULAR_PAD * 2 +
+        (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + 6 + 148);
+    const int rdbY = topH - S(hwnd, REGULAR_PAD + REGULAR_RIGHT_DATE_BUTTON_H +
+        (wrapAutoRefresh ? 34 : 0));
     const int rdbG = S(hwnd, 8), rdbW = S(hwnd, REGULAR_RIGHT_DATE_BUTTON_W);
-    const int arX = compact ? riX : riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
-    const int arY = rdbY + (compact ? S(hwnd, 34) : 0);
-    if (compact)
-        MoveWindow(st->compactRefreshButton, riX + (rdbW + rdbG) * 3, rdbY,
-                   S(hwnd, REGULAR_COMPACT_REFRESH_W), S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
+    const int arX = wrapAutoRefresh ? riX : riX + (rdbW + rdbG) * 3 + S(hwnd, 6);
+    const int arY = rdbY + (wrapAutoRefresh ? S(hwnd, 34) : 0);
     MoveWindow(st->reportList, riX, rlY, riW,
                std::max(S(hwnd, 80), rdbY - rlY - S(hwnd, REGULAR_GAP)), TRUE);
-    if (compact) layoutCompactReportColumns(st, riW);
     MoveWindow(st->rightDateTodayButton, riX, rdbY, rdbW,
                S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H), TRUE);
     MoveWindow(st->rightDatePrevButton, riX + rdbW + rdbG, rdbY, rdbW,
@@ -1960,17 +1993,10 @@ void layout(HWND hwnd, RegularReportState* st) {
 // Compact topmost host. The original MDI HWND continues to own data and tasks.
 // ============================================================================
 
-void updateCompactSummary(RegularReportState* st, int selected) {
+void updateCompactSummary(RegularReportState* st) {
     if (!st || !st->compactSummary) return;
-    std::wstring text = L"仪器：" + regularWindowText(st->machineEdit) +
-                        L"  日期：" + search::utf8_to_wide(regularDatePickerValue(st->inspectDatePicker));
-    if (selected >= 0 && selected < static_cast<int>(st->reportRows.size())) {
-        const auto& row = st->reportRows[static_cast<size_t>(selected)];
-        text = L"当前报告：" + search::utf8_to_wide(row.name) +
-               L"  样本号：" + search::utf8_to_wide(row.oper_no) + L"  " + text;
-    } else {
-        text = L"未选择报告  " + text;
-    }
+    const std::wstring text = regularWindowText(st->machineEdit) + L"    " +
+        search::utf8_to_wide(regularDatePickerValue(st->inspectDatePicker));
     SetWindowTextW(st->compactSummary, text.c_str());
 }
 
@@ -1983,7 +2009,8 @@ LRESULT CALLBACK compactReportListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         auto* header = reinterpret_cast<NMHEADERW*>(lp);
         if (header->hdr.hwndFrom == ListView_GetHeader(hwnd) &&
             (header->hdr.code == HDN_ITEMCHANGINGW || header->hdr.code == HDN_ITEMCHANGINGA) &&
-            !compactReportColumnVisible(header->iItem) && header->pitem && (header->pitem->mask & HDI_WIDTH) &&
+            !(hwnd == st->resultList ? compactResultColumnVisible(header->iItem) :
+              compactReportColumnVisible(header->iItem)) && header->pitem && (header->pitem->mask & HDI_WIDTH) &&
             header->pitem->cxy != 0) return TRUE;
     }
     if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, compactReportListProc, id);
@@ -2007,6 +2034,21 @@ void hideOtherProgramWindows(RegularReportState* st) {
     for (const auto& window : st->compactHiddenWindows) ShowWindow(window.hwnd, SW_HIDE);
 }
 
+void refreshRestoredRegularPage(RegularReportState* st) {
+    if (st->destroying || st->compactAttached || app::window_task_detail::sessionSuspended() ||
+        st->compactSession != app::window_task_detail::sessionGeneration()) return;
+    HWND frame = GetAncestor(st->ctx.mdiClient, GA_ROOT);
+    RECT client{};
+    GetClientRect(frame, &client);
+    SendMessageW(frame, WM_SIZE, IsZoomed(frame) ? SIZE_MAXIMIZED : SIZE_RESTORED,
+                 MAKELPARAM(client.right, client.bottom));
+    if (st->compactSavedMdiMaximized)
+        SendMessageW(st->ctx.mdiClient, WM_MDIMAXIMIZE, reinterpret_cast<WPARAM>(st->hwnd), 0);
+    layout(st->hwnd, st);
+    RedrawWindow(frame, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
 void restoreOtherProgramWindows(RegularReportState* st) {
     // Frame teardown invalidates the session before destroying its MDI children.
     // Closing only the report should still bring back the rest of the application.
@@ -2020,11 +2062,7 @@ void restoreOtherProgramWindows(RegularReportState* st) {
         }
     }
     st->compactHiddenWindows.clear();
-    if (!st->destroying && !st->compactAttached) {
-        layout(st->hwnd, st);
-        RedrawWindow(st->hwnd, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
-    }
+    refreshRestoredRegularPage(st);
 }
 
 void restoreCompactPanels(RegularReportState* st) {
@@ -2042,6 +2080,7 @@ void restoreCompactPanels(RegularReportState* st) {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
     RemoveWindowSubclass(st->reportList, compactReportListProc, REGULAR_COMPACT_REPORT_SUBCLASS);
+    RemoveWindowSubclass(st->resultList, compactReportListProc, REGULAR_COMPACT_REPORT_SUBCLASS);
     if (IsWindow(st->compactRefreshButton)) DestroyWindow(st->compactRefreshButton);
     st->compactRefreshButton = nullptr;
     TabCtrl_SetCurSel(st->middleTab, st->savedMiddleTab);
@@ -2059,6 +2098,12 @@ void restoreCompactPanels(RegularReportState* st) {
         ListView_Scroll(st->reportList,
             st->compactSavedHorizontalOffset - GetScrollPos(st->reportList, SB_HORZ), 0);
     st->compactSavedColumnWidths.clear();
+    for (int col = 0; col < static_cast<int>(st->compactSavedResultColumnWidths.size()); ++col)
+        ListView_SetColumnWidth(st->resultList, col, st->compactSavedResultColumnWidths[col]);
+    if (!st->compactSavedResultColumnWidths.empty())
+        ListView_Scroll(st->resultList,
+            st->compactSavedResultHorizontalOffset - GetScrollPos(st->resultList, SB_HORZ), 0);
+    st->compactSavedResultColumnWidths.clear();
     for (HWND control : {st->leftPanel, st->bottomPanel, st->middlePanel, st->rightPanel,
                          st->splitter, st->middleTab, st->rightTab, st->compactButton})
         ShowWindow(control, SW_SHOW);
@@ -2082,9 +2127,7 @@ void leaveCompactMode(RegularReportState* st, bool activate) {
         HWND frame = GetAncestor(st->hwnd, GA_ROOT);
         ShowWindow(frame, IsIconic(frame) ? SW_RESTORE : SW_SHOW);
         SendMessageW(st->ctx.mdiClient, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(st->hwnd), 0);
-        layout(st->hwnd, st);
-        RedrawWindow(frame, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        refreshRestoredRegularPage(st);
         SetForegroundWindow(frame);
         SetFocus(st->reportList);
     }
@@ -2164,7 +2207,8 @@ void enterCompactMode(RegularReportState* st) {
     MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
     if (!GetMonitorInfoW(MonitorFromWindow(st->hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &monitor.rcWork, 0);
-    RECT bounds{0, 0, S(st->hwnd, 520 + REGULAR_GAP) + compactRightWidth(st->hwnd), S(st->hwnd, 560)};
+    RECT bounds{0, 0, compactDefaultLeftWidth(st) + S(st->hwnd, REGULAR_GAP) +
+        compactRightWidth(st->hwnd), S(st->hwnd, 560)};
     AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_APPWINDOW);
     const int width = std::min(int(bounds.right - bounds.left), int(monitor.rcWork.right - monitor.rcWork.left));
     const int height = std::min(int(bounds.bottom - bounds.top), int(monitor.rcWork.bottom - monitor.rcWork.top));
@@ -2185,6 +2229,7 @@ void enterCompactMode(RegularReportState* st) {
         leaveCompactMode(st, false);
         return;
     }
+    st->compactSavedMdiMaximized = IsZoomed(st->hwnd) != FALSE;
     st->savedMiddleTab = TabCtrl_GetCurSel(st->middleTab);
     st->savedRightTab = TabCtrl_GetCurSel(st->rightTab);
     HWND panels[] = {st->middlePanel, st->rightPanel, st->splitter};
@@ -2204,6 +2249,15 @@ void enterCompactMode(RegularReportState* st) {
     TabCtrl_SetCurSel(st->rightTab, 0);
     showMiddleResultPage(st);
     showRightInfoPage(st);
+    st->compactSavedResultHorizontalOffset = GetScrollPos(st->resultList, SB_HORZ);
+    st->compactSavedResultColumnWidths.clear();
+    for (int col = 0; col < Header_GetItemCount(ListView_GetHeader(st->resultList)); ++col) {
+        st->compactSavedResultColumnWidths.push_back(ListView_GetColumnWidth(st->resultList, col));
+        if (!compactResultColumnVisible(col)) ListView_SetColumnWidth(st->resultList, col, 0);
+    }
+    SetWindowSubclass(st->resultList, compactReportListProc, REGULAR_COMPACT_REPORT_SUBCLASS,
+                      reinterpret_cast<DWORD_PTR>(st));
+    ListView_Scroll(st->resultList, -GetScrollPos(st->resultList, SB_HORZ), 0);
     st->compactSavedHorizontalOffset = GetScrollPos(st->reportList, SB_HORZ);
     st->compactSavedColumnWidths.clear();
     for (int col = 0; col < REGULAR_REPORT_COLUMN_COUNT; ++col) {
@@ -2218,8 +2272,19 @@ void enterCompactMode(RegularReportState* st) {
     for (HWND control : {st->leftPanel, st->bottomPanel, st->middleTab,
                          st->rightTab, st->compactButton}) ShowWindow(control, SW_HIDE);
     regularApplyFont(floating, st->ctx.uiFont);
-    updateCompactSummary(st, currentReportIndex(st));
+    updateCompactSummary(st);
     layout(st->hwnd, st);
+    // Account for the actual list borders and vertical scrollbar: the initial viewport
+    // ends exactly after group, English name and result, independent of DPI or column sizes.
+    RECT resultClient{}, floatingRect{};
+    GetClientRect(st->resultList, &resultClient);
+    GetWindowRect(floating, &floatingRect);
+    const int desiredWidth = floatingRect.right - floatingRect.left +
+        compactResultMainColumnsWidth(st) - resultClient.right;
+    SetWindowPos(floating, nullptr, 0, 0,
+                 std::min(desiredWidth, int(monitor.rcWork.right - monitor.rcWork.left)),
+                 floatingRect.bottom - floatingRect.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     hideOtherProgramWindows(st);
     ShowWindow(floating, SW_SHOW);
     SetForegroundWindow(floating);
@@ -2257,7 +2322,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         ListView_DeleteAllItems(st->reportList);
         ListView_DeleteAllItems(st->resultList);
         st->reportRows.clear(); st->resultRows.clear();
-        updateCompactSummary(st, -1);
+        updateCompactSummary(st);
         InvalidateRect(st->rightPanel, nullptr, TRUE);
         st->pictureQueryLoading = false; st->pictureRepNo.clear();
         ++st->pictureQueryGeneration;
@@ -2505,6 +2570,7 @@ void presentReportRows(RegularReportState* st,
     for (size_t i = 0; i < st->reportRows.size(); ++i)
         insertReportRow(st->reportList, static_cast<int>(i), st->reportRows[i]);
     SendMessageW(st->reportList, WM_SETREDRAW, TRUE, 0);
+    if (st->compactAttached) layoutCompactReportColumns(st);
     InvalidateRect(st->reportList, nullptr, TRUE);
     InvalidateRect(st->rightPanel, nullptr, TRUE);
 }
@@ -2567,18 +2633,17 @@ const wchar_t* deviationMarker(const search::ResultRow& r) {
 void insertResultRow(HWND list, int row, const search::ResultRow& d,
                      const std::string& groupName) {
     LVITEMW item{}; item.mask = LVIF_TEXT; item.iItem = row;
-    item.pszText = const_cast<wchar_t*>(L"");
-    ListView_InsertItem(list, &item);
     wchar_t no[16]{}; wsprintfW(no, L"%d", row + 1);
-    setCell(list, row, 1, no);
-    setCell(list, row, 2, groupName);
-    setCell(list, row, 3, d.item_eng);
-    setCell(list, row, 4, d.item_name);
-    setCell(list, row, 5, d.result);
-    setCell(list, row, 6, deviationMarker(d));
-    setCell(list, row, 7, referenceRange(d));
-    setCell(list, row, 8, d.unit);
-    setCell(list, row, 9, L"");
+    item.pszText = no;
+    ListView_InsertItem(list, &item);
+    setCell(list, row, 1, groupName);
+    setCell(list, row, 2, d.item_eng);
+    setCell(list, row, 3, d.item_name);
+    setCell(list, row, 4, d.result);
+    setCell(list, row, 5, deviationMarker(d));
+    setCell(list, row, 6, referenceRange(d));
+    setCell(list, row, 7, d.unit);
+    setCell(list, row, 8, L"");
 }
 
 void presentResultRows(RegularReportState* st, bool redraw) {
@@ -2626,7 +2691,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int sel) {
         regularSetControlText(st->collectDateEdit, "");
     };
     if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) {
-        if (st) { clr(); updateCompactSummary(st, -1); }
+        if (st) { clr(); updateCompactSummary(st); }
         return;
     }
     const auto& r = st->reportRows[static_cast<size_t>(sel)];
@@ -2663,7 +2728,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int sel) {
     regularSetDatePickerValue(st->inspectDatePicker, r.inspect_date);
     st->suppressInspectDateQuery = false;
     regularSetControlText(st->collectDateEdit, "");
-    updateCompactSummary(st, sel);
+    updateCompactSummary(st);
 }
 
 // ============================================================================

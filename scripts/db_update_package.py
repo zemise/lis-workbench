@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -17,6 +19,10 @@ REPO = "zemise/lis-workbench"
 MAX_SIZE = 100 * 1024 * 1024
 PROTECTED = {"clientconfig.ini", "log", "backup", "templates", "documents"}
 VERSION = re.compile(r"v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[1-9][0-9]{0,8})?\Z")
+RATE_LIMIT_MESSAGE = (
+    "GitHub API rate limit reached. For anonymous requests, run 'gh auth login' "
+    "or set GH_TOKEN. If already authenticated, rerun after the limit resets."
+)
 
 
 def valid_version(version):
@@ -93,11 +99,40 @@ def validate_zip(path, package):
 
 
 def api(path):
-    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/{path}", headers={
-        "Accept": "application/vnd.github+json", "User-Agent": "LISWorkbench-package",
-        **({"Authorization": "Bearer " + os.environ["GH_TOKEN"]} if os.environ.get("GH_TOKEN") else {})})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return json.load(response)
+    endpoint = f"repos/{REPO}/{path}"
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    gh = shutil.which("gh") if not token else None
+    if gh:
+        # Let gh use its saved login without reading or forwarding the credential.
+        result = subprocess.run(
+            [gh, "api", "--hostname", "github.com", endpoint],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+            env={**os.environ, "GH_PROMPT_DISABLED": "1"},
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        if result.returncode != 4:  # gh uses 4 when authentication is required.
+            message = result.stderr.lower()
+            if b"rate limit" in message or b"http 429" in message:
+                raise RuntimeError(RATE_LIMIT_MESSAGE)
+            status = re.search(rb"\bHTTP [0-9]{3}\b", result.stderr)
+            detail = f" ({status[0].decode('ascii')})" if status else ""
+            raise RuntimeError(
+                f"Could not fetch GitHub Release metadata{detail}. Check 'gh auth status' and connectivity.")
+
+    req = urllib.request.Request(f"https://api.github.com/{endpoint}", headers={
+        "Accept": "application/vnd.github+json", "User-Agent": "LISWorkbench-package"})
+    if token:
+        req.add_unredirected_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429 or (exc.code == 403 and (
+                exc.headers.get("X-RateLimit-Remaining") == "0"
+                or exc.headers.get("Retry-After") or "rate limit" in str(exc.reason).lower())):
+            raise RuntimeError(RATE_LIMIT_MESSAGE) from exc
+        raise
 
 
 def assets(release):

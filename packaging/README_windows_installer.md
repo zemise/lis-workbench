@@ -12,7 +12,7 @@
 
 CI 会从 LabelPrint GitHub Release 下载 `v1.2.10` 的 Win7 兼容包，通过 `build_main.ps1 -LabelPrintPackagePath` 传给 CMake，再用 `packaging/LISWorkbench.nsi` 打包。产物可从 Actions 页面下载 Artifacts。安装包会包含 `lis_workbench.exe` 和自动更新器 `Updater.exe`。出于隐私考虑，HIV 统计表 DOCX 模版不随安装包发布，需要在页面中通过 `上传模版` 放入安装目录 `templates\HIVStatisticsTemplate.docx`。常用电话 RTF 文件同样不随安装包发布，现场可在 `常用电话` 页面上传，或自行放入安装目录 `documents`。
 
-推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.11.16`，CI 会自动创建或更新同名 GitHub Release 并上传产物。普通分支 push 和 PR 只生成 Actions artifact。
+推送与 `src/version.h` 一致的 `v*` 标签时，例如 `v2026.11.19`，CI 会自动创建或更新同名 GitHub Release 并上传产物。普通分支 push 和 PR 只生成 Actions artifact。
 
 ```text
 LISWorkbench-Setup-<version>-win7-win11.exe
@@ -29,6 +29,8 @@ out/windows/update/updates/LISWorkbench-<version>-win7-win11.zip
 
 Actions 会上传 `LISWorkbench-Updates-<version>-win7-win11` artifact。把其中的 `updates` 目录整体放到共享目录或 HTTP 目录后，系统设置页的更新源可分别指向该目录或其中的 `manifest.json`。设置页默认选择 LIS，已有有效共享目录／HTTP 选择保留，只显示当前来源对应的设置。LIS 来源复用现有数据库配置，每次新启动在登录前检查新版，自动下载、校验并安装重启，不受“自动检查更新”开关或每日次数限制；也可通过菜单手动检查。无新版或检查失败继续登录，关闭启动更新窗口可取消并退出。离线上传材料用 `make db-update-package` 获取正式 Release，上传端使用 Windows 10/11，操作说明在生成目录的 `README-upload.txt`。manifest 与 zip 同目录，便于同一份 manifest 兼容共享目录、普通 HTTP 和 GitHub Release。
 更新 zip 不包含 HIV 统计表 DOCX 模版和常用电话 RTF 文件；自动更新不会覆盖现场已上传的 `templates\HIVStatisticsTemplate.docx` 或 `documents` 目录。
+
+生成离线上传材料时，脚本优先用环境变量 `GH_TOKEN` 或 `GITHUB_TOKEN` 查询 Release，其次使用本机已登录的 `gh`，也支持匿名查询公开 Release。匿名请求遇到 GitHub API 限流时，可先运行 `gh auth login`，再重试 `make db-update-package`。
 
 使用 GitHub Release 作为外网更新源时，系统设置页的 HTTP 地址填写：
 
@@ -106,7 +108,7 @@ out\windows\update\updates\LISWorkbench-<version>-win7-win11.zip
 
 # NSIS 安装包
 New-Item -ItemType Directory -Force out\windows\installer
-& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.11.16 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DAPP_VERSION=v2026.11.19 /DAPP_EXE=lis_workbench.exe /DBUILD_DIR=..\build\main-app\Release /DOUTPUT_DIR=..\out\windows\installer /DOUTPUT_NAME=LISWorkbench-Setup.exe packaging\LISWorkbench.nsi
 ```
 
 如果只面向 Windows 10/11，可以使用 VS 2026 对应的 LabelPrint release 包：
@@ -188,7 +190,7 @@ nmake
 
 版本日期使用发布当天（项目按 Asia/Shanghai），首次发布为 `vYYYY.MM.DD`，后续依次 `.1`、`.2`。修订号为 1～999999999 的整数，不补零，不使用 `.0`；不修改已有标签或包内容。主程序、安装包、ZIP、manifest 和 Release 标签必须一致。
 
-当前源码版本为 `v2026.11.16`，发布时使用同名标签。本版将已签收条码查询的多条医嘱合并到一行，并按急诊样本统计的口径显示红色“急”。升级无需迁移数据库。规则与操作见[使用说明](../docs/USAGE.md)，性能对照和验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，安装或替换前退出已有工作台进程。
+当前源码版本为 `v2026.11.19`，发布时使用同名标签。本版继续缩小常规报告精简置顶：左侧默认仅显示“组合项目”“英文”“结果”，右侧默认仅显示“样本号”“姓名”，移除日期切换按钮，刷新与自动刷新分行显示；完整页与精简页分别布局，并移除中间结果列表始终为空的首列。升级无需迁移数据库。规则与操作见[使用说明](../docs/USAGE.md)，性能对照和验证入口见[开发说明](../docs/DEVELOPMENT.md)。打包前应重新构建，安装或替换前退出已有工作台进程。
 
 旧的 `v2026.10.13`、`.14`、`.15` 按顺序作为 10 月 12 日修订 1～3 比较，原标签保留；这些标签已经占用，日后同日期发布应使用未占用的修订后缀。CI 显式将新 Release 标记为 Latest，确保固定 manifest URL 与 `make db-update-package` 获取本次发布。
 

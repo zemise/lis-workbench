@@ -68,7 +68,7 @@ constexpr int REGULAR_IDM_REPORT_TREND = 5222;
 constexpr int REGULAR_IDC_BOTTOM_TREND = 5425;
 
 constexpr int REGULAR_REPORT_COLUMN_COUNT = 30;
-constexpr int REGULAR_RESULT_VALUE_COL = 5;
+constexpr int REGULAR_RESULT_VALUE_COL = 4;
 constexpr int REGULAR_RIGHT_REPORT_PRINT_COL = 8;
 
 constexpr UINT_PTR REGULAR_LEFT_PANEL_SUBCLASS = 6205;
@@ -114,7 +114,7 @@ constexpr int REGULAR_RIGHT_LIST_Y = 128;
 constexpr int REGULAR_RIGHT_DATE_BUTTON_H = 28;
 constexpr int REGULAR_RIGHT_DATE_BUTTON_W = 72;
 constexpr int REGULAR_COMPACT_REFRESH_W = 88;
-constexpr int REGULAR_COMPACT_TOOLBAR_W = (REGULAR_RIGHT_DATE_BUTTON_W + 8) * 3 + REGULAR_COMPACT_REFRESH_W;
+constexpr int REGULAR_COMPACT_TOOLBAR_W = 148;
 constexpr int REGULAR_AUTO_REFRESH_DEFAULT_SECONDS = 10;
 constexpr int REGULAR_AUTO_REFRESH_MIN_SECONDS = 5;
 constexpr int REGULAR_AUTO_REFRESH_MAX_SECONDS = 3600;
@@ -270,6 +270,9 @@ struct RegularReportState {
     std::uint64_t compactSession = 0;
     std::vector<int> compactSavedColumnWidths;
     int compactSavedHorizontalOffset = 0;
+    std::vector<int> compactSavedResultColumnWidths;
+    int compactSavedResultHorizontalOffset = 0;
+    bool compactSavedMdiMaximized = false;
     int savedMiddleTab = 0;
     int savedRightTab = 0;
     LONG_PTR compactPanelExStyles[3]{};
