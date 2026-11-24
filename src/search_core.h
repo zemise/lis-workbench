@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "regular_report_audit.h"
+
 namespace search {
 
 struct QueryFilters {
@@ -72,12 +74,13 @@ struct ReportRow {
     std::string create_time;
     std::string patient_phone;
     std::string report_type;           // LS_AS_REPORT.assaypat_type: 0=emergency, 9=critical.
-    std::string barcode_jz_flag;       // LS_AS_BARCODE.JZ_FLAG, used only for the right-list label.
+    std::string barcode_jz_flag;       // LS_AS_BARCODE.JZ_FLAG, used for emergency indicators.
     std::string mach_code;
     std::string mach_name;
     std::string room_code;
     std::string group_code;           // LS_AS_REPORT.GROUP_CODE，报告项目代码
     std::string view_machine_code;    // Virtual report view; mach_code retains database identity.
+    bool need_inspect = false;
 };
 
 struct RoomOption {
@@ -102,6 +105,11 @@ struct MachineOption {
     std::string sample_name;
 };
 
+struct ReportResultOption {
+    std::string code;
+    std::string name;
+};
+
 struct ResultRow {
     std::string group_name;
     std::string item_name;
@@ -115,7 +123,100 @@ struct ResultRow {
     std::string normal_wj;            // 9=critical result, 0=has critical rule.
     std::string critical_low_bound;   // LS_AS_DEF_ITEMSCOPE.UPBOUND1
     std::string critical_high_bound;  // LS_AS_DEF_ITEMSCOPE.DNBOUND1
+    std::string group_code;          // LS_AS_REPENTRY.GROUP_CODE
+    std::string entry_id;            // LS_AS_REPENTRY.ID for regular report actions.
+    std::size_t regular_display_position = 0;
+    std::size_t code_position = 0;
+    std::string result_type;          // LS_AS_ITEM.TYPE for regular report entry.
+    std::vector<ReportResultOption> result_options;
+
+    bool numeric_result() const { return result_type == "1" || result_type == "2"; }
 };
+
+struct ReportItemGroup {
+    std::string code;
+    std::string name;
+    std::string room_code;
+    std::string machine_code;
+    std::string sample_code;
+};
+
+struct ReportItemOption {
+    std::string code;
+    std::string name;
+    std::string result;
+    std::string unit;
+    std::string english_name;
+    std::string note;
+    std::string room_code;
+};
+
+struct ReportItemSelection {
+    std::string group_code;
+    std::string item_code;
+    std::string default_result;
+};
+
+enum class AddReportItemsStatus { saved, report_unavailable, catalog_changed, no_new_items };
+
+bool query_report_item_groups(const std::string& connection_string, const std::string& machine_code,
+                              std::vector<ReportItemGroup>& rows, std::string& error);
+bool query_report_item_options(const std::string& connection_string, const std::string& group_code,
+                                std::vector<ReportItemOption>& rows, std::string& error);
+bool add_report_items(const std::string& connection_string, const std::string& rep_no,
+                      const std::string& machine_code, const ReportItemGroup& sample_group,
+                      const std::vector<ReportItemSelection>& items,
+                      AddReportItemsStatus& status, std::string& error);
+
+enum class ReportItemDeleteScope { item, group };
+enum class ReportItemDeleteStatus { ready, saved, unavailable, sent, audited, past_day, changed };
+
+struct ReportItemDeleteTarget {
+    std::string rep_no;
+    std::string entry_id;
+    std::string item_code;
+    std::string group_code;
+};
+
+struct ReportItemDeletePreview {
+    ReportItemDeleteStatus status = ReportItemDeleteStatus::unavailable;
+    std::vector<std::string> item_entries;
+    std::vector<std::string> group_entries;
+};
+
+bool preview_report_item_deletion(const std::string& connection_string,
+                                  const ReportItemDeleteTarget& target, const std::string& workstation_mac,
+                                  ReportItemDeletePreview& preview, std::string& error);
+bool delete_report_items(const std::string& connection_string, const ReportItemDeleteTarget& target,
+                         const std::string& workstation_mac,
+                         ReportItemDeleteScope scope, const std::vector<std::string>& expected_entries,
+                         ReportItemDeleteStatus& status, std::string& error);
+
+struct ReportResultChange {
+    std::string entry_id;
+    std::string expected_result;
+    std::string result;
+};
+
+enum class SaveReportResultsStatus { saved, unchanged, unavailable, read_only, conflict, inspection_prompt };
+
+struct SaveReportResultsOptions {
+    std::string employee_id;
+    std::string employee_name;
+    std::optional<bool> mark_for_inspection;
+    bool allow_initial_review_completion = true;
+};
+
+struct SaveReportResultsOutcome {
+    SaveReportResultsStatus status = SaveReportResultsStatus::unavailable;
+    std::vector<std::string> skipped_formula_items;
+    bool critical = false;
+};
+
+bool save_report_results(const std::string& connection_string, const std::string& rep_no,
+                         const std::vector<ReportResultChange>& changes,
+                         const SaveReportResultsOptions& options,
+                         SaveReportResultsOutcome& outcome, std::string& error);
 
 struct QualityControlLisQuery {
     std::string connection_string;
@@ -916,6 +1017,8 @@ bool query_microbiology_report_machine_picker_machines(
     const std::string& connection_string, const std::string& room_code,
     std::vector<MachineOption>& rows, std::string& error, LogFn log = {});
 bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
+bool set_report_need_inspect(const std::string& connection_string, const std::string& rep_no,
+                             bool need_inspect, bool& changed, std::string& error);
 bool query_blood_lis_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, std::string& error, LogFn log = {});
 bool query_latest_report_phone_by_reg_no(const std::string& connection_string, const std::string& reg_no, std::string& phone, std::string& error, LogFn log = {});
 bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_string, const std::string& reg_no, std::vector<std::string>& inpatient_nos, std::string& error, LogFn log = {});
@@ -923,12 +1026,17 @@ bool query_inpatient_nos_by_social_no_from_reg_no(const std::string& connection_
 bool query_regular_comparison_history(const std::string& connection_string,
                                      const ReportRow& current,
                                      std::vector<ReportRow>& rows, std::string& error);
+// Optionally include display positions for the first report in a batch.
+enum class ResultDisplayPositions { none, regular_report };
 // One connection and statement for all requested reports; buckets follow rep_nos order.
 bool query_results_batch(const std::string& connection_string,
                          const std::vector<std::string>& rep_nos,
                          std::vector<std::vector<ResultRow>>& rows,
-                         std::string& error, LogFn log = {});
-bool query_results(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error, LogFn log = {});
+                         std::string& error, LogFn log = {},
+                         ResultDisplayPositions positions = ResultDisplayPositions::none);
+bool query_results(const std::string& connection_string, const std::string& rep_no,
+                   std::vector<ResultRow>& rows, std::string& error, LogFn log = {},
+                   ResultDisplayPositions positions = ResultDisplayPositions::none);
 bool query_quality_control_lis_results(const QualityControlLisQuery& query, std::vector<QualityControlLisRow>& rows, std::string& error, LogFn log = {});
 bool query_quality_control_sample_items(const QualityControlSampleItemsQuery& query, std::vector<QualityControlSampleItemRow>& rows, std::string& error, LogFn log = {});
 bool query_scheduled_check_items(const std::string& connection_string,
@@ -1004,5 +1112,87 @@ bool query_massive_transfusion_statistics(const MassiveTransfusionStatQuery& que
                                           std::string& error, LogFn log = {});
 bool query_immune_duplicate_statistics(const ImmuneDuplicateStatQuery& query, ImmuneDuplicateStatSummary& summary, std::vector<ImmuneDuplicateStatDetailRow>& rows, std::string& error, LogFn log = {});
 bool query_outpatient_charges(const OutpatientChargeQuery& query, std::vector<OutpatientChargeRow>& rows, std::string& error, LogFn log = {});
+
+// ============================================================================
+// 常规报告审核写回
+// ============================================================================
+struct AuditOutcome {
+    bool report_state_changed = false;  // 核心 UPDATE 未匹配到仍可审核的报告
+    int affected = 0;
+};
+
+enum class CancelAuditStatus {
+    // Values returned by regular_report_cancel_audit_sql.inc.
+    saved = 0,
+    report_changed = 1,
+    unsupported_config = 3,
+    permission_denied = 4,
+    expired = 5,
+    invalid_reason = 6,
+    shared_barcode = 7,
+    sent_director_required = 8
+};
+
+struct CancelAuditReason {
+    std::string id;
+    std::string type;
+    std::string type_name;
+    std::string text;
+};
+
+struct CancelAuditPreview {
+    std::string state;
+    std::string check;
+    std::string report_time;
+    std::string reviewer_id;
+    std::string machine_name;
+    bool reason_required = true;
+    std::vector<CancelAuditReason> reasons;
+};
+
+bool query_cancel_audit_preview(const std::string& connection_string, const std::string& rep_no,
+                                CancelAuditPreview& preview, std::string& error);
+bool cancel_report_audit(const std::string& connection_string, const std::string& rep_no,
+                         const CancelAuditPreview& preview, const std::string& employee_id,
+                         const std::string& login_code, const std::string& employee_name,
+                         const CancelAuditReason& reason, CancelAuditStatus& status, std::string& error);
+
+bool query_audit_config(const std::string& connection_string, AuditConfig& config,
+                        std::string& error, LogFn log = {});
+bool query_audit_permission(const std::string& connection_string,
+                            const std::string& employee_id, bool& is_review,
+                            std::string& error, LogFn log = {});
+bool query_audit_report_state(const std::string& connection_string,
+                              const std::string& rep_no, AuditReportState& state,
+                              std::string& error, LogFn log = {});
+bool query_audit_reviewer(const std::string& connection_string, const std::string& rep_no,
+                          const std::string& current_user_id, const AuditConfig& config,
+                          AuditReviewer& reviewer, std::string& error, LogFn log = {});
+bool query_custom_audit_rules(const std::string& connection_string, const std::string& rep_no,
+                              CustomAuditRules& rules, CustomAuditHeader& header,
+                              std::vector<CustomAuditEntry>& entries, std::string& error,
+                              LogFn log = {});
+bool query_audit_entries(const std::string& connection_string, const std::string& rep_no,
+                         std::vector<AuditEntry>& entries, std::string& error, LogFn log = {});
+bool query_item_audit_rules(const std::string& connection_string, const std::string& mach_code,
+                            std::vector<ItemAuditRule>& rules, std::string& error,
+                            LogFn log = {});
+bool query_previous_audit_result(const std::string& connection_string, const std::string& reg_no,
+                                 const std::string& rep_no, const std::string& item_code,
+                                 PreviousAuditResult& result, std::string& error, LogFn log = {});
+bool query_item_audit_counts(const std::string& connection_string, const std::string& rep_no,
+                             const std::string& txm_no, const std::string& mach_code,
+                             int& expected, int& actual, std::string& error, LogFn log = {});
+bool query_crisis_message_state(const std::string& connection_string, const std::string& rep_no,
+                                bool& is_critical, bool& has_message, std::string& error,
+                                LogFn log = {});
+bool query_critical_items(const std::string& connection_string, const std::string& rep_no,
+                          std::vector<CriticalResultItem>& items, std::string& error,
+                          LogFn log = {});
+bool query_critical_bounds(const std::string& connection_string, const std::string& mach_code,
+                           std::vector<CriticalBoundCandidate>& bounds, std::string& error,
+                           LogFn log = {});
+bool execute_audit(const std::string& connection_string, const AuditPlan& plan,
+                   AuditOutcome& outcome, std::string& error, LogFn log = {});
 
 }  // namespace search

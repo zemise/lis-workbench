@@ -64,6 +64,7 @@ add_library(search_core STATIC
     src/login_core.cpp
     src/login_source.cpp
     src/search_core.cpp
+    src/regular_report_audit.cpp
     src/barcode_report_matching.cpp
     src/barcode_report_query.cpp
     src/search_app.cpp
@@ -181,8 +182,10 @@ target_link_libraries(login_source_runtime PUBLIC search_core update_core wbemuu
 # ── Main application (Win32 MDI shell) ────────────────────────
 set(LIS_REGULAR_REPORT_SOURCES
     src/regular_report_barcode_range.cpp
+    src/regular_report_cancel_audit_dialog.cpp
     src/regular_report_comparison.cpp
     src/regular_report_module.cpp
+    src/regular_report_result_editor.cpp
     src/regular_report_tracking.cpp
     src/regular_report_tracking_window.cpp
     src/regular_report_utils.cpp
@@ -353,6 +356,13 @@ if(BUILD_TESTING)
     target_include_directories(regular_report_barcode_range_tests PRIVATE src)
     add_test(NAME regular_report_barcode_range_tests COMMAND regular_report_barcode_range_tests)
 
+    add_executable(regular_report_audit_tests
+        tests/regular_report_audit_test.cpp
+    )
+    target_include_directories(regular_report_audit_tests PRIVATE src)
+    target_link_libraries(regular_report_audit_tests PRIVATE search_core)
+    add_test(NAME regular_report_audit_tests COMMAND regular_report_audit_tests)
+
     add_executable(scheduled_result_check_tests
         tests/scheduled_result_check_test.cpp
         src/scheduled_result_check_core.cpp
@@ -438,11 +448,12 @@ if(BUILD_TESTING)
         add_executable(regular_report_compact_tests
             tests/regular_report_compact_test.cpp
             ${LIS_REGULAR_REPORT_SOURCES}
+            src/login_database.cpp
             src/barcode_label_printing.cpp
             src/search_splitter.cpp
             resource/app.rc
         )
-        target_link_libraries(regular_report_compact_tests PRIVATE search_ui_core uxtheme winspool)
+        target_link_libraries(regular_report_compact_tests PRIVATE search_ui_core uxtheme winspool iphlpapi)
         if(MSVC)
             target_link_options(regular_report_compact_tests PRIVATE /MANIFEST:NO)
         endif()
@@ -478,6 +489,7 @@ if(BUILD_TESTING)
             update_database_tests update_package_tests db_update_upload_offline_tests
             db_update_package_tests regular_report_comparison_tests regular_report_tracking_tests
             microbiology_quick_machine_tests microbiology_label_tests regular_report_barcode_range_tests
+            regular_report_audit_tests
             regular_report_machine_tests regular_report_compact_tests
             scheduled_result_check_tests transfusion_order_core_tests search_datetime_tests barcode_report_matching_tests
             tat_statistics_tests tat_no_log_tests massive_transfusion_core_tests xlsx_writer_tests

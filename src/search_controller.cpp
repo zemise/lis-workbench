@@ -101,13 +101,15 @@ bool run_report_query(const DbSettings& settings, const QueryInput& input, std::
     return true;
 }
 
-bool load_result_rows(const std::string& connection_string, const std::string& rep_no, std::vector<ResultRow>& rows, std::string& error) {
+bool load_result_rows(const std::string& connection_string, const std::string& rep_no,
+                      std::vector<ResultRow>& rows, std::string& error,
+                      ResultDisplayPositions positions) {
     if (connection_string.empty()) {
         error = "missing connection string";
         rows.clear();
         return false;
     }
-    return query_results(connection_string, rep_no, rows, error, {});
+    return query_results(connection_string, rep_no, rows, error, {}, positions);
 }
 
 bool load_specimen_barcode(const DbSettings& settings, const std::string& barcode, SpecimenBarcodeResult& result, std::string& error) {

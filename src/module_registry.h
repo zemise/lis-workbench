@@ -4,6 +4,9 @@
 
 #include "app_settings.h"
 
+#include <cstdint>
+#include <string>
+
 #include <windows.h>
 
 struct ModuleContext {
@@ -13,6 +16,10 @@ struct ModuleContext {
     search::DbSettings dbSettings;
     int fontSize = 9;
     void* appContext = nullptr;  // optional pointer to app::Context for global state sync
+    // 当前登录身份（审核等写操作需要员工编号；只读查询不使用）。
+    std::int64_t employee_id = 0;
+    std::wstring employee_name;
+    std::wstring login_code;
 };
 
 struct ModuleDef {

@@ -543,12 +543,8 @@ bool regularReportIsEmergencyReport(const search::ReportRow& report) {
     return search::trim(report.report_type) == "0";
 }
 
-bool regularReportHasBarcodeEmergencyLabel(const search::ReportRow& report) {
-    return search::trim(report.barcode_jz_flag) == "1";
-}
-
 bool regularReportUsesEmergencyTextColor(const search::ReportRow& report) {
-    return regularReportIsEmergencyReport(report) || regularReportHasBarcodeEmergencyLabel(report);
+    return regularReportIsEmergencyReport(report) || search::trim(report.barcode_jz_flag) == "1";
 }
 
 bool regularReportIsCriticalReport(const search::ReportRow& report) {
@@ -562,6 +558,8 @@ COLORREF regularReportRowColor(const RegularReportState* st, int row) {
     const bool sent = regularReportIsSent(report);
     const bool reviewed = regularReportIsReviewed(report);
     const bool critical = regularReportIsCriticalReport(report);
+    if (report.need_inspect)
+        return reviewed && !sent ? REGULAR_COLOR_REPORT_REVIEWED : REGULAR_COLOR_REPORT_NEED_INSPECT;
     if (sent && reviewed && critical) return REGULAR_COLOR_CRITICAL_FINAL;
     if (critical && !sent && !reviewed) return REGULAR_COLOR_CRITICAL_PENDING;
     if (sent) return REGULAR_COLOR_REPORT_SENT;

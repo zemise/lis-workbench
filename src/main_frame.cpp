@@ -384,8 +384,14 @@ void updateStatusBarParts(HWND sb, int clientWidth) {
 }
 
 ModuleContext makeCtx() {
-  return {g_ctx.mdiClient,  g_ctx.instance, g_ctx.uiFont,
-          g_ctx.dbSettings, g_ctx.fontSize, &g_ctx};
+  ModuleContext ctx{g_ctx.mdiClient,  g_ctx.instance, g_ctx.uiFont,
+                    g_ctx.dbSettings, g_ctx.fontSize, &g_ctx};
+  if (g_identity) {
+    ctx.employee_id = g_identity->employee_id;
+    ctx.employee_name = g_identity->name;
+    ctx.login_code = g_identity->code;
+  }
+  return ctx;
 }
 
 bool dispatchToolbarOnlyModule(int id) {
@@ -1500,7 +1506,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     MSG msg{};
     while (!sourceSessionEnding && IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-      if (!regular_report_translate_compact_message(&msg) &&
+      if (!regular_report_translate_save_message(&msg) &&
+          !regular_report_translate_compact_message(&msg) &&
           !TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

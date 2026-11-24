@@ -17,6 +17,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1312,6 +1313,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(nullif(LTRIM(RTRIM(mach.MACH_NAME)),''),isnull(cast(r.MACH_CODE as varchar(20)),'')),"
         << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
         << " isnull(LTRIM(RTRIM(cast(r.GROUP_CODE as varchar(20)))), '')"
+        << ", CASE WHEN r.NeedInspect=1 THEN '1' ELSE '0' END"
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -1410,6 +1412,7 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.mach_name = fetch_column(stmt, 36);
         row.room_code = fetch_column(stmt, 37);
         row.group_code = fetch_column(stmt, 38);
+        row.need_inspect = fetch_column(stmt, 39) == "1";
         rows.push_back(row);
     }
 
@@ -1668,13 +1671,14 @@ bool query_regular_comparison_history(const std::string& connection_string,
 }
 
 bool query_results(const std::string& connection_string, const std::string& rep_no,
-                   std::vector<ResultRow>& rows, std::string& error, LogFn log) {
+                   std::vector<ResultRow>& rows, std::string& error, LogFn log,
+                   ResultDisplayPositions positions) {
     querydiag::RequestScope request(__func__, error, log);
     log = request.log_callback();
     request.observe_rows(rows);
     rows.clear();
     std::vector<std::vector<ResultRow>> reports;
-    if (!query_results_batch(connection_string, {rep_no}, reports, error, log)) return false;
+    if (!query_results_batch(connection_string, {rep_no}, reports, error, log, positions)) return false;
     if (!reports.empty()) rows = std::move(reports.front());
     return true;
 }
@@ -1682,7 +1686,7 @@ bool query_results(const std::string& connection_string, const std::string& rep_
 bool query_results_batch(const std::string& connection_string,
                          const std::vector<std::string>& rep_nos,
                          std::vector<std::vector<ResultRow>>& rows,
-                         std::string& error, LogFn log) {
+                         std::string& error, LogFn log, ResultDisplayPositions positions) {
     querydiag::RequestScope request(__func__, error, log);
     log = request.log_callback();
     request.observe_rows(rows);
@@ -1691,6 +1695,7 @@ bool query_results_batch(const std::string& connection_string,
     (void)connection_string;
     (void)rep_nos;
     (void)log;
+    (void)positions;
     error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #else
@@ -1710,13 +1715,20 @@ bool query_results_batch(const std::string& connection_string,
         return false;
     }
 
+    const bool include_display = positions == ResultDisplayPositions::regular_report;
     std::ostringstream sql;
     sql << "SELECT isnull(lm.GROUP_NAME,''),isnull(i.ITEM_NAME,e.ITEM_NAME),isnull(e.RESULT,''),isnull(e.UPBOUND,''),"
         << " isnull(e.DOWNBOUND,''),isnull(RTRIM(i.UNIT),''),isnull(i.ENG_NAME,''),"
         << " isnull(e.NORMAL,''),CAST(e.ITEM_CODE AS varchar(20)),"
         << " isnull(CAST(e.NORMAL_WJ AS varchar(20)),''),"
-        << " isnull(scope.UPBOUND1,''),isnull(scope.DNBOUND1,''),CAST(e.REP_NO AS varchar(20))"
-        << " FROM LS_AS_REPENTRY e"
+        << " isnull(scope.UPBOUND1,''),isnull(scope.DNBOUND1,''),CAST(e.REP_NO AS varchar(20)),"
+        << " isnull(CAST(e.GROUP_CODE AS varchar(20)),'')";
+    if (include_display) {
+        sql << ",ROW_NUMBER() OVER (PARTITION BY e.REP_NO "
+            << " ORDER BY ISNULL(group_order.display_order,0),i.SEQ_NO,e.GROUP_CODE,e.ITEM_CODE,e.ID)"
+            << ",CAST(e.ID AS varchar(20)),ISNULL(RTRIM(CAST(i.TYPE AS varchar(10))),'')";
+    }
+    sql << " FROM LS_AS_REPENTRY e"
         << " LEFT JOIN LS_AS_ITEM i ON e.ITEM_CODE = i.ITEM_CODE AND i.DELETE_BIT=0"
         << " OUTER APPLY ("
         << " SELECT TOP 1 m.GROUP_NAME"
@@ -1726,12 +1738,22 @@ bool query_results_batch(const std::string& connection_string,
         << " ORDER BY CASE WHEN isnull(m.DELETE_BIT,0)=0 AND isnull(m.USE_FLAG,0)=0 THEN 0 ELSE 1 END,m.ID"
         << " ) lm"
         << " OUTER APPLY ("
-        << " SELECT TOP 1 LTRIM(RTRIM(isnull(sx.SEX_NAME,''))) AS SEX_NAME"
+        << " SELECT TOP 1 LTRIM(RTRIM(isnull(sx.SEX_NAME,''))) AS SEX_NAME";
+    if (include_display) sql << ",rr.MACH_CODE";
+    sql
         << " FROM LS_AS_REPORT rr WITH (NOLOCK)"
         << " LEFT JOIN LS_AS_SEX sx WITH (NOLOCK) ON sx.SEX_CODE=rr.SEX"
         << " WHERE rr.REP_NO=e.REP_NO ORDER BY rr.ID"
-        << " ) report_sex"
-        << " OUTER APPLY ("
+        << " ) report_sex";
+    if (include_display) {
+        // A combination may have multiple active configurations. Use its earliest
+        // configured position so a lookup never duplicates the report entry.
+        sql << " OUTER APPLY (SELECT MIN(ISNULL(g.orderby,0)) AS display_order"
+            << " FROM LS_AS_GROUP g WITH (NOLOCK) WHERE g.DELETE_BIT=0"
+            << " AND g.MACH_CODE=report_sex.MACH_CODE AND g.GROUP_CODE=e.GROUP_CODE"
+            << " AND e.REP_NO=" << trim(rep_nos.front()) << ") group_order";
+    }
+    sql << " OUTER APPLY ("
         << " SELECT TOP 1 s.UPBOUND1,s.DNBOUND1"
         << " FROM LS_AS_DEF_ITEMSCOPE s WITH (NOLOCK)"
         << " WHERE s.ITEM_CODE=e.ITEM_CODE"
@@ -1774,7 +1796,18 @@ bool query_results_batch(const std::string& connection_string,
         row.critical_low_bound = fetch_column(stmt, 11);
         row.critical_high_bound = fetch_column(stmt, 12);
         const auto report = report_indexes.find(fetch_column(stmt, 13));
-        if (report != report_indexes.end()) rows[report->second].push_back(std::move(row));
+        row.group_code = fetch_column(stmt, 14);
+        if (report != report_indexes.end()) {
+            auto& report_rows = rows[report->second];
+            if (include_display && report->second == 0) {
+                row.regular_display_position = static_cast<std::size_t>(
+                    std::strtoull(fetch_column(stmt, 15).c_str(), nullptr, 10));
+                row.code_position = report_rows.size();
+                row.entry_id = fetch_column(stmt, 16);
+                row.result_type = fetch_column(stmt, 17);
+            }
+            report_rows.push_back(std::move(row));
+        }
     }
 
     if (fetched != SQL_NO_DATA) {
@@ -1784,6 +1817,37 @@ bool query_results_batch(const std::string& connection_string,
         return false;
     }
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    if (include_display && std::any_of(rows.front().begin(), rows.front().end(),
+            [](const ResultRow& row) { return !row.numeric_result(); })) {
+        const auto dictionary_sql =
+            "SELECT CAST(d.ITEM_CODE AS varchar(20)),RTRIM(CAST(d.RESU_CODE AS varchar(20))),d.RESU_NAME "
+            "FROM LS_AS_RESULT d WHERE d.DELETE_BIT=0 AND EXISTS ("
+            "SELECT 1 FROM LS_AS_REPENTRY e WHERE e.REP_NO=" + trim(rep_nos.front()) +
+            " AND e.ITEM_CODE=d.ITEM_CODE AND e.DELETE_BIT=0) "
+            "ORDER BY CAST(d.RESU_CODE AS int),d.RESU_CODE,d.RESU_NAME";
+        if (!exec_query(db.dbc, dictionary_sql, stmt, error)) {
+            rows.clear();
+            return false;
+        }
+        std::unordered_map<std::string, std::vector<ReportResultOption>> dictionary;
+        while ((fetched = SQLFetch(stmt)) == SQL_SUCCESS || fetched == SQL_SUCCESS_WITH_INFO) {
+            const auto item_code = fetch_column(stmt, 1);
+            auto code = fetch_column(stmt, 2);
+            auto name = fetch_column(stmt, 3);
+            if (!name.empty()) dictionary[item_code].push_back({std::move(code), std::move(name)});
+        }
+        if (fetched != SQL_NO_DATA) {
+            error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            rows.clear();
+            return false;
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        for (auto& row : rows.front()) {
+            const auto options = dictionary.find(row.item_code);
+            if (!row.numeric_result() && options != dictionary.end()) row.result_options = options->second;
+        }
+    }
     error.clear();
     return true;
 #endif
@@ -6065,6 +6129,1877 @@ bool query_scheduled_check_report_bounds(const std::string& connection_string,
     SQLFreeHandle(SQL_HANDLE_STMT, stmt);
     error.clear();
     return true;
+#endif
+}
+
+// ============================================================================
+// 常规报告写回。兼容现场驱动，通过宽字符 SQL 和转义字面量执行事务。
+// ============================================================================
+
+#ifdef _WIN32
+std::string audit_sql_with_literals(const std::string& sql,
+                                    const std::vector<std::string>& params) {
+    std::string out;
+    out.reserve(sql.size() + params.size() * 8);
+    size_t param_index = 0;
+    for (char c : sql) {
+        if (c == '?' && param_index < params.size()) {
+            out += '\'';
+            out += sql_escape(params[param_index++]);
+            out += '\'';
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+// 与现有 SELECT 完全相同的执行入口：SQLExecDirectW + 转义字面量。
+// 现场 ODBC 驱动对 SQLPrepareW + SQLBindParameter(SQL_C_WCHAR) 返回无诊断的
+// 客户端错误，故审核写回统一走 SQLExecDirectW，避免依赖驱动的参数绑定能力。
+bool exec_report_write(SQLHDBC dbc, const std::string& sql, SQLLEN& affected,
+                    std::string& error) {
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) {
+        error = querydiag::safe_error(querydiag::Operation::statement);
+        return false;
+    }
+    const std::wstring wide_sql = utf8_to_wide(sql);
+    const SQLRETURN rc = SQLExecDirectW(
+        stmt, reinterpret_cast<SQLWCHAR*>(const_cast<wchar_t*>(wide_sql.c_str())), SQL_NTS);
+    // ODBC 规范：searched UPDATE/DELETE 影响 0 行时返回 SQL_NO_DATA，这是正常的“没有行可改”，
+    // 不能当作失败（例如 LS_AS_RESULTP 没有该报告的行、条码已无匹配时）。
+    if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO && rc != SQL_NO_DATA) {
+        error = querydiag::odbc_error(querydiag::Operation::execute, SQL_HANDLE_STMT, stmt);
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        return false;
+    }
+    affected = 0;
+    if (rc != SQL_NO_DATA && !SQL_SUCCEEDED(SQLRowCount(stmt, &affected))) affected = -1;
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+}
+
+bool exec_audit_statement(SQLHDBC dbc, const AuditStatement& statement,
+                          SQLLEN& affected, std::string& error) {
+    return exec_report_write(dbc, audit_sql_with_literals(statement.sql, statement.params),
+                          affected, error);
+}
+#endif
+
+bool query_audit_config(const std::string& connection_string, AuditConfig& config,
+                        std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    config = {};
+#ifndef _WIN32
+    (void)connection_string;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT CAST(ID AS varchar(20)), isnull(CONFIG,'') FROM dbo.JC_CONFIG WITH (NOLOCK) "
+        "WHERE ID IN (4110,4141,4147,4149,4222,4242,4245,4246,4247,4405,4443,4453,4460,"
+        "4507,4527,4778,4804,4850)";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        const std::string id = trim(fetch_column(stmt, 1));
+        const std::string value = trim(fetch_column(stmt, 2));
+        if (id == "4110") config.v4110 = value;
+        else if (id == "4141") config.v4141 = value;
+        else if (id == "4147") config.v4147 = value;
+        else if (id == "4149") config.v4149 = value;
+        else if (id == "4222") config.v4222 = value;
+        else if (id == "4242") config.v4242 = value;
+        else if (id == "4245") config.v4245 = value;
+        else if (id == "4246") config.v4246 = value;
+        else if (id == "4247") config.v4247 = value;
+        else if (id == "4405") config.v4405 = value;
+        else if (id == "4443") config.v4443 = value;
+        else if (id == "4453") config.v4453 = value;
+        else if (id == "4460") config.v4460 = value;
+        else if (id == "4507") config.v4507 = value;
+        else if (id == "4527") config.v4527 = value;
+        else if (id == "4778") config.v4778 = value;
+        else if (id == "4804") config.v4804 = value;
+        else if (id == "4850") config.v4850 = value;
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_audit_permission(const std::string& connection_string,
+                            const std::string& employee_id, bool& is_review,
+                            std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    is_review = false;
+#ifndef _WIN32
+    (void)connection_string;
+    (void)employee_id;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT TOP (1) isnull(CAST(b.isreview AS varchar(20)),'0') "
+        "FROM pub_group_user a "
+        "INNER JOIN ls_as_group_power b ON a.group_id=b.group_id "
+        "INNER JOIN pub_user c ON a.user_id=c.id "
+        "WHERE b.delete_bit=0 AND c.Employee_Id=" + sql_escape(trim(employee_id));
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        is_review = trim(fetch_column(stmt, 1)) != "0";
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_audit_report_state(const std::string& connection_string,
+                              const std::string& rep_no, AuditReportState& state,
+                              std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    state = {};
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT CAST(r.REP_NO AS varchar(20)),isnull(r.TXM_NO,''),isnull(r.OPER_NO,''),"
+        "isnull(r.NAME,''),isnull(r.SEX,''),isnull(r.AGE,''),isnull(r.CONF,''),"
+        "isnull(r.CHK_FLAG,''),isnull(CAST(r.NeedInspect AS varchar(10)),''),"
+        "isnull(CAST(r.OPER_CODE AS varchar(20)),''),isnull(CAST(r.MACH_CODE AS varchar(20)),''),"
+        "isnull(CAST(r.GROUP_CODE AS varchar(20)),''),isnull(CAST(r.TYPE AS varchar(10)),''),"
+        "(SELECT COUNT(1) FROM LS_AS_REPENTRY e WHERE e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0),"
+        "(SELECT COUNT(1) FROM LS_AS_REPENTRY e WHERE e.REP_NO=r.REP_NO AND isnull(e.DELETE_BIT,0)=0 "
+        "AND NULLIF(RTRIM(e.RESULT),'') IS NOT NULL),isnull(r.REG_NO,''),"
+        "isnull(CAST(r.SAMP_CODE AS varchar(20)),''),"
+        "isnull(CAST(r.DEPT_CODE AS varchar(20)),'') "
+        "FROM LS_AS_REPORT r WITH (NOLOCK) WHERE r.REP_NO='" + sql_escape(trim(rep_no)) + "'";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) != SQL_SUCCESS) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        error = "report not found";
+        return false;
+    }
+    state.rep_no = trim(fetch_column(stmt, 1));
+    state.txm_no = trim(fetch_column(stmt, 2));
+    state.oper_no = trim(fetch_column(stmt, 3));
+    state.name = trim(fetch_column(stmt, 4));
+    state.sex = trim(fetch_column(stmt, 5));
+    state.age = trim(fetch_column(stmt, 6));
+    state.conf = trim(fetch_column(stmt, 7));
+    state.chk_flag = trim(fetch_column(stmt, 8));
+    state.need_inspect = trim(fetch_column(stmt, 9));
+    state.oper_code = trim(fetch_column(stmt, 10));
+    state.mach_code = trim(fetch_column(stmt, 11));
+    state.group_code = trim(fetch_column(stmt, 12));
+    state.type = trim(fetch_column(stmt, 13));
+    state.entry_count = std::atoi(fetch_column(stmt, 14).c_str());
+    state.result_count = std::atoi(fetch_column(stmt, 15).c_str());
+    state.reg_no = trim(fetch_column(stmt, 16));
+    state.samp_code = trim(fetch_column(stmt, 17));
+    state.dept_code = trim(fetch_column(stmt, 18));
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_audit_reviewer(const std::string& connection_string, const std::string& rep_no,
+                          const std::string& current_user_id, const AuditConfig& config,
+                          AuditReviewer& reviewer, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    reviewer = {};
+    reviewer.employee_id = trim(current_user_id);
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)config;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    // 刻意不复制原程序 GetShMan 的“空 catch 静默回退”：任何映射查询失败都向上返回，
+    // 避免把“读取失败”误当成“没有映射”而静默改用当前人。
+    auto scalar = [&](const std::string& sql, std::string& out) -> bool {
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, sql, stmt, error)) return false;
+        if (SQLFetch(stmt) == SQL_SUCCESS) out = trim(fetch_column(stmt, 1));
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+        return true;
+    };
+    std::string oper_code, room_code, hour_text;
+    {
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        const std::string state_sql =
+            "SELECT isnull(CAST(r.OPER_CODE AS varchar(20)),''),"
+            "isnull(CAST(r.ROOM_CODE AS varchar(20)),''),"
+            "isnull(CAST(DATEPART(hour,GETDATE()) AS varchar(10)),'') "
+            "FROM LS_AS_REPORT r WITH (NOLOCK) WHERE r.REP_NO='" + sql_escape(trim(rep_no)) + "'";
+        if (!exec_query(db.dbc, state_sql, stmt, error)) return false;
+        if (SQLFetch(stmt) != SQL_SUCCESS) {
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            error = "report not found";
+            return false;
+        }
+        oper_code = trim(fetch_column(stmt, 1));
+        room_code = trim(fetch_column(stmt, 2));
+        hour_text = trim(fetch_column(stmt, 3));
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+    std::string resolved = trim(current_user_id);
+    if (config.reviewer_mapping_enabled()) {
+        // 原 GetShMan：仅当报告检验人就是当前登录人时，才按时间行 + 人员/专业组映射替换。
+        if (trim(oper_code) == trim(current_user_id) && !hour_text.empty()) {
+            std::string time_row;
+            if (!scalar("SELECT TOP (1) 1 FROM T_LIS_AS_AuditMagMan WITH (NOLOCK) "
+                        "WHERE [type]=3 AND StartTime<=" + hour_text +
+                        " AND EndTime>=" + hour_text,
+                        time_row)) {
+                return false;
+            }
+            if (!time_row.empty()) {
+                std::string sh_id;
+                if (!scalar("SELECT TOP (1) isnull(CAST(SH_ID AS varchar(20)),'') "
+                            "FROM T_LIS_AS_AuditMagMan WITH (NOLOCK) "
+                            "WHERE TYPE=2 AND JY_ID='" + sql_escape(trim(oper_code)) + "'",
+                            sh_id)) {
+                    return false;
+                }
+                if (sh_id.empty() && !room_code.empty()) {
+                    std::string by_room;
+                    if (!scalar("SELECT TOP (1) isnull(CAST(SH_ID AS varchar(20)),'') "
+                                "FROM T_LIS_AS_AuditMagMan WITH (NOLOCK) "
+                                "WHERE TYPE=1 AND RoomCode='" + sql_escape(trim(room_code)) + "'",
+                                by_room)) {
+                        return false;
+                    }
+                    if (!by_room.empty()) sh_id = by_room;
+                }
+                if (!sh_id.empty()) resolved = sh_id;
+            }
+        }
+    } else {
+        const std::string v4110 = trim(config.v4110);
+        if (!v4110.empty() && v4110 != "0") resolved = v4110;
+    }
+    reviewer.employee_id = resolved;
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_custom_audit_rules(const std::string& connection_string, const std::string& rep_no,
+                              CustomAuditRules& rules, CustomAuditHeader& header,
+                              std::vector<CustomAuditEntry>& entries, std::string& error,
+                              LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    rules = {};
+    header = {};
+    entries.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string rep = sql_escape(trim(rep_no));
+    std::string mach_code;
+    {
+        const std::string sql =
+            "SELECT isnull(CAST(r.MACH_CODE AS varchar(20)),''),isnull(r.NAME,''),"
+            "isnull(CAST(r.SEX AS varchar(10)),''),isnull(CAST(r.AGE AS varchar(20)),''),"
+            "isnull(CAST(r.DEPT_CODE AS varchar(20)),''),isnull(r.REG_NO,''),"
+            "isnull(r.TXM_NO,''),isnull(CAST(r.OPER_NO AS varchar(30)),'') "
+            "FROM LS_AS_REPORT r WITH (NOLOCK) WHERE r.REP_NO='" + rep + "'";
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, sql, stmt, error)) return false;
+        if (SQLFetch(stmt) != SQL_SUCCESS) {
+            SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+            error = "report not found";
+            return false;
+        }
+        mach_code = trim(fetch_column(stmt, 1));
+        header.name = trim(fetch_column(stmt, 2));
+        header.sex = trim(fetch_column(stmt, 3));
+        header.age = trim(fetch_column(stmt, 4));
+        header.dept_code = trim(fetch_column(stmt, 5));
+        header.reg_no = trim(fetch_column(stmt, 6));
+        header.txm_no = trim(fetch_column(stmt, 7));
+        header.oper_no = trim(fetch_column(stmt, 8));
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+    if (mach_code.empty()) return true;
+    {
+        const std::string sql =
+            "SELECT TOP (1) isnull(CAST(IsRule AS varchar(10)),'0'),"
+            "isnull(CAST(All_R_K AS varchar(10)),'0'),isnull(CAST(One_R_K AS varchar(10)),'0'),"
+            "isnull(CAST(R_0 AS varchar(10)),'0'),isnull(CAST(R_JS AS varchar(10)),'0'),"
+            "isnull(CAST(IsZero AS varchar(10)),'0'),isnull(CustomValue,''),"
+            "isnull(CAST(IsName AS varchar(10)),'0'),isnull(CAST(IsSex AS varchar(10)),'0'),"
+            "isnull(CAST(IsAge AS varchar(10)),'0'),isnull(CAST(IsKs AS varchar(10)),'0'),"
+            "isnull(CAST(IsReg AS varchar(10)),'0'),isnull(CAST(IsTxm AS varchar(10)),'0') "
+            "FROM T_ts_ls_CustomAuditRules WITH (NOLOCK) "
+            "WHERE Mach_Code='" + sql_escape(mach_code) + "' AND IsRule=1";
+        SQLHSTMT stmt = SQL_NULL_HSTMT;
+        if (!exec_query(db.dbc, sql, stmt, error)) {
+            // 不静默跳过规则：读取失败向上返回，由审核入口明确提示。
+            return false;
+        }
+        if (SQLFetch(stmt) == SQL_SUCCESS) {
+            rules.is_rule = trim(fetch_column(stmt, 1)) == "1";
+            rules.all_r_k = trim(fetch_column(stmt, 2)) == "1";
+            rules.one_r_k = trim(fetch_column(stmt, 3)) == "1";
+            rules.r_0 = trim(fetch_column(stmt, 4)) == "1";
+            rules.r_js = trim(fetch_column(stmt, 5)) == "1";
+            rules.is_zero = trim(fetch_column(stmt, 6)) == "1";
+            rules.custom_value = trim(fetch_column(stmt, 7));
+            rules.is_name = trim(fetch_column(stmt, 8)) == "1";
+            rules.is_sex = trim(fetch_column(stmt, 9)) == "1";
+            rules.is_age = trim(fetch_column(stmt, 10)) == "1";
+            rules.is_ks = trim(fetch_column(stmt, 11)) == "1";
+            rules.is_reg = trim(fetch_column(stmt, 12)) == "1";
+            rules.is_txm = trim(fetch_column(stmt, 13)) == "1";
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+    if (!rules.is_rule) return true;
+    std::string sql =
+        "SELECT isnull(a.RESULT,''),isnull(b.ITEM_NAME,''),"
+        "isnull(CAST(b.TYPE AS varchar(10)),'') "
+        "FROM LS_AS_REPENTRY a WITH (NOLOCK) "
+        "LEFT JOIN LS_AS_ITEM b WITH (NOLOCK) ON b.ITEM_CODE=a.ITEM_CODE "
+        "WHERE a.REP_NO='" + rep + "' AND isnull(a.DELETE_BIT,0)!=1";
+    if (!rules.r_js) sql += " AND b.TYPE!=2";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        CustomAuditEntry entry;
+        entry.result = fetch_column(stmt, 1);
+        entry.item_name = fetch_column(stmt, 2);
+        entry.type = fetch_column(stmt, 3);
+        entries.push_back(std::move(entry));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_audit_entries(const std::string& connection_string, const std::string& rep_no,
+                         std::vector<AuditEntry>& entries, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    entries.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT isnull(a.RESULT,''),"
+        "isnull(NULLIF(RTRIM(a.ITEM_NAME),''),isnull(b.ITEM_NAME,'')),"
+        "isnull(CAST(a.ITEM_CODE AS varchar(20)),''),"
+        "isnull(CAST(a.DELETE_BIT AS varchar(10)),'0') "
+        "FROM LS_AS_REPENTRY a WITH (NOLOCK) "
+        "LEFT JOIN LS_AS_ITEM b WITH (NOLOCK) ON b.ITEM_CODE=a.ITEM_CODE "
+        "WHERE a.REP_NO='" + sql_escape(trim(rep_no)) + "' "
+        "AND isnull(a.DELETE_BIT,0) IN (0,3) ORDER BY a.ID";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        AuditEntry entry;
+        entry.result = fetch_column(stmt, 1);
+        entry.item_name = trim(fetch_column(stmt, 2));
+        entry.item_code = trim(fetch_column(stmt, 3));
+        entry.delete_bit = std::atoi(fetch_column(stmt, 4).c_str());
+        entries.push_back(std::move(entry));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_item_audit_rules(const std::string& connection_string, const std::string& mach_code,
+                            std::vector<ItemAuditRule>& rules, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    rules.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)mach_code;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT isnull(CAST(A.ITEM_CODE AS varchar(20)),''),isnull(A.GREATER_THAN,''),"
+        "isnull(A.LESS_THAN,''),isnull(A.DIFFER,''),isnull(A.EQUALLY,'') "
+        "FROM T_LIS_ITEM_AUDIT_RULE A WITH (NOLOCK) "
+        "INNER JOIN LS_AS_ADDITEM B WITH (NOLOCK) ON A.ITEM_CODE=B.ITEM_CODE "
+        "WHERE B.MACH_CODE='" + sql_escape(trim(mach_code)) + "'";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        ItemAuditRule rule;
+        rule.item_code = trim(fetch_column(stmt, 1));
+        rule.greater_than = trim(fetch_column(stmt, 2));
+        rule.less_than = trim(fetch_column(stmt, 3));
+        rule.differ = trim(fetch_column(stmt, 4));
+        rule.equally = trim(fetch_column(stmt, 5));
+        rules.push_back(std::move(rule));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_previous_audit_result(const std::string& connection_string, const std::string& reg_no,
+                                 const std::string& rep_no, const std::string& item_code,
+                                 PreviousAuditResult& result, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    result = {};
+#ifndef _WIN32
+    (void)connection_string;
+    (void)reg_no;
+    (void)rep_no;
+    (void)item_code;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT TOP (1) isnull(A.RESULT,''),"
+        "isnull(CAST(DATEDIFF(day,B.CHK_DATE,GETDATE()) AS varchar(20)),'0') "
+        "FROM LS_AS_REPENTRY A WITH (NOLOCK) "
+        "INNER JOIN LS_AS_REPORT B WITH (NOLOCK) ON A.REP_NO=B.REP_NO "
+        "WHERE B.REG_NO='" + sql_escape(trim(reg_no)) + "' "
+        "AND B.REP_NO<>'" + sql_escape(trim(rep_no)) + "' "
+        "AND A.ITEM_CODE='" + sql_escape(trim(item_code)) + "' "
+        "AND isnull(A.DELETE_BIT,0)=0 AND isnull(B.DELETE_BIT,0)=0 "
+        "ORDER BY B.CHK_DATE DESC";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        result.found = true;
+        result.result = trim(fetch_column(stmt, 1));
+        result.days_ago = std::abs(std::atoi(fetch_column(stmt, 2).c_str()));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_item_audit_counts(const std::string& connection_string, const std::string& rep_no,
+                             const std::string& txm_no, const std::string& mach_code,
+                             int& expected, int& actual, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    expected = 0;
+    actual = 0;
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)txm_no;
+    (void)mach_code;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT (SELECT COUNT(DISTINCT d.ITEM_CODE) FROM LS_AS_BARCODE a WITH (NOLOCK) "
+        "INNER JOIN LS_AS_LABMATCH b WITH (NOLOCK) ON a.HOITEM_ID=b.ORDER_CODE "
+        "INNER JOIN LS_AS_GROUP c WITH (NOLOCK) ON b.GROUP_CODE=c.GROUP_CODE "
+        "LEFT JOIN LS_AS_GROUP_ITEM d WITH (NOLOCK) ON c.GROUP_CODE=d.GROUP_CODE "
+        "WHERE b.DELETE_BIT=0 AND c.DELETE_BIT=0 AND a.BARCODE='" + sql_escape(trim(txm_no)) +
+        "' AND c.MACH_CODE='" + sql_escape(trim(mach_code)) + "') AS acount,"
+        "(SELECT COUNT(1) FROM LS_AS_REPENTRY WITH (NOLOCK) WHERE REP_NO='" +
+        sql_escape(trim(rep_no)) + "' AND isnull(DELETE_BIT,0)=0) AS bcount";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        expected = std::atoi(fetch_column(stmt, 1).c_str());
+        actual = std::atoi(fetch_column(stmt, 2).c_str());
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_crisis_message_state(const std::string& connection_string, const std::string& rep_no,
+                                bool& is_critical, bool& has_message, std::string& error,
+                                LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    is_critical = false;
+    has_message = false;
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string rep = sql_escape(trim(rep_no));
+    const std::string sql =
+        "SELECT (SELECT COUNT(*) FROM LS_AS_REPORT WITH (NOLOCK) WHERE REP_NO='" + rep +
+        "' AND ASSAYPAT_TYPE='9' AND isnull(DELETE_BIT,0)=0),"
+        "(SELECT COUNT(*) FROM LS_AS_WjzMessage WITH (NOLOCK) WHERE Rep_No='" + rep +
+        "' AND isnull(Delete_Bit,0)=0)";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    if (SQLFetch(stmt) == SQL_SUCCESS) {
+        is_critical = std::atoi(fetch_column(stmt, 1).c_str()) > 0;
+        has_message = std::atoi(fetch_column(stmt, 2).c_str()) > 0;
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_critical_items(const std::string& connection_string, const std::string& rep_no,
+                          std::vector<CriticalResultItem>& items, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    items.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)rep_no;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT isnull(CAST(e.ITEM_CODE AS varchar(20)),''),"
+        "isnull(NULLIF(RTRIM(e.ITEM_NAME),''),isnull(i.ITEM_NAME,'')),"
+        "isnull(e.RESULT,''),isnull(CAST(i.type AS varchar(10)),''),"
+        "isnull(CAST(i.room_code AS varchar(20)),'') "
+        "FROM LS_AS_REPENTRY e WITH (NOLOCK) "
+        "LEFT JOIN LS_AS_ITEM i WITH (NOLOCK) ON i.ITEM_CODE=e.ITEM_CODE "
+        "WHERE e.REP_NO='" + sql_escape(trim(rep_no)) + "' "
+        "AND isnull(e.DELETE_BIT,0) IN (0,3) ORDER BY e.ID";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        CriticalResultItem item;
+        item.item_code = trim(fetch_column(stmt, 1));
+        item.item_name = trim(fetch_column(stmt, 2));
+        item.result = fetch_column(stmt, 3);
+        item.type = trim(fetch_column(stmt, 4));
+        item.room_code = trim(fetch_column(stmt, 5));
+        items.push_back(std::move(item));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool query_critical_bounds(const std::string& connection_string, const std::string& mach_code,
+                           std::vector<CriticalBoundCandidate>& bounds, std::string& error,
+                           LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    bounds.clear();
+#ifndef _WIN32
+    (void)connection_string;
+    (void)mach_code;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    const std::string sql =
+        "SELECT isnull(CAST(a.ITEM_CODE AS varchar(20)),''),"
+        "isnull(CAST(a.ROOM_CODE AS varchar(20)),''),isnull(CAST(b.SAMP_CODE AS varchar(20)),''),"
+        "isnull(b.SEX,''),isnull(b.AGE_UNIT,''),isnull(CAST(b.age_dnbound AS varchar(20)),''),"
+        "isnull(CAST(b.AGE_UPBOUND AS varchar(20)),''),isnull(b.AGE_NAME,''),"
+        "isnull(CAST(b.dept_id AS varchar(20)),'0'),isnull(a.upbound1,''),isnull(a.dnbound1,'') "
+        "FROM LS_AS_DEF_ITEMSCOPE a WITH (NOLOCK) "
+        "INNER JOIN LS_AS_BOUND b WITH (NOLOCK) ON a.bound_code=b.bound_code "
+        "LEFT JOIN LS_AS_ADDITEM c WITH (NOLOCK) ON c.ITEM_CODE=a.ITEM_CODE "
+        "WHERE b.DELETE_BIT<>1 AND c.MACH_CODE='" + sql_escape(trim(mach_code)) + "'";
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, sql, stmt, error)) return false;
+    while (SQLFetch(stmt) == SQL_SUCCESS) {
+        CriticalBoundCandidate bound;
+        bound.item_code = trim(fetch_column(stmt, 1));
+        bound.room_code = trim(fetch_column(stmt, 2));
+        bound.samp_code = trim(fetch_column(stmt, 3));
+        bound.sex = trim(fetch_column(stmt, 4));
+        bound.age_unit = trim(fetch_column(stmt, 5));
+        bound.age_down = trim(fetch_column(stmt, 6));
+        bound.age_up = trim(fetch_column(stmt, 7));
+        bound.age_name = trim(fetch_column(stmt, 8));
+        bound.dept_id = trim(fetch_column(stmt, 9));
+        bound.lower = trim(fetch_column(stmt, 10));
+        bound.upper = trim(fetch_column(stmt, 11));
+        bounds.push_back(std::move(bound));
+    }
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    error.clear();
+    return true;
+#endif
+}
+
+bool execute_audit(const std::string& connection_string, const AuditPlan& plan,
+                   AuditOutcome& outcome, std::string& error, LogFn log) {
+    querydiag::RequestScope request(__func__, error, log);
+    log = request.log_callback();
+    outcome = {};
+#ifndef _WIN32
+    (void)connection_string;
+    (void)plan;
+    (void)log;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#else
+    DbContext db;
+    if (!connect(connection_string, db, error, log)) return false;
+    SQLLEN tx_affected = 0;
+    if (!exec_report_write(db.dbc, "BEGIN TRANSACTION", tx_affected, error)) {
+        return false;
+    }
+    bool ok = true;
+    SQLLEN previous_affected = 0;
+    size_t index = 0;
+    for (const auto& statement : plan.statements) {
+        ++index;
+        if (statement.fallback_if_zero && previous_affected > 0) continue;
+        SQLLEN affected = 0;
+        if (!exec_audit_statement(db.dbc, statement, affected, error)) {
+            error += " [stmt=" + std::to_string(index) + " sql=" +
+                     statement.sql.substr(0, 80) + "]";
+            ok = false;
+            break;
+        }
+        previous_affected = affected;
+        outcome.affected += static_cast<int>(affected);
+        if (statement.core && affected == 0) {
+            outcome.report_state_changed = true;
+            ok = false;
+            break;
+        }
+        if (statement.core && affected != 1) {
+            error = "unexpected audit update row count";
+            ok = false;
+            break;
+        }
+    }
+    if (ok && !exec_report_write(db.dbc, "COMMIT TRANSACTION", tx_affected, error)) {
+        ok = false;
+    }
+    if (!ok) {
+        SQLLEN rollback_affected = 0;
+        std::string rollback_error;
+        exec_report_write(db.dbc, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", rollback_affected,
+                       rollback_error);
+    }
+    if (outcome.report_state_changed) {
+        error.clear();
+        return true;
+    }
+    if (!ok) return false;
+    error.clear();
+    return true;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+
+bool report_item_id(const std::string& value, size_t max_digits = 10) {
+    return !value.empty() && value.size() <= max_digits &&
+           std::all_of(value.begin(), value.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+
+std::string report_item_literal(const std::string& value) {
+    return "N'" + sql_escape(value) + "'";
+}
+
+template <class ReadRow>
+bool read_report_item_rows(SQLHDBC connection, const std::string& sql, ReadRow read,
+                           std::string& error) {
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(connection, sql, stmt, error)) return false;
+    SQLRETURN fetched;
+    while ((fetched = SQLFetch(stmt)) == SQL_SUCCESS || fetched == SQL_SUCCESS_WITH_INFO) read(stmt);
+    const bool done = fetched == SQL_NO_DATA;
+    if (!done) error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return done;
+}
+
+bool read_report_item_groups(SQLHDBC connection, const std::string& machine_code,
+                             std::vector<ReportItemGroup>& rows, std::string& error) {
+    const std::string sql =
+        "SELECT DISTINCT g.GROUP_CODE,c.ITEM_NAME,g.ROOM_CODE,g.MACH_CODE,g.SAMP_CODE,g.orderby "
+        "FROM LS_AS_GROUP g INNER JOIN LS_CODE_ITEM c ON g.GROUP_CODE=CAST(c.ITEM_CODE AS bigint) "
+        "WHERE c.LOC_FLAG=0 AND g.DELETE_BIT=0 AND g.MACH_CODE=" + machine_code +
+        " ORDER BY g.orderby DESC,g.GROUP_CODE,g.SAMP_CODE";
+    return read_report_item_rows(connection, sql, [&](SQLHSTMT stmt) {
+        rows.push_back({fetch_column(stmt, 1), fetch_column(stmt, 2), fetch_column(stmt, 3),
+                        fetch_column(stmt, 4), fetch_column(stmt, 5)});
+    }, error);
+}
+
+bool read_report_item_options(SQLHDBC connection, const std::string& group_code,
+                              std::vector<ReportItemOption>& rows, std::string& error) {
+    const std::string sql = group_code == "70"
+        ? "SELECT CELL_CODE,CELL_NAME,'','','','','' FROM LS_AS_MEDU WHERE DELETE_BIT=0 ORDER BY CELL_CODE"
+        : "SELECT i.ITEM_CODE,i.ITEM_NAME,i.RESULT,i.UNIT,i.ENG_NAME,i.[EXPLAIN],i.ROOM_CODE "
+          "FROM LS_AS_ITEM i WHERE i.DELETE_BIT=0 AND EXISTS (SELECT 1 FROM LS_AS_GROUP_ITEM g "
+          "WHERE g.ITEM_CODE=i.ITEM_CODE AND g.GROUP_CODE=" + group_code +
+          ") ORDER BY i.SEQ_NO,i.ITEM_CODE";
+    return read_report_item_rows(connection, sql, [&](SQLHSTMT stmt) {
+        rows.push_back({fetch_column(stmt, 1), fetch_column(stmt, 2), fetch_column(stmt, 3),
+                        fetch_column(stmt, 4), fetch_column(stmt, 5), fetch_column(stmt, 6),
+                        fetch_column(stmt, 7)});
+    }, error);
+}
+
+struct ReportItemSaveContext {
+    std::string sample;
+    std::string sex;
+    std::string age;
+    std::string department;
+    std::string barcode;
+};
+
+struct ReportResultAdditionalBounds {
+    std::string critical_lower, critical_upper;
+    std::string repeat_lower, repeat_upper;
+};
+
+bool read_report_item_bounds(SQLHDBC connection, const ReportItemOption& item,
+                             const ReportItemSaveContext& report, const std::string& machine_code,
+                             std::string& lower, std::string& upper, std::string& error,
+                             ReportResultAdditionalBounds* additional = nullptr) {
+    // Group 70 uses the cell dictionary and has no ordinary item reference range.
+    if (!report_item_id(item.room_code)) return true;
+    const auto age_end = report.age.find_first_not_of("0123456789");
+    const auto age = report.age.substr(0, age_end);
+    const std::string age_unit = age_end == std::string::npos ? "岁" : trim(report.age.substr(age_end));
+    const std::string age_match = report_item_id(age, 4)
+        ? "(b.AGE_UNIT=" + report_item_literal(age_unit) +
+          " AND b.age_dnbound<=" + age + " AND b.AGE_UPBOUND>=" + age + ")"
+        : "";
+    const auto sex = report_item_literal(report.sex);
+    const auto department = report_item_id(report.department) ? report.department : "0";
+    const auto sample = report_item_literal(report.sample.empty() ? "0" : report.sample);
+    const std::string sql = std::string("SELECT TOP (1) a.UPBOUND,a.DNBOUND") +
+        (additional ? ",a.UPBOUND1,a.DNBOUND1,a.UPBOUNDFJ,a.DNBOUNDFJ" : "") +
+        " FROM LS_AS_DEF_ITEMSCOPE a "
+        "INNER JOIN LS_AS_BOUND b ON b.BOUND_CODE=a.BOUND_CODE "
+        "WHERE b.DELETE_BIT<>1 AND a.ITEM_CODE=" + item.code + " AND a.ROOM_CODE=" + item.room_code +
+        " AND b.SAMP_CODE=" + sample + " AND ISNULL(b.DEPT_ID,0) IN (0," + department + ")" +
+        " AND (b.SEX=N'通用' OR b.SEX=" + sex + ")" +
+        " AND (" + (age_match.empty() ? "" : age_match + " OR ") +
+        "b.AGE_NAME=N'通用' OR (b.age_dnbound=0 AND b.AGE_UPBOUND=0))"
+        " AND EXISTS (SELECT 1 FROM LS_AS_ADDITEM m WHERE m.ITEM_CODE=a.ITEM_CODE "
+        "AND m.MACH_CODE=" + machine_code + ")"
+        " ORDER BY " + (department == "0" ? "" :
+            "CASE WHEN ISNULL(b.DEPT_ID,0)=" + department + " THEN 0 ELSE 1 END, ") +
+        "CASE WHEN b.SEX=" + sex + " THEN 0 ELSE 1 END, " +
+        (age_match.empty() ? "" :
+            "CASE WHEN " + age_match + " AND b.AGE_NAME<>N'通用' THEN 0 ELSE 1 END, ") + "a.ID";
+    return read_report_item_rows(connection, sql, [&](SQLHSTMT stmt) {
+        lower = fetch_column(stmt, 1);
+        upper = fetch_column(stmt, 2);
+        if (additional) {
+            additional->critical_lower = fetch_column(stmt, 3);
+            additional->critical_upper = fetch_column(stmt, 4);
+            additional->repeat_lower = fetch_column(stmt, 5);
+            additional->repeat_upper = fetch_column(stmt, 6);
+        }
+    }, error);
+}
+
+std::string report_item_normal(const std::string& result, const std::string& lower,
+                               const std::string& upper) {
+    if (result.empty()) return "";
+    auto matches_text = [&](const std::string& bound) {
+        if (bound.size() < 3 || bound.front() != '[' || bound.back() != ']') return false;
+        std::istringstream list(bound.substr(1, bound.size() - 2));
+        std::string token;
+        while (std::getline(list, token, ',')) {
+            token = trim(token);
+            if (!token.empty() && token.front() == '!' && token.size() > 1) {
+                if (result.find(token.substr(1)) == std::string::npos) return true;
+            } else if (!token.empty() && result.find(token) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (matches_text(upper)) return "1";
+    if (matches_text(lower)) return "5";
+    const auto parse = [](const std::string& text, double& number) {
+        const auto value = trim(text);
+        if (value.empty() || value.find_first_not_of("0123456789.eE+-") != std::string::npos)
+            return false;
+        char* end = nullptr;
+        number = std::strtod(value.c_str(), &end);
+        return *end == '\0' && std::isfinite(number);
+    };
+    const auto numeric_part = [](const std::string& text) {
+        const auto start = text.find_first_not_of("<>=");
+        return start == std::string::npos ? std::string{} : trim(text.substr(start));
+    };
+    double value = 0.0;
+    if (!parse(numeric_part(result), value)) return "3";
+    const auto range_match = [&](const std::string& limit) {
+        const auto separator = limit.find('-', 1);
+        double start = 0.0, end = 0.0;
+        return separator != std::string::npos &&
+               parse(limit.substr(0, separator), start) && parse(limit.substr(separator + 1), end) &&
+               value > start && value < end;
+    };
+    double limit = 0.0;
+    if (parse(numeric_part(upper), limit) ? value > limit : range_match(upper)) return "1";
+    if (parse(numeric_part(lower), limit)
+            ? value < limit || (value == limit && lower.front() == '<')
+            : range_match(lower)) return "5";
+    return "3";
+}
+
+std::optional<double> report_result_number(const std::string& text) {
+    if (text.empty() || text.find_first_not_of("0123456789.eE+-") != std::string::npos) return {};
+    char* end = nullptr;
+    const double value = std::strtod(text.c_str(), &end);
+    if (*end != '\0' || !std::isfinite(value)) return {};
+    return value;
+}
+
+std::string format_report_number(double value, int decimals) {
+    std::ostringstream formatted;
+    formatted.imbue(std::locale::classic());
+    formatted << std::fixed << std::setprecision(decimals) << value;
+    return formatted.str();
+}
+
+std::string resolve_report_formula(const std::string& formula,
+                                   const std::map<std::string, std::string>& inputs) {
+    static const std::set<std::string> allowed = {
+        "CASE", "WHEN", "THEN", "ELSE", "END", "AND", "OR", "POWER", "ABS", "SQRT", "ROUND",
+        "LOG", "LOG10", "EXP", "ISNULL", "NULLIF", "FLOOR", "CEILING",
+    };
+    if (formula.find("--") != std::string::npos || formula.find("/*") != std::string::npos) return {};
+    std::string expression;
+    for (std::size_t i = 0; i < formula.size();) {
+        const unsigned char ch = formula[i];
+        if (ch == '[') {
+            const auto end = formula.find(']', i + 1);
+            if (end == std::string::npos) return {};
+            const auto value = inputs.find(formula.substr(i + 1, end - i - 1));
+            if (value == inputs.end()) return {};
+            expression += "(" + value->second + ")";
+            i = end + 1;
+        } else if (std::isalpha(ch)) {
+            const auto start = i++;
+            while (i < formula.size() && std::isalnum(static_cast<unsigned char>(formula[i]))) ++i;
+            const auto name = odbc::upper_ascii(formula.substr(start, i - start));
+            if (!allowed.count(name)) return {};
+            expression += name;
+        } else if (std::isdigit(ch) || std::isspace(ch) ||
+                   std::string_view("+-*/%(),.<>=").find(ch) != std::string_view::npos) {
+            expression += formula[i++];
+        } else {
+            return {};
+        }
+    }
+    return expression;
+}
+
+bool recalculate_report_items(SQLHDBC connection, const std::string& rep_no, const std::string& machine,
+                              const std::string& group, const std::string& sex_code,
+                              const ReportItemSaveContext& report, std::vector<std::string>& skipped,
+                              std::string& error) {
+    if (!report_item_id(group)) return true;
+    struct Calculation {
+        ReportItemOption item;
+        std::string expression;
+        int decimals;
+    };
+    std::vector<Calculation> calculations;
+    if (!read_report_item_rows(connection,
+        "SELECT i.ITEM_CODE,i.ROOM_CODE,i.EXP,i.EXP_FEMALE,i.DEC_PLACE,i.ITEM_NAME,i.UNIT,i.ENG_NAME "
+        "FROM LS_AS_ITEM i WHERE i.DELETE_BIT=0 AND i.TYPE='2' AND EXISTS "
+        "(SELECT 1 FROM LS_AS_GROUP_ITEM g WHERE g.GROUP_CODE=" + group +
+        " AND g.ITEM_CODE=i.ITEM_CODE) AND EXISTS (SELECT 1 FROM LS_AS_ADDITEM a "
+        "WHERE a.MACH_CODE=" + machine + " AND a.ITEM_CODE=i.ITEM_CODE) ORDER BY i.ITEM_CODE",
+        [&](SQLHSTMT stmt) {
+            ReportItemOption item;
+            item.code = fetch_column(stmt, 1);
+            item.room_code = fetch_column(stmt, 2);
+            auto expression = fetch_column(stmt, 3);
+            const auto female = fetch_column(stmt, 4);
+            if (report.sex == "女" && !female.empty()) expression = female;
+            const auto decimals = fetch_column(stmt, 5);
+            item.name = fetch_column(stmt, 6);
+            item.unit = fetch_column(stmt, 7);
+            item.english_name = fetch_column(stmt, 8);
+            if (!expression.empty()) calculations.push_back({std::move(item), std::move(expression),
+                report_item_id(decimals, 2) ? (std::min)(12, std::stoi(decimals)) : 2});
+        }, error)) return false;
+    if (calculations.empty()) return true;
+
+    std::map<std::string, std::string> inputs;
+    std::set<std::string> existing;
+    const auto age = report.age.substr(0, report.age.find_first_not_of("0123456789"));
+    if (report_item_id(age, 4)) inputs.emplace("age", age);
+    if (report_item_id(sex_code, 2)) inputs.emplace("sex", sex_code);
+    if (!read_report_item_rows(connection,
+        "SELECT e.ITEM_CODE,e.RESULT FROM LS_AS_REPENTRY e WITH (UPDLOCK,HOLDLOCK) "
+        "WHERE e.REP_NO=" + rep_no + " AND e.DELETE_BIT=0 ORDER BY e.ID",
+        [&](SQLHSTMT stmt) {
+            const auto code = fetch_column(stmt, 1);
+            const auto value = report_result_number(fetch_column(stmt, 2));
+            existing.insert(code);
+            if (value) inputs.try_emplace(code, format_report_number(*value, 2));
+        }, error)) return false;
+
+    for (const auto& calculation : calculations) {
+        const auto& item = calculation.item;
+        const auto expression = resolve_report_formula(calculation.expression, inputs);
+        std::optional<double> value;
+        std::string calculation_error;
+        if (!expression.empty() && report_item_id(item.code)) {
+            read_report_item_rows(connection, "SELECT CAST((" + expression + ") AS float)",
+                [&](SQLHSTMT stmt) { value = report_result_number(fetch_column(stmt, 1)); }, calculation_error);
+        }
+        if (!value) {
+            skipped.push_back(item.code);
+            continue;
+        }
+        const auto result = format_report_number(*value, calculation.decimals);
+        std::string lower, upper;
+        if (!read_report_item_bounds(connection, item, report, machine, lower, upper, error)) return false;
+        const auto normal = report_item_normal(result, lower, upper);
+        const std::string match = " WHERE REP_NO=" + rep_no + " AND ITEM_CODE=" + item.code + " AND DELETE_BIT=0";
+        const std::string sql = existing.count(item.code)
+            ? "UPDATE LS_AS_REPENTRY SET RESULT=" + report_item_literal(result) +
+              ",UPBOUND=" + report_item_literal(lower) + ",DOWNBOUND=" + report_item_literal(upper) +
+              ",NORMAL=" + report_item_literal(normal) + match
+            : "INSERT INTO LS_AS_REPENTRY "
+              "(REP_NO,GROUP_CODE,ITEM_CODE,RESULT,UPBOUND,DOWNBOUND,NORMAL,ITEM_NAME,ITEM_UNIT,ITEM_ENG) VALUES (" +
+              rep_no + "," + group + "," + item.code + "," + report_item_literal(result) + "," +
+              report_item_literal(lower) + "," + report_item_literal(upper) + "," +
+              report_item_literal(normal) + "," + report_item_literal(item.name) + "," +
+              report_item_literal(item.unit) + "," + report_item_literal(item.english_name) + ")";
+        SQLLEN affected = 0;
+        if (!exec_report_write(connection, sql, affected, error)) return false;
+    }
+    return true;
+}
+
+struct SavedResultHistory {
+    ReportItemOption item;
+    std::string previous;
+    std::string result;
+};
+
+bool record_report_result_history(SQLHDBC connection, const std::string& rep_no,
+                                  const SaveReportResultsOptions& editor,
+                                  const std::string& barcode,
+                                  const std::vector<SavedResultHistory>& history, std::string& error) {
+    if (history.empty()) return true;
+    std::string pid;
+    const std::string pid_sql = "SELECT TOP (1) ID FROM LS_AS_RESULTP WITH (UPDLOCK,HOLDLOCK) "
+                                "WHERE REP_NO='" + rep_no + "' ORDER BY ID";
+    const auto read_id = [&](SQLHSTMT stmt) { pid = fetch_column(stmt, 1); };
+    if (!read_report_item_rows(connection, pid_sql, read_id, error)) return false;
+    SQLLEN affected = 0;
+    if (pid.empty()) {
+        const std::string create_header =
+            "INSERT INTO LS_AS_RESULTP (NAME,SEX,AGE,CHKNAME,EDITNAME,GROUP_CODE,GROUP_NO,REP_NO,TXM_NO,"
+            "MACH_CODE,MACH_NAME,SAMP_CODE,SAMP_NAME,DEPT_CODE,CHKDATE,EDITTIME,REG_NO) "
+            "SELECT TOP (1) CONVERT(varchar(10),r.NAME),"
+            "CASE WHEN r.SEX IN ('0','1','2','3','9') THEN CONVERT(int,r.SEX) END,"
+            "CONVERT(varchar(5),r.AGE),'',CONVERT(varchar(10)," +
+            report_item_literal(editor.employee_name) +
+            "),r.GROUP_CODE,CONVERT(varchar(50),r.GROUP_NO),r.REP_NO,CONVERT(varchar(20),r.TXM_NO),"
+            "r.MACH_CODE,CONVERT(varchar(50),m.MACH_NAME),r.SAMP_CODE,CONVERT(varchar(10),s.SAMP_NAME),"
+            "r.DEPT_CODE,COALESCE(r.CREATE_TIME,r.CHK_DATE),GETDATE(),CONVERT(varchar(50),r.REG_NO) "
+            "FROM LS_AS_REPORT r LEFT JOIN LS_AS_MACHINE m ON m.MACH_CODE=r.MACH_CODE "
+            "LEFT JOIN LS_AS_SAMPLE s ON s.SAMP_CODE=r.SAMP_CODE "
+            "WHERE r.DELETE_BIT=0 AND r.REP_NO=" + rep_no;
+        if (!exec_report_write(connection, create_header, affected, error) ||
+            !read_report_item_rows(connection, pid_sql, read_id, error)) return false;
+    }
+    if (!report_item_id(pid)) { error = "result history header unavailable"; return false; }
+    for (const auto& change : history) {
+        const std::string sql =
+            "INSERT INTO LS_AS_RESULTZ (PID,TXM_NO,ITEM_CODE,ITEM_NAME,OLDRESULT,NEWRESULT,UNIT,REP_NO,OLDDATE,OLDUSER) "
+            "VALUES (" + pid + ",CONVERT(varchar(20)," + report_item_literal(barcode) +
+            ")," + report_item_literal(change.item.code) +
+            ",CONVERT(varchar(50)," + report_item_literal(change.item.name) +
+            "),CONVERT(varchar(100)," + report_item_literal(change.previous) +
+            "),CONVERT(varchar(100)," + report_item_literal(change.result) +
+            "),CONVERT(varchar(20)," + report_item_literal(change.item.unit) +
+            "),'" + rep_no + "',GETDATE(),CONVERT(varchar(10),'" + editor.employee_id + "'))";
+        if (!exec_report_write(connection, sql, affected, error)) return false;
+    }
+    return true;
+}
+
+std::string report_numeric_part(const std::string& text) {
+    std::string result;
+    std::copy_if(text.begin(), text.end(), std::back_inserter(result), [](unsigned char ch) {
+        return (ch >= '0' && ch <= '9') || ch == '.' || ch == '-';
+    });
+    return result;
+}
+
+std::optional<bool> saved_result_critical(const std::string& value, const std::string& item_type,
+                                          const ReportResultAdditionalBounds& bounds,
+                                          const std::string& string_mode) {
+    if (value.empty()) return {};
+    const auto lower = report_numeric_part(bounds.critical_lower);
+    const auto upper = report_numeric_part(bounds.critical_upper);
+    if (lower != upper) {
+        const auto result = report_result_number(report_numeric_part(value));
+        const auto low = report_result_number(lower);
+        const auto high = report_result_number(upper);
+        if (result && (low || high) && (lower.empty() || low) && (upper.empty() || high)) {
+            return (low && *low != 0 && *result <= *low) || (high && *high != 0 && *result >= *high);
+        }
+    }
+    if ((item_type != "3" && item_type != "4") || (string_mode != "1" && string_mode != "2" && string_mode != "4"))
+        return {};
+    auto matches = [&](const std::string& bound) {
+        if (bound == "0") return false;
+        std::istringstream tokens(bound);
+        std::string token;
+        while (std::getline(tokens, token, ',')) {
+            if (token.empty()) continue;
+            if (string_mode == "1" && value == token) return true;
+            if (string_mode == "2" && value.find(trim(token)) != std::string::npos) return true;
+            if (string_mode == "4" && value != token) return true;
+        }
+        return false;
+    };
+    if (bounds.critical_lower.empty() && bounds.critical_upper.empty()) return {};
+    return matches(bounds.critical_lower) || matches(bounds.critical_upper);
+}
+
+bool reevaluate_saved_critical_results(SQLHDBC connection, const std::string& rep_no,
+                                       const std::string& machine, const ReportItemSaveContext& report,
+                                       const std::string& string_mode, bool& critical, std::string& error) {
+    struct Result {
+        ReportItemOption item;
+        std::string id;
+        std::string type;
+        std::string previous_flag;
+    };
+    std::vector<Result> rows;
+    if (!read_report_item_rows(connection,
+        "SELECT e.ID,e.RESULT,e.ITEM_CODE,i.TYPE,i.ROOM_CODE,e.NORMAL_WJ "
+        "FROM LS_AS_REPENTRY e WITH (UPDLOCK,HOLDLOCK) LEFT JOIN LS_AS_ITEM i "
+        "ON i.ITEM_CODE=e.ITEM_CODE AND i.DELETE_BIT=0 WHERE e.REP_NO=" + rep_no +
+        " AND e.DELETE_BIT IN (0,3) ORDER BY e.ID",
+        [&](SQLHSTMT stmt) {
+            Result row;
+            row.id = fetch_column(stmt, 1);
+            row.item.result = fetch_column(stmt, 2);
+            row.item.code = fetch_column(stmt, 3);
+            row.type = fetch_column(stmt, 4);
+            row.item.room_code = fetch_column(stmt, 5);
+            row.previous_flag = fetch_column(stmt, 6);
+            rows.push_back(std::move(row));
+        }, error)) return false;
+
+    SQLLEN affected = 0;
+    for (const auto& row : rows) {
+        const auto& type = row.type;
+        if (type != "1" && type != "2" && type != "3" && type != "5" &&
+            !(type == "4" && !string_mode.empty() && string_mode != "0")) {
+            critical = critical || row.previous_flag == "9";
+            continue;
+        }
+        ReportResultAdditionalBounds bounds;
+        std::string lower, upper;
+        if (!report_item_id(row.item.code) ||
+            !read_report_item_bounds(connection, row.item, report, machine, lower, upper, error, &bounds)) {
+            if (error.empty()) error = "invalid critical result item";
+            return false;
+        }
+        const auto hit = saved_result_critical(row.item.result, type, bounds, string_mode);
+        if (!hit) {
+            critical = critical || row.previous_flag == "9";
+            continue;
+        }
+        const std::string flag = *hit ? "9" : "0";
+        critical = critical || *hit;
+        if (flag == row.previous_flag) continue;
+        if (!report_item_id(row.id, 19)) { error = "invalid critical result entry"; return false; }
+        if (!exec_report_write(connection, "UPDATE LS_AS_REPENTRY SET NORMAL_WJ=" + flag +
+                " WHERE REP_NO=" + rep_no + " AND ID=" + row.id + " AND DELETE_BIT IN (0,3)",
+                affected, error)) return false;
+    }
+    if (!critical) {
+        return exec_report_write(connection,
+            "UPDATE r SET ASSAYPAT_TYPE=CASE WHEN EXISTS (SELECT 1 FROM LS_AS_BARCODE b "
+            "WHERE b.BARCODE=r.TXM_NO AND b.DELETE_BIT=0 AND b.JZ_FLAG=1) THEN '0' ELSE '1' END "
+            "FROM LS_AS_REPORT r WHERE r.REP_NO=" + rep_no + " AND r.DELETE_BIT=0 AND r.ASSAYPAT_TYPE='9'",
+            affected, error);
+    }
+    if (!exec_report_write(connection, "UPDATE LS_AS_REPORT SET ASSAYPAT_TYPE='9' WHERE DELETE_BIT=0 AND REP_NO=" +
+                           rep_no, affected, error)) return false;
+    return exec_report_write(connection,
+        "INSERT INTO LS_AS_READREPORT "
+        "(REP_NO,NAME,REG_NO,GROUP_NO,REQ_DR,DEPT_CODE,BED_CODE,SEND_EXAMINER,LOOK_DR,FLAG,DELETE_BIT,ASSAYPAT_TYPE) "
+        "SELECT r.REP_NO,CONVERT(varchar(50),ISNULL(r.NAME,'')),r.REG_NO,r.GROUP_NO,r.REQ_DR,r.DEPT_CODE,"
+        "r.BED_CODE,r.REP_OPER,'',0,0,'9' FROM LS_AS_REPORT r WHERE r.DELETE_BIT=0 AND r.REP_NO=" +
+        rep_no + " AND NOT EXISTS (SELECT 1 FROM LS_AS_READREPORT l WITH (UPDLOCK,HOLDLOCK) "
+        "WHERE l.REP_NO=r.REP_NO AND l.ASSAYPAT_TYPE='9' AND l.DELETE_BIT=0)", affected, error);
+}
+
+}  // namespace
+#endif
+
+bool query_report_item_groups(const std::string& connection_string, const std::string& machine_code,
+                              std::vector<ReportItemGroup>& rows, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    rows.clear();
+#ifdef _WIN32
+    if (!report_item_id(machine_code)) { error = "invalid machine code"; return false; }
+    DbContext db;
+    return connect(connection_string, db, error, request.log_callback()) &&
+           read_report_item_groups(db.dbc, machine_code, rows, error);
+#else
+    (void)connection_string;
+    (void)machine_code;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool query_report_item_options(const std::string& connection_string, const std::string& group_code,
+                                std::vector<ReportItemOption>& rows, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    rows.clear();
+#ifdef _WIN32
+    if (!report_item_id(group_code)) { error = "invalid group code"; return false; }
+    DbContext db;
+    return connect(connection_string, db, error, request.log_callback()) &&
+           read_report_item_options(db.dbc, group_code, rows, error);
+#else
+    (void)connection_string;
+    (void)group_code;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool query_cancel_audit_preview(const std::string& connection_string, const std::string& rep_no,
+                                CancelAuditPreview& preview, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    preview = {};
+#ifdef _WIN32
+    if (!report_item_id(rep_no)) {
+        error = "invalid report number";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    const std::string report_sql =
+        "SELECT r.CONF,r.CHK_FLAG,CONVERT(varchar(23),r.REP_TIME,121),r.REP_OPER,ISNULL(m.MACH_NAME,''),"
+        "(SELECT MAX(CONVERT(varchar(5),j.CONFIG)) FROM dbo.JC_CONFIG j WHERE j.ID=4158) "
+        "FROM dbo.LS_AS_REPORT r LEFT JOIN dbo.LS_AS_MACHINE m ON m.MACH_CODE=r.MACH_CODE AND m.DELETE_BIT=0 "
+        "WHERE r.DELETE_BIT=0 AND r.CONF IN ('T','S') "
+        "AND r.REP_NO=" + rep_no;
+    if (!read_report_item_rows(db.dbc, report_sql, [&](SQLHSTMT stmt) {
+        preview.state = fetch_column(stmt, 1);
+        preview.check = fetch_column(stmt, 2);
+        preview.report_time = fetch_column(stmt, 3);
+        preview.reviewer_id = fetch_column(stmt, 4);
+        preview.machine_name = trim(fetch_column(stmt, 5));
+        preview.reason_required = trim(fetch_column(stmt, 6)) != "0";
+    }, error)) return false;
+    if (preview.report_time.empty()) return true;
+    return read_report_item_rows(db.dbc,
+        "SELECT r.ID,r.TYPE_CODE,t.TYPE_NAME,r.REASON FROM dbo.LS_AS_CANCEL_REPORT_REASON r "
+        "INNER JOIN dbo.T_LIS_ReportCancelReasonType t ON t.TYPE_CODE=r.TYPE_CODE "
+        "ORDER BY t.TYPE_NAME,r.ID", [&](SQLHSTMT stmt) {
+            preview.reasons.push_back({fetch_column(stmt,1), fetch_column(stmt,2),
+                                       fetch_column(stmt,3), fetch_column(stmt,4)});
+        }, error);
+#else
+    (void)connection_string;
+    (void)rep_no;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool cancel_report_audit(const std::string& connection_string, const std::string& rep_no,
+                         const CancelAuditPreview& preview, const std::string& employee_id,
+                         const std::string& login_code, const std::string& employee_name,
+                         const CancelAuditReason& reason, CancelAuditStatus& status, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    status = CancelAuditStatus::report_changed;
+#ifdef _WIN32
+    if (!report_item_id(rep_no) || !report_item_id(employee_id, 19) ||
+        !report_item_id(preview.reviewer_id, 19) || preview.report_time.empty() ||
+        (preview.state != "T" && preview.state != "S") || preview.check.size() > 1 ||
+        login_code.empty() || employee_name.empty() ||
+        reason.id.empty() != reason.type.empty() ||
+        (!reason.type.empty() && (!report_item_id(reason.id) || !report_item_id(reason.type)))) {
+        error = "invalid cancel audit input";
+        return false;
+    }
+    const std::string variables =
+        "DECLARE @report decimal(10,0)=" + rep_no +
+        ", @expectedState varchar(1)=" + report_item_literal(preview.state) +
+        ", @expectedCheck varchar(1)=" + report_item_literal(preview.check) +
+        ", @expectedTime datetime=CONVERT(datetime," + report_item_literal(preview.report_time) + ",121)" +
+        ", @expectedReviewer bigint=" + preview.reviewer_id + ", @employee bigint=" + employee_id +
+        ", @login nvarchar(128)=" + report_item_literal(login_code) +
+        ", @operatorName nvarchar(80)=" + report_item_literal(employee_name) +
+        ", @machineName nvarchar(50)=" + report_item_literal(preview.machine_name) +
+        ", @reason nvarchar(300)=" + report_item_literal(reason.text) +
+        ", @reasonId int=" + (reason.id.empty() ? std::string("NULL") : reason.id) +
+        ", @reasonType int=" + (reason.type.empty() ? std::string("NULL") : reason.type) + ";\n";
+    static constexpr auto sql =
+#include "regular_report_cancel_audit_sql.inc"
+    ;
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(db.dbc, variables + sql, stmt, error)) return false;
+    // A trigger or the inpatient procedure can emit an intermediate result set.
+    bool found = false;
+    SQLRETURN rc = SQL_SUCCESS;
+    do {
+        SQLSMALLINT columns = 0;
+        if (!SQL_SUCCEEDED(SQLNumResultCols(stmt, &columns))) { rc = SQL_ERROR; break; }
+        if (columns != 1) continue;
+        SQLWCHAR name[32]{};
+        if (!SQL_SUCCEEDED(SQLDescribeColW(stmt, 1, name, 32, nullptr, nullptr, nullptr, nullptr, nullptr))) {
+            rc = SQL_ERROR;
+            break;
+        }
+        if (std::wstring(reinterpret_cast<const wchar_t*>(name)) != L"cancel_status") continue;
+        if (!SQL_SUCCEEDED(SQLFetch(stmt))) { rc = SQL_ERROR; break; }
+        const auto value = fetch_column(stmt, 1);
+        if (value.size() != 1 || value[0] < '0' || value[0] > '8' || value[0] == '2' || found) {
+            rc = SQL_ERROR;
+            break;
+        }
+        status = static_cast<CancelAuditStatus>(value[0]-'0');
+        found = true;
+    } while (SQL_SUCCEEDED(rc = SQLMoreResults(stmt)));
+    if (rc != SQL_NO_DATA) error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+    else if (!found) error = "missing cancel audit outcome";
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return rc == SQL_NO_DATA && found;
+#else
+    (void)connection_string;
+    (void)rep_no;
+    (void)preview;
+    (void)employee_id;
+    (void)login_code;
+    (void)employee_name;
+    (void)reason;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool set_report_need_inspect(const std::string& connection_string, const std::string& rep_no,
+                             bool need_inspect, bool& changed, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    changed = false;
+#ifdef _WIN32
+    if (!report_item_id(rep_no)) {
+        error = "invalid report number";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    const std::string sql = std::string("UPDATE LS_AS_REPORT SET NeedInspect=") +
+        (need_inspect ? "1" : "0") + " WHERE REP_NO=" + rep_no + " AND DELETE_BIT=0" +
+        (need_inspect ? " AND ISNULL(NeedInspect,0)<>1" : " AND NeedInspect=1");
+    SQLLEN affected = 0;
+    if (!exec_report_write(db.dbc, sql, affected, error)) return false;
+    if (affected != 0 && affected != 1) {
+        error = "unexpected inspection flag update row count";
+        return false;
+    }
+    changed = affected == 1;
+    return true;
+#else
+    (void)connection_string;
+    (void)rep_no;
+    (void)need_inspect;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool add_report_items(const std::string& connection_string, const std::string& rep_no,
+                      const std::string& machine_code, const ReportItemGroup& sample_group,
+                      const std::vector<ReportItemSelection>& items,
+                      AddReportItemsStatus& status, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    status = AddReportItemsStatus::report_unavailable;
+#ifdef _WIN32
+    const char* operation = "validate_selection";
+    const auto failed = [&]() {
+        error += std::string(" [operation=") + operation + "]";
+        return false;
+    };
+    if (!report_item_id(rep_no) || !report_item_id(machine_code) ||
+        !report_item_id(sample_group.code) || items.empty() ||
+        std::any_of(items.begin(), items.end(), [](const ReportItemSelection& item) {
+            return !report_item_id(item.group_code) || !report_item_id(item.item_code);
+        })) {
+        error = "invalid report item selection";
+        return failed();
+    }
+    DbContext db;
+    operation = "connect";
+    if (!connect(connection_string, db, error, request.log_callback())) return failed();
+    SQLLEN affected = 0;
+    operation = "begin_transaction";
+    if (!exec_report_write(db.dbc, "BEGIN TRANSACTION", affected, error)) return failed();
+
+    int inserted = 0;
+    const auto save = [&]() {
+        ReportItemSaveContext report;
+        int matched = 0;
+        const std::string report_sql =
+            "SELECT r.SAMP_CODE,s.SEX_NAME,r.AGE,r.DEPT_CODE,r.TXM_NO "
+            "FROM LS_AS_REPORT r WITH (UPDLOCK,HOLDLOCK) "
+            "LEFT JOIN LS_AS_SEX s ON s.SEX_CODE=r.SEX WHERE r.REP_NO=" + rep_no +
+            " AND r.MACH_CODE=" + machine_code +
+            " AND r.DELETE_BIT=0 AND r.CONF='F' AND ISNULL(r.CHK_FLAG,'')<>'T'";
+        operation = "lock_report";
+        if (!read_report_item_rows(db.dbc, report_sql, [&](SQLHSTMT stmt) {
+            report = {fetch_column(stmt, 1), fetch_column(stmt, 2), fetch_column(stmt, 3),
+                      fetch_column(stmt, 4), fetch_column(stmt, 5)};
+            ++matched;
+        }, error)) return false;
+        if (matched != 1) return true;
+
+        std::vector<ReportItemGroup> groups;
+        operation = "read_groups";
+        if (!read_report_item_groups(db.dbc, machine_code, groups, error)) return false;
+        const auto find_group = [&](const std::string& code) {
+            return std::find_if(groups.begin(), groups.end(), [&](const ReportItemGroup& group) {
+                return group.code == code;
+            });
+        };
+        const auto current_sample_group = std::find_if(groups.begin(), groups.end(),
+            [&](const ReportItemGroup& group) {
+                return group.code == sample_group.code && group.room_code == sample_group.room_code &&
+                       group.sample_code == sample_group.sample_code;
+            });
+        if (current_sample_group == groups.end()) {
+            status = AddReportItemsStatus::catalog_changed;
+            return true;
+        }
+        const bool fill_sample = report.sample.empty() && report.barcode.empty() &&
+                                 report_item_id(current_sample_group->sample_code, 4);
+        if (fill_sample) report.sample = current_sample_group->sample_code;
+
+        operation = "read_module_mapping";
+        bool use_modules = false;
+        if (!read_report_item_rows(db.dbc,
+            "SELECT CASE WHEN OBJECT_ID('T_LIS_MACH_MODULE','U') IS NOT NULL AND "
+            "OBJECT_ID('T_LIS_GROUP_MODULE','U') IS NOT NULL THEN 1 ELSE 0 END",
+            [&](SQLHSTMT stmt) { use_modules = fetch_column(stmt, 1) == "1"; }, error)) return false;
+        std::set<std::string> module_groups;
+        if (use_modules && !read_report_item_rows(db.dbc,
+            "SELECT DISTINCT g.GROUP_CODE FROM T_LIS_MACH_MODULE m "
+            "INNER JOIN T_LIS_GROUP_MODULE g ON g.MODULE_CODE=m.MODULE_CODE WHERE m.MACH_CODE=" +
+                machine_code,
+            [&](SQLHSTMT stmt) { module_groups.insert(fetch_column(stmt, 1)); }, error)) return false;
+
+        std::map<std::string, std::vector<ReportItemOption>> catalog;
+        for (const auto& selected : items) {
+            if (find_group(selected.group_code) == groups.end()) {
+                status = AddReportItemsStatus::catalog_changed;
+                return true;
+            }
+            auto [group, first] = catalog.try_emplace(selected.group_code);
+            operation = "read_item_catalog";
+            if (first && !read_report_item_options(db.dbc, selected.group_code, group->second, error))
+                return false;
+            const auto item = std::find_if(group->second.begin(), group->second.end(),
+                [&](const ReportItemOption& option) { return option.code == selected.item_code; });
+            if (item == group->second.end() || item->result != selected.default_result) {
+                status = AddReportItemsStatus::catalog_changed;
+                return true;
+            }
+            std::string lower, upper;
+            operation = "read_reference_bounds";
+            if (!read_report_item_bounds(db.dbc, *item, report, machine_code, lower, upper, error))
+                return false;
+            const std::string group_filter = module_groups.count(selected.group_code)
+                ? " AND GROUP_CODE=" + selected.group_code : "";
+            const std::string sql =
+                "INSERT INTO LS_AS_REPENTRY "
+                "(REP_NO,GROUP_CODE,ITEM_CODE,RESULT,UPBOUND,DOWNBOUND,NORMAL,ITEM_NAME,ITEM_UNIT,ITEM_ENG,ITEM_NOTE) "
+                "SELECT " + rep_no + "," + selected.group_code + "," + selected.item_code + "," +
+                report_item_literal(item->result) + "," + report_item_literal(lower) + "," +
+                report_item_literal(upper) + "," +
+                report_item_literal(report_item_normal(item->result, lower, upper)) + "," +
+                report_item_literal(item->name) + "," + report_item_literal(item->unit) + "," +
+                report_item_literal(item->english_name) + "," + report_item_literal(item->note) +
+                " WHERE NOT EXISTS (SELECT 1 FROM LS_AS_REPENTRY WITH (UPDLOCK,HOLDLOCK) "
+                "WHERE REP_NO=" + rep_no + " AND ITEM_CODE=" + selected.item_code +
+                " AND DELETE_BIT<>1" + group_filter + ")";
+            operation = "insert_result_row";
+            if (!exec_report_write(db.dbc, sql, affected, error)) return false;
+            if (affected < 0) { error = "report item insert row count unavailable"; return false; }
+            inserted += static_cast<int>(affected);
+        }
+        if (inserted == 0) {
+            status = AddReportItemsStatus::no_new_items;
+            return true;
+        }
+        operation = "update_sample";
+        if (fill_sample && !exec_report_write(db.dbc,
+                "UPDATE LS_AS_REPORT SET SAMP_CODE=" + report.sample + " WHERE REP_NO=" + rep_no +
+                " AND SAMP_CODE IS NULL", affected, error)) return false;
+        status = AddReportItemsStatus::saved;
+        return true;
+    };
+    const bool ok = save();
+    if (ok && status == AddReportItemsStatus::saved) {
+        operation = "commit_transaction";
+        if (exec_report_write(db.dbc, "COMMIT TRANSACTION", affected, error)) return true;
+    }
+    std::string rollback_error;
+    if (!exec_report_write(db.dbc, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", affected, rollback_error)) {
+        if (error.empty()) {
+            operation = "rollback_transaction";
+            error = rollback_error;
+        } else {
+            error += " [rollback=" + rollback_error + "]";
+        }
+    }
+    if (ok && status != AddReportItemsStatus::saved && error.empty()) return true;
+    return failed();
+#else
+    (void)connection_string;
+    (void)rep_no;
+    (void)machine_code;
+    (void)sample_group;
+    (void)items;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+
+bool valid_report_item_delete_target(const ReportItemDeleteTarget& target) {
+    return report_item_id(target.rep_no) && report_item_id(target.entry_id, 19) &&
+           report_item_id(target.item_code) && report_item_id(target.group_code);
+}
+
+bool read_report_item_delete_preview(SQLHDBC connection, const ReportItemDeleteTarget& target,
+                                     const std::string& workstation_mac, bool include_group, bool lock_rows,
+                                     ReportItemDeletePreview& preview, std::string& error) {
+    using Status = ReportItemDeleteStatus;
+    const std::string lock = lock_rows ? " WITH (UPDLOCK,HOLDLOCK)" : "";
+    const std::string config_lock = lock_rows ? " WITH (HOLDLOCK)" : "";
+    const std::string report_sql =
+        "SELECT r.CONF,r.CHK_FLAG,"
+        " CASE WHEN CONVERT(date,r.REP_TIME)=CONVERT(date,GETDATE()) THEN 1 ELSE 0 END,"
+        " CASE WHEN EXISTS (SELECT 1 FROM dbo.JC_CONFIG" + config_lock +
+        " WHERE ID=4312 AND NULLIF(LTRIM(RTRIM(CONFIG)),'')<>'0') THEN 1 ELSE 0 END"
+        " FROM LS_AS_REPORT r" + lock + " WHERE r.DELETE_BIT=0 AND r.REP_NO=" + target.rep_no;
+    int reports = 0;
+    if (!read_report_item_rows(connection, report_sql, [&](SQLHSTMT stmt) {
+        ++reports;
+        const auto conf = fetch_column(stmt, 1);
+        const auto check = fetch_column(stmt, 2);
+        const bool today = fetch_column(stmt, 3) == "1";
+        const bool allow_audited = fetch_column(stmt, 4) == "1";
+        if (conf == "S") preview.status = Status::sent;
+        else if (check == "T" || conf == "T") {
+            preview.status = !allow_audited ? Status::audited :
+                today ? Status::ready : Status::past_day;
+        } else if (conf == "F") {
+            preview.status = Status::ready;
+        }
+    }, error)) return false;
+    if (reports != 1) preview.status = Status::unavailable;
+    if (preview.status != Status::ready) return true;
+
+    if (include_group) {
+        bool has_private_config = false;
+        if (!read_report_item_rows(connection,
+            "SELECT CASE WHEN OBJECT_ID('T_PRIVATE_CONFIG_DICT','U') IS NOT NULL AND "
+            "OBJECT_ID('T_PRIVATE_CONFIG','U') IS NOT NULL THEN 1 ELSE 0 END",
+            [&](SQLHSTMT stmt) { has_private_config = fetch_column(stmt, 1) == "1"; }, error)) return false;
+        if (has_private_config) {
+            const std::string config_sql =
+                "SELECT TOP (1) ISNULL(t.[VALUE],d.DEFAULT_VALUE) "
+                "FROM T_PRIVATE_CONFIG_DICT d" + config_lock +
+                " LEFT JOIN T_PRIVATE_CONFIG t" + config_lock +
+                " ON t.PID=d.ID AND (t.USER_ID='' OR t.MAC=" + report_item_literal(workstation_mac) +
+                ") WHERE d.NAME='JYBG.DeleteItemOnly' AND d.ENABLED='1' ORDER BY t.USER_ID";
+            if (!read_report_item_rows(connection, config_sql, [&](SQLHSTMT stmt) {
+                include_group = fetch_column(stmt, 1) != "True";
+            }, error)) return false;
+        }
+    }
+
+    const std::string group_filter = include_group ? " OR GROUP_CODE=" + target.group_code : "";
+    const std::string entries_sql =
+        "SELECT ID,ITEM_CODE,GROUP_CODE,DELETE_BIT FROM LS_AS_REPENTRY" + lock +
+        " WHERE REP_NO=" + target.rep_no + " AND DELETE_BIT<>1 AND (ITEM_CODE=" +
+        target.item_code + group_filter + ") ORDER BY ID";
+    bool selected_exists = false;
+    if (!read_report_item_rows(connection, entries_sql, [&](SQLHSTMT stmt) {
+        auto id = fetch_column(stmt, 1);
+        const auto item = fetch_column(stmt, 2);
+        const auto group = fetch_column(stmt, 3);
+        const auto delete_bit = fetch_column(stmt, 4);
+        if (id == target.entry_id && item == target.item_code && group == target.group_code &&
+            delete_bit == "0") selected_exists = true;
+        if (item == target.item_code) preview.item_entries.push_back(id);
+        if (include_group && group == target.group_code) preview.group_entries.push_back(std::move(id));
+    }, error)) return false;
+    if (!selected_exists) preview.status = Status::changed;
+    return true;
+}
+
+}  // namespace
+#endif
+
+bool preview_report_item_deletion(const std::string& connection_string,
+                                  const ReportItemDeleteTarget& target, const std::string& workstation_mac,
+                                  ReportItemDeletePreview& preview, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    preview = {};
+#ifdef _WIN32
+    if (!valid_report_item_delete_target(target)) {
+        error = "invalid report item delete target";
+        return false;
+    }
+    DbContext db;
+    return connect(connection_string, db, error, request.log_callback()) &&
+        read_report_item_delete_preview(db.dbc, target, workstation_mac, true, false, preview, error);
+#else
+    (void)connection_string;
+    (void)target;
+    (void)workstation_mac;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool delete_report_items(const std::string& connection_string, const ReportItemDeleteTarget& target,
+                         const std::string& workstation_mac,
+                         ReportItemDeleteScope scope, const std::vector<std::string>& expected_entries,
+                         ReportItemDeleteStatus& status, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    using Status = ReportItemDeleteStatus;
+    status = Status::unavailable;
+#ifdef _WIN32
+    if (!valid_report_item_delete_target(target) || expected_entries.empty()) {
+        error = "invalid report item deletion";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    SQLLEN affected = 0;
+    if (!exec_report_write(db.dbc, "BEGIN TRANSACTION", affected, error)) return false;
+
+    const bool group = scope == ReportItemDeleteScope::group;
+    ReportItemDeletePreview current;
+    bool ok = read_report_item_delete_preview(db.dbc, target, workstation_mac, group, true, current, error);
+    status = current.status;
+    if (ok && status == Status::ready) {
+        const auto& entries = group ? current.group_entries : current.item_entries;
+        if (entries != expected_entries) {
+            status = Status::changed;
+        } else {
+            const std::string filter = group ? "GROUP_CODE=" + target.group_code
+                                             : "ITEM_CODE=" + target.item_code;
+            ok = exec_report_write(db.dbc,
+                "UPDATE LS_AS_REPENTRY SET DELETE_BIT=1 WHERE DELETE_BIT<>1 AND REP_NO=" +
+                    target.rep_no + " AND " + filter, affected, error);
+            if (ok && affected != static_cast<SQLLEN>(entries.size())) {
+                error = "unexpected report item deletion row count";
+                ok = false;
+            }
+            if (ok && exec_report_write(db.dbc, "COMMIT TRANSACTION", affected, error)) {
+                status = Status::saved;
+                return true;
+            }
+            ok = false;
+        }
+    }
+    std::string rollback_error;
+    if (!exec_report_write(db.dbc, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", affected, rollback_error)) {
+        if (error.empty()) error = rollback_error;
+        return false;
+    }
+    return ok;
+#else
+    (void)connection_string;
+    (void)target;
+    (void)workstation_mac;
+    (void)scope;
+    (void)expected_entries;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool save_report_results(const std::string& connection_string, const std::string& rep_no,
+                         const std::vector<ReportResultChange>& changes,
+                         const SaveReportResultsOptions& options,
+                         SaveReportResultsOutcome& outcome, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    using Status = SaveReportResultsStatus;
+    outcome = {};
+    auto& status = outcome.status;
+#ifdef _WIN32
+    std::set<std::string> entry_ids;
+    if (!report_item_id(rep_no) || std::any_of(changes.begin(), changes.end(),
+        [&](const ReportResultChange& change) {
+            return !report_item_id(change.entry_id, 19) || !entry_ids.insert(change.entry_id).second ||
+                   change.result.find('\0') != std::string::npos;
+        })) {
+        error = "invalid report result changes";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    SQLLEN affected = 0;
+    if (!exec_report_write(db.dbc, "BEGIN TRANSACTION", affected, error)) return false;
+
+    const char* operation = "lock_report";
+    const auto save = [&]() {
+        ReportItemSaveContext report;
+        std::string machine, conf, check, group_code, sex_code;
+        int reports = 0;
+        if (!read_report_item_rows(db.dbc,
+            "SELECT r.CONF,r.CHK_FLAG,r.MACH_CODE,r.SAMP_CODE,s.SEX_NAME,r.AGE,r.DEPT_CODE,r.GROUP_CODE,r.SEX,r.TXM_NO "
+            "FROM LS_AS_REPORT r WITH (UPDLOCK,HOLDLOCK) "
+            "LEFT JOIN LS_AS_SEX s ON s.SEX_CODE=r.SEX WHERE r.DELETE_BIT=0 AND r.REP_NO=" + rep_no,
+            [&](SQLHSTMT stmt) {
+                ++reports;
+                conf = fetch_column(stmt, 1);
+                check = fetch_column(stmt, 2);
+                machine = fetch_column(stmt, 3);
+                report.sample = fetch_column(stmt, 4);
+                report.sex = fetch_column(stmt, 5);
+                report.age = fetch_column(stmt, 6);
+                report.department = fetch_column(stmt, 7);
+                group_code = fetch_column(stmt, 8);
+                sex_code = fetch_column(stmt, 9);
+                report.barcode = fetch_column(stmt, 10);
+            }, error)) return false;
+        if (reports != 1 || !report_item_id(machine)) return true;
+        if (conf != "F") { status = Status::read_only; return true; }
+
+        operation = "read_save_configuration";
+        bool initial_review = false;
+        bool keep_history = false;
+        bool inspection_check = false;
+        bool critical_check = false;
+        std::string critical_string_mode;
+        std::string positive_items;
+        if (!read_report_item_rows(db.dbc,
+            "SELECT ID,CONFIG FROM dbo.JC_CONFIG WHERE ID IN (4223,4245,4247,4446,4656,4694,4700)", [&](SQLHSTMT stmt) {
+                const auto id = fetch_column(stmt, 1);
+                const auto value = fetch_column(stmt, 2);
+                if (id == "4245") initial_review = value == "1";
+                if (id == "4656") keep_history = value == "1";
+                if (id == "4446") inspection_check = value == "1";
+                if ((id == "4223" && value == "1") || (id == "4700" && value == "0"))
+                    critical_check = true;
+                if (id == "4247") critical_string_mode = value;
+                if (id == "4694" && value != "0") positive_items = value;
+            }, error)) return false;
+
+        const bool complete_initial_review = options.allow_initial_review_completion &&
+                                             initial_review && check == "C";
+        if (changes.empty() && !complete_initial_review) { status = Status::unchanged; return true; }
+        if (keep_history && !changes.empty() && (!report_item_id(options.employee_id, 19) ||
+            options.employee_id == "0" || options.employee_name.find('\0') != std::string::npos)) {
+            error = "missing employee identity for result history";
+            return false;
+        }
+        std::vector<SavedResultHistory> history;
+        bool inspection_hit = false;
+        for (const auto& change : changes) {
+            operation = "lock_result_entry";
+            const std::string predicate =
+                "REP_NO=" + rep_no + " AND ID=" + change.entry_id + " AND DELETE_BIT=0";
+            ReportItemOption item;
+            std::string previous, lower, upper;
+            bool found = false;
+            if (!read_report_item_rows(db.dbc,
+                "SELECT e.RESULT,e.UPBOUND,e.DOWNBOUND,e.ITEM_CODE,i.ROOM_CODE,"
+                "COALESCE(NULLIF(e.ITEM_NAME,''),i.ITEM_NAME),COALESCE(NULLIF(e.ITEM_UNIT,''),i.UNIT) "
+                "FROM LS_AS_REPENTRY e WITH (UPDLOCK,HOLDLOCK) "
+                "OUTER APPLY (SELECT TOP (1) d.ROOM_CODE,d.ITEM_NAME,d.UNIT FROM LS_AS_ITEM d "
+                "WHERE d.ITEM_CODE=e.ITEM_CODE AND d.DELETE_BIT=0) i WHERE e." + predicate,
+                [&](SQLHSTMT stmt) {
+                    found = true;
+                    previous = fetch_column(stmt, 1);
+                    lower = fetch_column(stmt, 2);
+                    upper = fetch_column(stmt, 3);
+                    item.code = fetch_column(stmt, 4);
+                    item.room_code = fetch_column(stmt, 5);
+                    item.name = fetch_column(stmt, 6);
+                    item.unit = fetch_column(stmt, 7);
+                }, error)) return false;
+            if (!found || previous != change.expected_result) {
+                status = Status::conflict;
+                return true;
+            }
+            if (previous == change.result) continue;
+            operation = "read_reference_bounds";
+            ReportResultAdditionalBounds additional;
+            if (!report_item_id(item.code) ||
+                !read_report_item_bounds(db.dbc, item, report, machine, lower, upper, error,
+                                         inspection_check ? &additional : nullptr)) {
+                if (error.empty()) error = "invalid laboratory item code";
+                return false;
+            }
+            const auto normal = report_item_normal(change.result, lower, upper);
+            if (inspection_check && (normal == "1" || normal == "5")) {
+                const auto value = report_result_number(report_numeric_part(change.result));
+                const auto bound = report_result_number(report_numeric_part(
+                    normal == "1" ? additional.repeat_lower : additional.repeat_upper));
+                if (value && bound && (normal == "1" ? *value > *bound : *value < *bound)) {
+                    if (!options.mark_for_inspection.has_value()) {
+                        status = Status::inspection_prompt;
+                        return true;
+                    }
+                    inspection_hit = true;
+                }
+            }
+            operation = "update_result_entry";
+            if (!exec_report_write(db.dbc,
+                "UPDATE LS_AS_REPENTRY SET RESULT=" + report_item_literal(change.result) +
+                ",UPBOUND=" + report_item_literal(lower) + ",DOWNBOUND=" + report_item_literal(upper) +
+                ",NORMAL=" + report_item_literal(normal) +
+                " WHERE " + predicate, affected, error)) return false;
+            if (affected != 1) { error = "unexpected result update row count"; return false; }
+            if (keep_history) history.push_back({std::move(item), std::move(previous), change.result});
+        }
+
+        operation = "recalculate_items";
+        if (!recalculate_report_items(db.dbc, rep_no, machine, group_code, sex_code, report,
+                                      outcome.skipped_formula_items, error)) return false;
+        operation = "record_result_history";
+        if (keep_history && !record_report_result_history(db.dbc, rep_no, options, report.barcode, history,
+                                                         error)) return false;
+        operation = "check_critical_results";
+        if (critical_check && !reevaluate_saved_critical_results(db.dbc, rep_no, machine, report,
+                        critical_string_mode, outcome.critical, error)) return false;
+        std::vector<std::string> report_updates;
+        if (complete_initial_review) report_updates.emplace_back("CHK_FLAG='F'");
+        if (inspection_hit && options.mark_for_inspection.value_or(false))
+            report_updates.emplace_back("NeedInspect=1");
+        if (!positive_items.empty()) {
+            operation = "recheck_positive_results";
+            bool positive = false;
+            if (!read_report_item_rows(db.dbc,
+                "SELECT ITEM_CODE,RESULT FROM LS_AS_REPENTRY WHERE REP_NO=" + rep_no +
+                " AND DELETE_BIT IN (0,3)", [&](SQLHSTMT stmt) {
+                    const auto code = fetch_column(stmt, 1);
+                    const auto result = fetch_column(stmt, 2);
+                    positive = positive || (!code.empty() && positive_items.find(code) != std::string::npos &&
+                        result.find("阳性") != std::string::npos);
+                }, error)) return false;
+            report_updates.emplace_back(positive ? "IS_POSITIVE=1" : "IS_POSITIVE=0");
+        }
+        if (!report_updates.empty()) {
+            operation = "update_report_flags";
+            std::ostringstream sql;
+            sql << "UPDATE LS_AS_REPORT SET " << report_updates.front();
+            for (std::size_t i = 1; i < report_updates.size(); ++i) sql << ',' << report_updates[i];
+            sql << " WHERE REP_NO=" << rep_no << " AND DELETE_BIT=0 AND CONF='F'";
+            if (!exec_report_write(db.dbc, sql.str(),
+                                   affected, error)) return false;
+            if (affected != 1) { error = "unexpected report update row count"; return false; }
+        }
+        status = Status::saved;
+        return true;
+    };
+
+    bool ok = save();
+    if (ok && status == Status::saved) {
+        operation = "commit_transaction";
+        if (exec_report_write(db.dbc, "COMMIT TRANSACTION", affected, error)) return true;
+        ok = false;
+    }
+    std::string rollback_error;
+    if (!exec_report_write(db.dbc, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", affected, rollback_error)) {
+        if (error.empty()) error = rollback_error;
+        ok = false;
+    }
+    if (!ok) error += std::string(" [operation=") + operation + "]";
+    return ok;
+#else
+    (void)connection_string;
+    (void)rep_no;
+    (void)changes;
+    (void)options;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
 #endif
 }
 
