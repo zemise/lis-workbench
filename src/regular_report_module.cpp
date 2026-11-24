@@ -8,7 +8,9 @@
 #include "main_app.h"
 #include "log.h"
 #include "regular_report_barcode_range.h"
+#include "regular_report_cancel_audit_dialog.h"
 #include "regular_report_machine.h"
+#include "regular_report_result_editor.h"
 #include "regular_report_tracking_window.h"
 #include "resource.h"
 #include "search_controller.h"
@@ -20,8 +22,8 @@
 
 #include <windows.h>
 #include <commctrl.h>
-#include <windowsx.h>
 #include <gdiplus.h>
+#include <iphlpapi.h>
 
 #include <algorithm>
 #include <array>
@@ -30,7 +32,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
-#include <cwctype>
 #include <exception>
 #include <initializer_list>
 #include <memory>
@@ -78,21 +79,21 @@ void querySelectedResults(RegularReportState* st, int selected);
 void finishReportQuery(RegularReportState* st, HWND hwnd,
                        std::unique_ptr<ReportLoadResult> result);
 void presentResultRows(RegularReportState* st, bool redraw = true);
+bool matchesStoolResultHighlight(const search::ResultRow& row);
 void finishResultQuery(RegularReportState* st, HWND hwnd,
                        std::unique_ptr<ResultLoadResult> result);
 void sortReportRowsByColumn(RegularReportState* st, int column);
 void populateLeftPanelFromReport(RegularReportState* st, int selected);
 void selectReportRow(RegularReportState* st, int index);
 void selectAdjacentReportRow(RegularReportState* st, int delta);
+void regularAuditSelectedReport(RegularReportState* st);
+void regularAddSelectedReportItems(RegularReportState* st);
+void regularDeleteSelectedReportItems(RegularReportState* st);
+void regularSaveSelectedReportResults(RegularReportState* st);
 bool hasSelectedReportRow(const RegularReportState* st);
 int currentReportIndex(const RegularReportState* st);
-void beginResultEdit(RegularReportState* st, int row);
-void finishResultEdit(RegularReportState* st, bool commit, bool moveNext = false,
-                      bool restoreListFocus = true);
 bool inspectDateMatchesCurrentQuery(const RegularReportState* st);
 void setInspectDateAndQuery(RegularReportState* st, SYSTEMTIME date, bool preserve = false);
-LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                UINT_PTR subclassId, DWORD_PTR data);
 
 // ============================================================================
 // Local helpers
@@ -103,7 +104,7 @@ int compactRightWidth(HWND hwnd) {
            GetSystemMetrics(SM_CXEDGE) * 2;
 }
 int compactMinWidth(HWND hwnd) { return regularS(hwnd, 200 + REGULAR_GAP) + compactRightWidth(hwnd); }
-bool compactReportColumnVisible(int column) { return column >= 1 && column <= 4; }
+bool compactReportColumnVisible(int column) { return column >= 0 && column <= 3; }
 bool compactResultColumnVisible(int column) { return column >= 1 && column < 9 && column != 3 && column != 8; }
 
 int compactResultMainColumnsWidth(const RegularReportState* st) {
@@ -852,14 +853,22 @@ ComparisonLoad loadComparisonData(const search::ReportRow& current, const std::s
     for (size_t col = offset; col < result.reports.size(); ++col)
         reportNos.push_back(result.reports[col].rep_no);
     std::vector<std::vector<search::ResultRow>> batches;
+    const auto positions = reuseCurrent ? search::ResultDisplayPositions::none
+                                        : search::ResultDisplayPositions::regular_report;
     if (!reportNos.empty() &&
-        !search::query_results_batch(conn, reportNos, batches, result.currentError)) {
+        !search::query_results_batch(conn, reportNos, batches, result.currentError, {}, positions)) {
         if (reuseCurrent) result.error = result.currentError;
         return result;
     }
     if (task.cancelled()) return result;
     std::array<std::vector<search::ResultRow>, regular_comparison::kReportCount> details;
-    if (reuseCurrent) details[0] = currentRows;
+    if (reuseCurrent) {
+        details[0] = currentRows;
+        // The comparison uses the first matching result in code order for duplicate item codes.
+        std::stable_sort(details[0].begin(), details[0].end(), [](const auto& left, const auto& right) {
+            return left.code_position < right.code_position;
+        });
+    }
     for (size_t col = 0; col < batches.size(); ++col)
         details[col + offset] = std::move(batches[col]);
     result.currentOk = true;
@@ -897,7 +906,7 @@ void loadComparison(RegularReportState* st) {
     if (!reuseCurrent) {
         st->resultQueryTask.cancel();
         ++st->resultQueryGeneration;
-        finishResultEdit(st, false);
+        regularFinishResultEdit(st, RegularResultEditExit::discard);
         st->resultRows.clear();
         ListView_DeleteAllItems(st->resultList);
         st->selectedReportIndex = index;
@@ -1079,6 +1088,10 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                     return CDRF_NEWFONT;
                 }
             }
+            if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == LVN_KEYDOWN) {
+                auto* key = reinterpret_cast<NMLVKEYDOWN*>(lp);
+                if (key->wVKey == VK_F3) { regularAuditSelectedReport(st); return 0; }
+            }
             if (st && nm->idFrom == REGULAR_IDC_REPORT_LIST && nm->code == LVN_ITEMCHANGED) {
                 auto* lv = reinterpret_cast<NMLISTVIEW*>(lp);
                 if ((lv->uChanged & LVIF_STATE) && (lv->uNewState & LVIS_SELECTED) &&
@@ -1115,6 +1128,7 @@ LRESULT CALLBACK rightPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                             : regularReportRowColor(st, row);
                         cd->clrText = st && row >= 0 &&
                             row < static_cast<int>(st->reportRows.size()) &&
+                            !st->reportRows[static_cast<size_t>(row)].need_inspect &&
                             regularReportUsesEmergencyTextColor(st->reportRows[static_cast<size_t>(row)])
                             ? RGB(0xE6, 0, 0) : RGB(0, 0, 0);
                     }
@@ -1137,11 +1151,10 @@ void showMiddleResultPage(RegularReportState* st) {
     const int page = TabCtrl_GetCurSel(st->middleTab);
     const bool showRes = page == 0, showPic = page == 1;
     for (HWND c : st->middleResultControls)
-        if (IsWindow(c)) ShowWindow(c, showRes ? SW_SHOW : SW_HIDE);
+        if (IsWindow(c)) ShowWindow(c, showRes && (!st->compactAttached || c == st->resultList)
+                                          ? SW_SHOW : SW_HIDE);
     for (HWND c : st->middlePictureControls)
         if (IsWindow(c)) ShowWindow(c, showPic ? SW_SHOW : SW_HIDE);
-    if (IsWindow(st->resultList)) ShowWindow(st->resultList, showRes ? SW_SHOW : SW_HIDE);
-    if (IsWindow(st->status)) ShowWindow(st->status, showRes && !st->compactAttached ? SW_SHOW : SW_HIDE);
     InvalidateRect(st->middlePanel, nullptr, TRUE);
     if (showPic) {
         regularUpdatePictureViewport(st);
@@ -1153,10 +1166,24 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                  UINT_PTR sid, DWORD_PTR data) {
     auto* st = reinterpret_cast<RegularReportState*>(data);
     switch (msg) {
+        case WM_COMMAND:
+            if (st && LOWORD(wp) == REGULAR_IDC_ADD_ITEMS && HIWORD(wp) == BN_CLICKED) {
+                regularAddSelectedReportItems(st);
+                return 0;
+            }
+            if (st && LOWORD(wp) == REGULAR_IDC_DELETE_ITEMS && HIWORD(wp) == BN_CLICKED) {
+                regularDeleteSelectedReportItems(st);
+                return 0;
+            }
+            if (st && LOWORD(wp) == REGULAR_IDC_SAVE_RESULTS && HIWORD(wp) == BN_CLICKED) {
+                regularSaveSelectedReportResults(st);
+                return 0;
+            }
+            break;
         case WM_NOTIFY: {
             auto* nm = reinterpret_cast<NMHDR*>(lp);
             if (st && nm->idFrom == REGULAR_IDC_MIDDLE_TAB && nm->code == TCN_SELCHANGE) {
-                finishResultEdit(st, false); showMiddleResultPage(st); return 0;
+                regularFinishResultEdit(st, RegularResultEditExit::leave, false); showMiddleResultPage(st); return 0;
             }
             if (nm->idFrom == REGULAR_IDC_RESULT_LIST && nm->code == NM_CUSTOMDRAW) {
                 auto* cd = reinterpret_cast<NMLVCUSTOMDRAW*>(lp);
@@ -1169,32 +1196,26 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                 }
                 if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
                     const int row = static_cast<int>(cd->nmcd.dwItemSpec);
-                    if (regularCustomDrawListSelection(cd, st ? st->resultList : nullptr, row))
-                        return CDRF_NEWFONT;
                     const auto idx = static_cast<size_t>(cd->nmcd.dwItemSpec);
-                    if (st && idx < st->resultRows.size()) {
-                        const auto& rd = st->resultRows[idx];
-                        const bool highlighted =
-                            std::find(st->highlightItemCodes.begin(),
-                                      st->highlightItemCodes.end(),
-                                      rd.item_code) !=
-                            st->highlightItemCodes.end();
-                        if (highlighted) {
-                            cd->clrTextBk = RGB(0xFF, 0xD9, 0x9A);
-                            cd->clrText = RGB(0x70, 0x2F, 0x14);
-                        } else {
-                            cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
-                                ? REGULAR_COLOR_WHITE
-                                : (regularResultRowHasCriticalValue(rd)
-                                    ? REGULAR_COLOR_CRITICAL_FINAL
-                                    : REGULAR_COLOR_RESULT_SIDE_BG);
-                            const COLORREF c = regularResultTextColor(rd);
-                            if (c != CLR_INVALID) cd->clrText = c;
+                    const auto* result = st && idx < st->resultRows.size() ? &st->resultRows[idx] : nullptr;
+                    if (!regularCustomDrawListSelection(cd, st ? st->resultList : nullptr, row)) {
+                        const bool isResultColumn = cd->iSubItem == REGULAR_RESULT_VALUE_COL;
+                        cd->clrTextBk = isResultColumn ? REGULAR_COLOR_WHITE : REGULAR_COLOR_RESULT_SIDE_BG;
+                        if (result) {
+                            const auto& highlightedItems = st->highlightItemCodes;
+                            if (std::find(highlightedItems.begin(), highlightedItems.end(),
+                                          result->item_code) != highlightedItems.end()) {
+                                cd->clrTextBk = RGB(0xFF, 0xD9, 0x9A);
+                                cd->clrText = RGB(0x70, 0x2F, 0x14);
+                            } else {
+                                if (!isResultColumn && regularResultRowHasCriticalValue(*result))
+                                    cd->clrTextBk = REGULAR_COLOR_CRITICAL_FINAL;
+                                const COLORREF color = regularResultTextColor(*result);
+                                if (color != CLR_INVALID) cd->clrText = color;
+                            }
                         }
-                    } else {
-                        cd->clrTextBk = cd->iSubItem == REGULAR_RESULT_VALUE_COL
-                            ? REGULAR_COLOR_WHITE : REGULAR_COLOR_RESULT_SIDE_BG;
                     }
+                    if (result && matchesStoolResultHighlight(*result)) cd->clrText = RGB(220, 0, 0);
                     return CDRF_NEWFONT;
                 }
             }
@@ -1238,6 +1259,9 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         case WM_COMMAND:
             if (st && LOWORD(wp) == REGULAR_IDC_COMPACT) {
                 enterCompactMode(st); return 0;
+            }
+            if (st && LOWORD(wp) == 5404) {
+                regularAuditSelectedReport(st); return 0;
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_1) {
                 regularApplyQuickMachine(st, 0); return 0;
@@ -1405,6 +1429,494 @@ void setCell(HWND list, int row, int col, const std::string& text) {
     setCell(list, row, col, search::utf8_to_wide(text).c_str());
 }
 
+struct AddReportItemsDialog {
+    struct SelectedItem {
+        search::ReportItemSelection key;
+        std::string group_name;
+        search::ReportItemOption item;
+    };
+
+    std::string connection;
+    std::string rep_no;
+    std::string machine_code;
+    std::vector<search::ReportItemGroup> groups;
+    std::vector<search::ReportItemOption> options;
+    std::vector<SelectedItem> selected;
+    int option_group = -1;
+};
+
+void insertAddItemRow(HWND list, int row, std::initializer_list<std::string> cells) {
+    auto cell = cells.begin();
+    std::wstring first = search::utf8_to_wide(*cell++);
+    LVITEMW item{};
+    item.mask = LVIF_TEXT;
+    item.iItem = row;
+    item.pszText = first.data();
+    const int inserted = ListView_InsertItem(list, &item);
+    if (inserted < 0) return;
+    for (int column = 1; cell != cells.end(); ++column, ++cell) {
+        setCell(list, inserted, column, *cell);
+    }
+}
+
+void updateAddItemDialog(HWND hwnd, const AddReportItemsDialog& state) {
+    const bool has_options = !state.options.empty();
+    EnableWindow(GetDlgItem(hwnd, IDC_ADD_ITEM_ONE), has_options);
+    EnableWindow(GetDlgItem(hwnd, IDC_ADD_ITEM_ALL), has_options);
+    const bool has_selected = !state.selected.empty();
+    EnableWindow(GetDlgItem(hwnd, IDC_REMOVE_ITEM_ONE), has_selected);
+    EnableWindow(GetDlgItem(hwnd, IDC_REMOVE_ITEM_ALL), has_selected);
+    EnableWindow(GetDlgItem(hwnd, IDOK), has_selected && state.option_group >= 0);
+    const std::wstring text = L"已选项目 " + std::to_wstring(state.selected.size()) + L" 项";
+    SetDlgItemTextW(hwnd, IDC_ADD_ITEM_STATUS, text.c_str());
+}
+
+void showAddItemSelection(HWND hwnd, const AddReportItemsDialog& state) {
+    const HWND list = GetDlgItem(hwnd, IDC_ADD_ITEM_SELECTED);
+    ListView_DeleteAllItems(list);
+    for (size_t i = 0; i < state.selected.size(); ++i) {
+        const auto& row = state.selected[i];
+        insertAddItemRow(list, static_cast<int>(i),
+                         {row.group_name, row.item.code, row.item.name, row.item.result, row.item.unit});
+    }
+    updateAddItemDialog(hwnd, state);
+}
+
+void loadAddItemOptions(HWND hwnd, AddReportItemsDialog& state, int group_index) {
+    if (group_index < 0 || group_index >= static_cast<int>(state.groups.size()) ||
+        state.option_group == group_index) return;
+    state.option_group = -1;
+    const HWND list = GetDlgItem(hwnd, IDC_ADD_ITEM_OPTIONS);
+    ListView_DeleteAllItems(list);
+    std::string error;
+    if (!search::query_report_item_options(state.connection, state.groups[group_index].code,
+                                           state.options, error)) {
+        state.options.clear();
+        updateAddItemDialog(hwnd, state);
+        MessageBoxW(hwnd, L"读取项目明细失败，请重新选择组合项目。", L"添加验单项目", MB_ICONWARNING);
+        return;
+    }
+    state.option_group = group_index;
+    for (size_t i = 0; i < state.options.size(); ++i) {
+        const auto& item = state.options[i];
+        insertAddItemRow(list, static_cast<int>(i), {item.code, item.name, item.result, item.unit});
+    }
+    updateAddItemDialog(hwnd, state);
+}
+
+INT_PTR CALLBACK addReportItemsDialogProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* state = reinterpret_cast<AddReportItemsDialog*>(GetWindowLongPtrW(hwnd, DWLP_USER));
+    if (msg == WM_INITDIALOG) {
+        state = reinterpret_cast<AddReportItemsDialog*>(lp);
+        SetWindowLongPtrW(hwnd, DWLP_USER, reinterpret_cast<LONG_PTR>(state));
+        SetWindowTextW(hwnd, L"添加验单项目");
+        SetDlgItemTextW(hwnd, IDC_ADD_ITEM_GROUP_LABEL, L"验单项目");
+        SetDlgItemTextW(hwnd, IDC_ADD_ITEM_OPTIONS_LABEL, L"项目明细");
+        SetDlgItemTextW(hwnd, IDC_ADD_ITEM_SELECTED_LABEL, L"所选项目");
+        SetDlgItemTextW(hwnd, IDOK, L"确定(&Q)");
+        SetDlgItemTextW(hwnd, IDCANCEL, L"退出(&C)");
+        const HWND groups = GetDlgItem(hwnd, IDC_ADD_ITEM_GROUPS);
+        const HWND options = GetDlgItem(hwnd, IDC_ADD_ITEM_OPTIONS);
+        const HWND selected = GetDlgItem(hwnd, IDC_ADD_ITEM_SELECTED);
+        for (HWND list : {groups, options, selected}) {
+            ListView_SetExtendedListViewStyle(list,
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        }
+        const ColumnDef group_columns[] = {
+            {0, L"项目名称", 115}, {1, L"项目代码", 65}, {2, L"专业组", 55},
+            {3, L"仪器代码", 65}, {4, L"标本代码", 65},
+        };
+        const ColumnDef option_columns[] = {
+            {0, L"项目代码", 67}, {1, L"项目名称", 114}, {2, L"默认结果", 69}, {3, L"单位", 55},
+        };
+        const ColumnDef selected_columns[] = {
+            {0, L"组合项目", 82}, {1, L"项目代码", 66}, {2, L"项目名称", 88},
+            {3, L"默认结果", 66}, {4, L"单位", 54},
+        };
+        addColumns(groups, group_columns, static_cast<int>(std::size(group_columns)), hwnd);
+        addColumns(options, option_columns, static_cast<int>(std::size(option_columns)), hwnd);
+        addColumns(selected, selected_columns, static_cast<int>(std::size(selected_columns)), hwnd);
+        for (size_t i = 0; i < state->groups.size(); ++i) {
+            const auto& group = state->groups[i];
+            insertAddItemRow(groups, static_cast<int>(i),
+                             {group.name, group.code, group.room_code, group.machine_code, group.sample_code});
+        }
+        ListView_SetItemState(groups, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        return TRUE;
+    }
+    if (!state) return FALSE;
+    if (msg == WM_NOTIFY) {
+        const auto* header = reinterpret_cast<NMHDR*>(lp);
+        if (header->idFrom == IDC_ADD_ITEM_GROUPS && header->code == LVN_ITEMCHANGED) {
+            const auto* change = reinterpret_cast<NMLISTVIEW*>(lp);
+            if ((change->uNewState & LVIS_SELECTED) && !(change->uOldState & LVIS_SELECTED)) {
+                loadAddItemOptions(hwnd, *state, change->iItem);
+            }
+            return TRUE;
+        }
+        if (header->code == NM_DBLCLK) {
+            const auto* click = reinterpret_cast<NMITEMACTIVATE*>(lp);
+            if (click->iItem >= 0 && header->idFrom == IDC_ADD_ITEM_GROUPS) {
+                SendMessageW(hwnd, WM_COMMAND, IDC_ADD_ITEM_ALL, 0);
+                return TRUE;
+            }
+            if (click->iItem >= 0 && header->idFrom == IDC_ADD_ITEM_OPTIONS) {
+                SendMessageW(hwnd, WM_COMMAND, IDC_ADD_ITEM_ONE, 0);
+                return TRUE;
+            }
+        }
+    }
+    if (msg == WM_CLOSE || (msg == WM_COMMAND && LOWORD(wp) == IDCANCEL)) {
+        EndDialog(hwnd, IDCANCEL);
+        return TRUE;
+    }
+    if (msg != WM_COMMAND) return FALSE;
+
+    switch (LOWORD(wp)) {
+        case IDC_ADD_ITEM_ONE:
+        case IDC_ADD_ITEM_ALL: {
+            if (state->option_group < 0) return TRUE;
+            const auto& group = state->groups[state->option_group];
+            const HWND list = GetDlgItem(hwnd, IDC_ADD_ITEM_OPTIONS);
+            for (size_t i = 0; i < state->options.size(); ++i) {
+                if (LOWORD(wp) == IDC_ADD_ITEM_ONE &&
+                    !ListView_GetItemState(list, static_cast<int>(i), LVIS_SELECTED)) continue;
+                const auto& item = state->options[i];
+                const bool exists = std::any_of(state->selected.begin(), state->selected.end(),
+                    [&](const AddReportItemsDialog::SelectedItem& row) { return row.key.item_code == item.code; });
+                if (!exists)
+                    state->selected.push_back({{group.code, item.code, item.result}, group.name, item});
+            }
+            showAddItemSelection(hwnd, *state);
+            return TRUE;
+        }
+        case IDC_REMOVE_ITEM_ONE: {
+            const HWND list = GetDlgItem(hwnd, IDC_ADD_ITEM_SELECTED);
+            for (int i = static_cast<int>(state->selected.size()) - 1; i >= 0; --i) {
+                if (ListView_GetItemState(list, i, LVIS_SELECTED)) {
+                    state->selected.erase(state->selected.begin() + i);
+                }
+            }
+            showAddItemSelection(hwnd, *state);
+            return TRUE;
+        }
+        case IDC_REMOVE_ITEM_ALL:
+            state->selected.clear();
+            showAddItemSelection(hwnd, *state);
+            return TRUE;
+        case IDOK: {
+            if (state->selected.empty() || state->option_group < 0) return TRUE;
+            std::vector<search::ReportItemSelection> items;
+            items.reserve(state->selected.size());
+            for (const auto& row : state->selected) items.push_back(row.key);
+            search::AddReportItemsStatus status{};
+            std::string error;
+            const HCURSOR cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            const bool ok = search::add_report_items(state->connection, state->rep_no, state->machine_code,
+                state->groups[state->option_group], items, status, error);
+            SetCursor(cursor);
+            if (!ok) {
+                LOG_WARN("regular_report add items failed: " + error);
+                const auto message = L"保存新增项目失败。\r\n\r\n" + search::utf8_to_wide(error);
+                MessageBoxW(hwnd, message.c_str(), L"添加验单项目", MB_ICONWARNING);
+                return TRUE;
+            }
+            using Status = search::AddReportItemsStatus;
+            if (status == Status::saved) {
+                EndDialog(hwnd, IDOK);
+                return TRUE;
+            }
+            const wchar_t* message = L"所选项目已在当前验单中。";
+            if (status == Status::report_unavailable) {
+                message = L"验单状态已变化，请刷新后重试。";
+            } else if (status == Status::catalog_changed) {
+                message = L"项目配置已变化，请重新打开选择窗口。";
+            }
+            MessageBoxW(hwnd, message, L"添加验单项目", MB_ICONINFORMATION);
+            if (status != Status::no_new_items) EndDialog(hwnd, IDCANCEL);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+void regularAddSelectedReportItems(RegularReportState* st) {
+    const HWND window = st->hwnd;
+    const HWND owner = GetAncestor(window, GA_ROOT);
+    const int index = st->reportList ? ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED) : -1;
+    if (index < 0 || index >= static_cast<int>(st->reportRows.size())) {
+        MessageBoxW(owner, L"请先选择需要添加项目的验单。", L"添加验单项目", MB_ICONINFORMATION);
+        return;
+    }
+    const auto& report = st->reportRows[index];
+    if (report.conf != "F" || report.chk_flag == "T") {
+        MessageBoxW(owner, report.conf == "S" ? L"结果已经发送，不能添加项目。" :
+                    L"结果已经审核，不能添加项目。", L"添加验单项目", MB_ICONINFORMATION);
+        return;
+    }
+    AddReportItemsDialog state;
+    state.connection = st->reportConnectionString;
+    state.rep_no = report.rep_no;
+    state.machine_code = report.mach_code;
+    std::string error;
+    if (!search::query_report_item_groups(state.connection, state.machine_code, state.groups, error)) {
+        LOG_WARN("regular_report item groups failed: " + error);
+        MessageBoxW(owner, L"读取组合项目失败，请刷新验单后重试。", L"添加验单项目", MB_ICONWARNING);
+        return;
+    }
+    if (state.groups.empty()) {
+        MessageBoxW(owner, L"当前仪器没有可添加的组合项目。", L"添加验单项目", MB_ICONINFORMATION);
+        return;
+    }
+    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(IDD_REGULAR_REPORT_ADD_ITEMS), owner, addReportItemsDialogProc,
+        reinterpret_cast<LPARAM>(&state));
+    if (result == -1) {
+        MessageBoxW(owner, L"无法打开项目选择窗口。", L"添加验单项目", MB_ICONERROR);
+    } else if (result == IDOK && GetPropW(window, REGULAR_REPORT_PROP_STATE) == st) {
+        regularFinishResultEdit(st, RegularResultEditExit::discard, false);
+        runReportQuery(st, true);
+    }
+}
+
+std::string reportWorkstationMac() {
+    ULONG size = 0;
+    if (GetAdaptersInfo(nullptr, &size) != ERROR_BUFFER_OVERFLOW) return {};
+    std::vector<BYTE> buffer(size);
+    auto* adapter = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
+    if (GetAdaptersInfo(adapter, &size) != ERROR_SUCCESS) return {};
+    for (; adapter; adapter = adapter->Next) {
+        if (adapter->AddressLength != 6) continue;
+        std::string mac;
+        const char hex[] = "0123456789ABCDEF";
+        for (UINT i = 0; i < adapter->AddressLength; ++i) {
+            const BYTE byte = adapter->Address[i];
+            if (!mac.empty()) mac += '-';
+            mac += hex[byte >> 4];
+            mac += hex[byte & 0x0f];
+        }
+        return mac;
+    }
+    return {};
+}
+
+const wchar_t* reportDeletionStatusMessage(search::ReportItemDeleteStatus status) {
+    using Status = search::ReportItemDeleteStatus;
+    switch (status) {
+        case Status::sent: return L"结果已经发送，不能删除项目。";
+        case Status::audited: return L"系统设置不允许删除已审核验单的项目。";
+        case Status::past_day: return L"只能删除当天审核的验单项目。";
+        case Status::changed: return L"项目范围或设置已变化，请刷新后重新确认。";
+        default: return L"验单状态已变化，请刷新后重试。";
+    }
+}
+
+void regularDeleteSelectedReportItems(RegularReportState* st) {
+    if (app::window_task_detail::sessionSuspended()) return;
+    using Scope = search::ReportItemDeleteScope;
+    using Status = search::ReportItemDeleteStatus;
+    const HWND window = st->hwnd;
+    const HWND owner = GetAncestor(window, GA_ROOT);
+    const int report_index = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
+    const int item_index = ListView_GetNextItem(st->resultList, -1, LVNI_SELECTED);
+    if (report_index < 0 || report_index >= static_cast<int>(st->reportRows.size()) ||
+        item_index < 0 || item_index >= static_cast<int>(st->resultRows.size()) ||
+        st->resultCache.current != regular_comparison::LoadPhase::Ready ||
+        !st->resultCache.key || *st->resultCache.key != reportCacheKey(st, report_index)) {
+        MessageBoxW(owner, L"请先选中验单及要删除的结果项目。", L"删除项目", MB_ICONINFORMATION);
+        return;
+    }
+    const auto& report = st->reportRows[report_index];
+    const RegularReportState::ResultDraftKey draft_key{st->reportConnectionString, report.rep_no};
+    const auto& item = st->resultRows[item_index];
+    const search::ReportItemDeleteTarget target{report.rep_no, item.entry_id, item.item_code, item.group_code};
+    const std::wstring item_name = search::utf8_to_wide(item.item_name.empty() ? item.item_code : item.item_name);
+    const std::wstring group_name = search::utf8_to_wide(
+        item.group_name.empty() ? item.group_code : item.group_name);
+    const auto connection = st->reportConnectionString;
+    const auto employee = st->ctx.employee_id;
+    const auto mac = reportWorkstationMac();
+    search::ReportItemDeletePreview preview;
+    std::string error;
+    if (!search::preview_report_item_deletion(connection, target, mac, preview, error)) {
+        LOG_WARN("regular_report preview deletion failed: " + error);
+        const auto message = L"读取删除范围失败。\r\n\r\n" + search::utf8_to_wide(error);
+        MessageBoxW(owner, message.c_str(), L"删除项目", MB_ICONWARNING);
+        return;
+    }
+    if (preview.status != Status::ready) {
+        MessageBoxW(owner, reportDeletionStatusMessage(preview.status), L"删除项目", MB_ICONINFORMATION);
+        return;
+    }
+
+    constexpr int delete_item = 1001;
+    constexpr int delete_group = 1002;
+    const auto item_button = L"删除项目（" + std::to_wstring(preview.item_entries.size()) + L" 条）";
+    const auto group_button = L"删除组合（" + std::to_wstring(preview.group_entries.size()) + L" 条）";
+    const bool allow_group = !preview.group_entries.empty();
+    std::wstring content = L"项目【" + item_name + L"】";
+    if (allow_group) content += L"\r\n组合【" + group_name + L"】";
+    if (preview.item_entries.size() > 1) content += L"\r\n删除项目会删除本验单内全部同码明细。";
+    const TASKDIALOG_BUTTON buttons[] = {{delete_item, item_button.c_str()}, {delete_group, group_button.c_str()}};
+    TASKDIALOGCONFIG dialog{};
+    dialog.cbSize = sizeof(dialog);
+    dialog.hwndParent = owner;
+    dialog.dwFlags = static_cast<TASKDIALOG_FLAGS>(
+        TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW);
+    dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    dialog.pszWindowTitle = L"删除项目";
+    dialog.pszMainIcon = TD_WARNING_ICON;
+    dialog.pszMainInstruction = L"请选择要删除的范围";
+    dialog.pszContent = content.c_str();
+    dialog.cButtons = allow_group ? 2 : 1;
+    dialog.pButtons = buttons;
+    dialog.nDefaultButton = IDCANCEL;
+    int choice = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&dialog, &choice, nullptr, nullptr))) {
+        MessageBoxW(owner, L"无法打开删除确认窗口。", L"删除项目", MB_ICONERROR);
+        return;
+    }
+    if ((choice != delete_item && choice != delete_group) ||
+        GetPropW(window, REGULAR_REPORT_PROP_STATE) != st ||
+        app::window_task_detail::sessionSuspended() || st->reportConnectionString != connection) return;
+
+    const bool group = choice == delete_group;
+    const auto& entries = group ? preview.group_entries : preview.item_entries;
+    Status status{};
+    if (!search::delete_report_items(connection, target, mac, group ? Scope::group : Scope::item,
+                                     entries, status, error)) {
+        LOG_WARN("regular_report delete items failed: " + error);
+        const auto message = L"删除项目失败。\r\n\r\n" + search::utf8_to_wide(error);
+        MessageBoxW(owner, message.c_str(), L"删除项目", MB_ICONERROR);
+        return;
+    }
+    if (status != Status::saved) {
+        MessageBoxW(owner, reportDeletionStatusMessage(status), L"删除项目", MB_ICONINFORMATION);
+        return;
+    }
+    LOG_INFO("regular_report deleted rep_no=" + target.rep_no +
+             (group ? " group_code=" + target.group_code : " item_code=" + target.item_code) +
+             " rows=" + std::to_string(entries.size()) + " employee_id=" + std::to_string(employee));
+    if (auto draft = st->resultDrafts.find(draft_key); draft != st->resultDrafts.end()) {
+        for (const auto& id : entries) draft->second.erase(id);
+        if (draft->second.empty()) st->resultDrafts.erase(draft);
+    }
+    regularFinishResultEdit(st, RegularResultEditExit::discard, false);
+    runReportQuery(st, true);
+}
+
+bool isCurrentResultReport(HWND window, const RegularReportState* st,
+                           const RegularReportState::ResultDraftKey& key) {
+    if (GetPropW(window, REGULAR_REPORT_PROP_STATE) != st ||
+        app::window_task_detail::sessionSuspended()) return false;
+    const int index = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
+    return index >= 0 && index < static_cast<int>(st->reportRows.size()) &&
+           st->reportConnectionString == key.first &&
+           st->reportRows[index].rep_no == key.second &&
+           st->resultCache.current == regular_comparison::LoadPhase::Ready &&
+           st->resultCache.key && *st->resultCache.key == reportCacheKey(st, index);
+}
+
+bool saveResultChanges(RegularReportState* st, const RegularReportState::ResultDraftKey& key,
+                       const std::vector<search::ReportResultChange>& changes,
+                       bool wholeReport, search::SaveReportResultsOutcome& outcome) {
+    using Status = search::SaveReportResultsStatus;
+    const HWND window = st->hwnd;
+    const HWND owner = GetAncestor(reportOwner(st), GA_ROOT);
+    search::SaveReportResultsOptions options{
+        std::to_string(st->ctx.employee_id), search::wide_to_utf8(st->ctx.employee_name), {}, wholeReport};
+    std::string error;
+    const auto save = [&]() {
+        const HCURSOR previous_cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+        const bool ok = search::save_report_results(key.first, key.second, changes, options, outcome, error);
+        SetCursor(previous_cursor);
+        return ok;
+    };
+    bool ok = save();
+    if (ok && outcome.status == Status::inspection_prompt) {
+        const int response = MessageBoxW(owner,
+            L"有修改结果超过复检参考范围。是否在保存时标记为需要复检？",
+            L"复检提示", MB_YESNOCANCEL | MB_DEFBUTTON3 | MB_ICONWARNING);
+        if ((response != IDYES && response != IDNO) ||
+            !isCurrentResultReport(window, st, key)) return false;
+        options.mark_for_inspection = response == IDYES;
+        ok = save();
+    }
+    if (!ok) {
+        LOG_WARN("regular_report save results failed: " + error);
+        const auto message = L"保存结果失败，输入已保留。\r\n\r\n" + search::utf8_to_wide(error);
+        MessageBoxW(owner, message.c_str(), L"保存检验结果", MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
+void showResultSaveNotice(HWND owner, const search::SaveReportResultsOutcome& outcome) {
+    std::wstring notice;
+    if (!outcome.skipped_formula_items.empty()) {
+        notice = L"结果已保存。以下计算项目未重算，请核对公式及输入：";
+        for (const auto& code : outcome.skipped_formula_items)
+            notice += L" " + search::utf8_to_wide(code);
+    }
+    if (outcome.critical) {
+        if (!notice.empty()) notice += L"\r\n";
+        notice += L"当前验单存在危急值，请核对危急值结果。";
+    }
+    if (!notice.empty()) MessageBoxW(owner, notice.c_str(), L"保存检验结果", MB_ICONWARNING);
+}
+
+void regularSaveSelectedReportResults(RegularReportState* st) {
+    if (app::window_task_detail::sessionSuspended()) return;
+    using Status = search::SaveReportResultsStatus;
+    const HWND window = st->hwnd;
+    const HWND owner = GetAncestor(window, GA_ROOT);
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
+    const int index = ListView_GetNextItem(st->reportList, -1, LVNI_SELECTED);
+    if (index < 0 || index >= static_cast<int>(st->reportRows.size()) || st->resultRows.empty() ||
+        st->resultCache.current != regular_comparison::LoadPhase::Ready || !st->resultCache.key ||
+        *st->resultCache.key != reportCacheKey(st, index)) {
+        MessageBoxW(owner, L"请先加载需要保存结果的验单。", L"保存检验结果", MB_ICONINFORMATION);
+        return;
+    }
+    const RegularReportState::ResultDraftKey key{st->reportConnectionString, st->reportRows[index].rep_no};
+    std::vector<search::ReportResultChange> changes;
+    if (const auto draft = st->resultDrafts.find(key); draft != st->resultDrafts.end()) {
+        changes.reserve(draft->second.size());
+        for (const auto& entry : draft->second) changes.push_back(entry.second);
+    }
+    search::SaveReportResultsOutcome outcome;
+    if (!saveResultChanges(st, key, changes, true, outcome)) return;
+    switch (outcome.status) {
+        case Status::saved: {
+            st->resultDrafts.erase(key);
+            SetWindowTextW(st->status, L"保存成功，正在刷新验单…");
+            runReportQuery(st, true);
+            showResultSaveNotice(owner, outcome);
+            return;
+        }
+        case Status::unchanged:
+            SetWindowTextW(st->status, L"没有需要保存的修改。");
+            return;
+        case Status::read_only:
+            MessageBoxW(owner, L"验单已审核或发送，不能保存结果修改。", L"保存检验结果", MB_ICONINFORMATION);
+            return;
+        case Status::conflict:
+            if (MessageBoxW(owner,
+                    L"数据库中的结果已变化，本次未保存。是否放弃当前验单的本地修改并刷新？",
+                    L"保存检验结果", MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING) == IDYES &&
+                GetPropW(window, REGULAR_REPORT_PROP_STATE) == st) {
+                st->resultDrafts.erase(key);
+                runReportQuery(st, true);
+            }
+            return;
+        case Status::unavailable:
+            MessageBoxW(owner, L"验单已不可用，本次输入仍保留。", L"保存检验结果", MB_ICONWARNING);
+            return;
+        case Status::inspection_prompt:
+            return;
+    }
+}
+
 void setCellIfChanged(HWND list, int row, int col, const std::wstring& text) {
     wchar_t cur[2048]{};
     ListView_GetItemText(list, row, col, cur, static_cast<int>(std::size(cur)));
@@ -1424,20 +1936,21 @@ void seedLists(RegularReportState* st) {
     addColumns(st->resultList, resCols,
                static_cast<int>(sizeof(resCols) / sizeof(resCols[0])), st->resultList);
 
-    const ColumnDef rptCols[] = {
-        {0, L"标签", 26}, {1, L"样本号", 58}, {2, L"姓名", 70}, {3, L"性别", 36},
-        {4, L"年龄", 66}, {5, L"医嘱内容", 110}, {6, L"科室代码", 78},
-        {7, L"床号", 46}, {8, L"打印", 64}, {9, L"病人类型", 84},
-        {10, L"检验者", 92}, {11, L"项目名称", 120}, {12, L"验单号", 96},
-        {13, L"审核", 58}, {14, L"确认", 58}, {15, L"条形码", 96},
-        {16, L"检验仪器", 92}, {17, L"标本", 58}, {18, L"备注", 120},
-        {19, L"审核", 82}, {20, L"开单日期", 128}, {21, L"签收时间", 128},
-        {22, L"检验日期", 128}, {23, L"报告时间", 128}, {24, L"费用", 72},
-        {25, L"医生代号", 82}, {26, L"临床诊断", 150}, {27, L"病人号", 96},
-        {28, L"上机时间", 128}, {29, L"电话", 110},
+    constexpr ColumnDef rptCols[] = {
+        {REGULAR_RIGHT_REPORT_SAMPLE_COL, L"样本号", 58},
+        {REGULAR_RIGHT_REPORT_NAME_COL, L"姓名", 70}, {2, L"性别", 36},
+        {3, L"年龄", 66}, {4, L"医嘱内容", 110}, {5, L"科室代码", 78},
+        {6, L"床号", 46}, {REGULAR_RIGHT_REPORT_PRINT_COL, L"打印", 64}, {8, L"病人类型", 84},
+        {9, L"检验者", 92}, {10, L"项目名称", 120}, {11, L"验单号", 96},
+        {12, L"审核", 58}, {13, L"确认", 58}, {14, L"条形码", 96},
+        {15, L"检验仪器", 92}, {16, L"标本", 58}, {17, L"备注", 120},
+        {18, L"审核", 82}, {19, L"开单日期", 128}, {20, L"签收时间", 128},
+        {21, L"检验日期", 128}, {22, L"报告时间", 128}, {23, L"费用", 72},
+        {24, L"医生代号", 82}, {25, L"临床诊断", 150}, {26, L"病人号", 96},
+        {27, L"上机时间", 128}, {28, L"电话", 110},
     };
-    addColumns(st->reportList, rptCols,
-               static_cast<int>(sizeof(rptCols) / sizeof(rptCols[0])), st->reportList);
+    static_assert(std::size(rptCols) == REGULAR_REPORT_COLUMN_COUNT);
+    addColumns(st->reportList, rptCols, REGULAR_REPORT_COLUMN_COUNT, st->reportList);
 }
 
 // ============================================================================
@@ -1603,6 +2116,16 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
     const wchar_t* mTabs[] = {L"项目结果", L"结果图"};
     insertTabs(st->middleTab, mTabs, static_cast<int>(sizeof(mTabs) / sizeof(mTabs[0])));
 
+    constexpr int item_button_width = 85;
+    aR(makeButton(p, REGULAR_IDC_ADD_ITEMS, L"增加",
+                  S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_TOOLBAR_Y),
+                  S(parent, item_button_width), S(parent, REGULAR_COMPACT_BUTTON_H)));
+    aR(makeButton(p, REGULAR_IDC_DELETE_ITEMS, L"删除项目",
+                  S(parent, REGULAR_PAD + item_button_width + REGULAR_GAP), S(parent, REGULAR_MIDDLE_TOOLBAR_Y),
+                  S(parent, item_button_width), S(parent, REGULAR_COMPACT_BUTTON_H)));
+    aR(makeButton(p, REGULAR_IDC_SAVE_RESULTS, L"保存(F2)",
+                  S(parent, REGULAR_PAD + 2 * (item_button_width + REGULAR_GAP)), S(parent, REGULAR_MIDDLE_TOOLBAR_Y),
+                  S(parent, item_button_width), S(parent, REGULAR_COMPACT_BUTTON_H)));
     st->resultList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
         S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_LIST_Y),
@@ -1610,7 +2133,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
         p, win32_control_id(REGULAR_IDC_RESULT_LIST), GetModuleHandleW(nullptr), nullptr);
     ListView_SetExtendedListViewStyle(st->resultList,
         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-    SetWindowSubclass(st->resultList, resultListProc, REGULAR_RESULT_LIST_SUBCLASS,
+    SetWindowSubclass(st->resultList, regularResultListProc, REGULAR_RESULT_LIST_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     aR(st->resultList);
     st->status = makeStatic(p, L"结果列表右键功能：项目复制；参数设置。[项目总数：7]",
@@ -1828,11 +2351,11 @@ void layoutCompactReportColumns(RegularReportState* st) {
     RECT client{};
     GetClientRect(st->reportList, &client);
     const int available = std::max(2, int(client.right));
-    const int sampleWeight = std::max(1, st->compactSavedColumnWidths[1]);
-    const int nameWeight = std::max(1, st->compactSavedColumnWidths[2]);
+    const int sampleWeight = std::max(1, st->compactSavedColumnWidths[REGULAR_RIGHT_REPORT_SAMPLE_COL]);
+    const int nameWeight = std::max(1, st->compactSavedColumnWidths[REGULAR_RIGHT_REPORT_NAME_COL]);
     const int sampleWidth = std::clamp(available * sampleWeight / (sampleWeight + nameWeight), 1, available - 1);
-    ListView_SetColumnWidth(st->reportList, 1, sampleWidth);
-    ListView_SetColumnWidth(st->reportList, 2, available - sampleWidth);
+    ListView_SetColumnWidth(st->reportList, REGULAR_RIGHT_REPORT_SAMPLE_COL, sampleWidth);
+    ListView_SetColumnWidth(st->reportList, REGULAR_RIGHT_REPORT_NAME_COL, available - sampleWidth);
 }
 
 void layoutCompactPage(RegularReportState* st) {
@@ -2111,7 +2634,7 @@ void restoreCompactPanels(RegularReportState* st) {
 
 void leaveCompactMode(RegularReportState* st, bool activate) {
     if (!st || !st->compactWindow) return;
-    finishResultEdit(st, true, false, false);
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
     HWND floating = st->compactWindow;
     restoreCompactPanels(st);
     // A creation failure can leave this button on the original, still-attached panel.
@@ -2202,7 +2725,7 @@ void enterCompactMode(RegularReportState* st) {
     wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     wc.lpszClassName = REGULAR_REPORT_COMPACT_CLASS;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
-    finishResultEdit(st, true, false, false);
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
     RECT owner{}; GetWindowRect(GetAncestor(st->hwnd, GA_ROOT), &owner);
     MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
     if (!GetMonitorInfoW(MonitorFromWindow(st->hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
@@ -2312,6 +2835,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         MessageBoxW(reportOwner(st), L"请先在\"设置\"中填写数据库连接信息。", L"缺少数据库设置", MB_ICONWARNING);
         return;
     }
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
     if (!preserveState) {
         resetComparison(st);
         st->resultCache.invalidate();
@@ -2367,7 +2891,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
 }
 
 void runAutoRefreshQuery(RegularReportState* st) {
-    if (!st || st->reportQueryLoading) return;
+    if (!st || st->reportQueryLoading || st->resultEdit) return;
     if (search::trim(st->selectedMachineCode).empty()) return;
     if (search::build_connection_string_w(st->ctx.dbSettings).empty()) return;
     runReportQuery(st, true);
@@ -2416,6 +2940,324 @@ void selectAdjacentReportRow(RegularReportState* st, int delta) {
     if (next != cur) selectReportRow(st, next);
 }
 
+// 单条审核：读取参数/权限/最新报告状态，按原程序口径判定后写回。
+// 首版只做 CONF='T'，无二次确认（用户确认 B9）；成功后刷新并自动跳下一条（B10）。
+void regularAuditSelectedReport(RegularReportState* st) {
+    if (!st) return;
+    const int index = currentReportIndex(st);
+    if (index < 0 || index >= static_cast<int>(st->reportRows.size())) {
+        MessageBoxW(reportOwner(st), L"请先选择一条报告记录。", L"审核", MB_ICONINFORMATION);
+        return;
+    }
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
+    if (st->resultDrafts.count({st->reportConnectionString, st->reportRows[index].rep_no})) {
+        MessageBoxW(reportOwner(st), L"当前验单有未保存的结果修改，请按 F2 保存后再审核。",
+                    L"审核", MB_ICONINFORMATION);
+        return;
+    }
+    if (st->reportConnectionString.empty()) {
+        MessageBoxW(reportOwner(st), L"请先查询报告后再审核。", L"审核", MB_ICONINFORMATION);
+        return;
+    }
+    if (st->ctx.employee_id <= 0) {
+        MessageBoxW(reportOwner(st), L"当前登录身份缺少员工编号，无法审核。", L"审核",
+                    MB_ICONWARNING);
+        return;
+    }
+    const std::string auditor_id = std::to_string(st->ctx.employee_id);
+    const std::string auditor_name = search::wide_to_utf8(st->ctx.employee_name);
+    const std::string rep_no = st->reportRows[static_cast<size_t>(index)].rep_no;
+
+    HCURSOR old_cursor = GetCursor();
+    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    bool failed = false;
+    std::wstring failure_message;
+    std::string error;
+
+    search::AuditConfig config;
+    if (!search::query_audit_config(st->reportConnectionString, config, error)) {
+        failed = true;
+        failure_message = L"读取审核参数失败，请稍后重试。";
+    }
+    bool is_review = false;
+    if (!failed && !search::query_audit_permission(
+                       st->reportConnectionString, auditor_id, is_review, error)) {
+        failed = true;
+        failure_message = L"读取审核权限失败，请稍后重试。";
+    }
+    search::AuditReportState state;
+    if (!failed && !search::query_audit_report_state(
+                       st->reportConnectionString, rep_no, state, error)) {
+        failed = true;
+        failure_message = L"读取报告状态失败，请刷新后重试。";
+    }
+
+    search::AuditReviewer reviewer;
+    reviewer.employee_id = auditor_id;  // 当前登录人
+    reviewer.name = auditor_name;
+    if (!failed && !search::query_audit_reviewer(
+                       st->reportConnectionString, rep_no, auditor_id, config, reviewer, error)) {
+        failed = true;
+        failure_message = L"读取审核人失败，请稍后重试。";
+    }
+    const std::string resolved_auditor =
+        reviewer.employee_id.empty() ? auditor_id : reviewer.employee_id;
+
+    search::AuditBlocker blocker = search::AuditBlocker::none;
+    search::AuditOutcome outcome;
+    if (!failed) {
+        LOG_INFO("regular_report audit check rep_no=" + rep_no +
+                 " oper_code=" + state.oper_code +
+                 " auditor=" + resolved_auditor +
+                 " current=" + auditor_id +
+                 " mode=" + std::to_string(config.same_person_mode()) +
+                 " 4149=" + config.v4149 + " 4110=" + config.v4110);
+        blocker = search::evaluate_audit(config, state, is_review, resolved_auditor, auditor_id);
+        bool proceed = (blocker == search::AuditBlocker::none) && !failed;
+
+        // 4141 自定义审核规则
+        if (proceed && config.custom_rules_enabled()) {
+            search::CustomAuditRules rules;
+            search::CustomAuditHeader header;
+            std::vector<search::CustomAuditEntry> entries;
+            if (!search::query_custom_audit_rules(st->reportConnectionString, rep_no, rules,
+                                                  header, entries, error)) {
+                failed = true;
+                failure_message = L"读取审核规则失败，请稍后重试。";
+                proceed = false;
+            } else if (rules.is_rule) {
+                const std::string rule_message =
+                    search::evaluate_custom_audit_rules(rules, header, entries);
+                if (!rule_message.empty()) {
+                    const std::wstring wmsg = search::utf8_to_wide(rule_message);
+                    SetCursor(old_cursor);
+                    if (config.custom_rules_hard_block()) {
+                        MessageBoxW(reportOwner(st), (wmsg + L",不能审核").c_str(),
+                                    L"审核提示", MB_ICONWARNING);
+                        return;
+                    }
+                    if (MessageBoxW(reportOwner(st),
+                                    (wmsg + L"是否继续审核报告?").c_str(),
+                                    L"审核提示", MB_YESNO | MB_ICONWARNING) != IDYES) {
+                        return;
+                    }
+                    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                }
+            }
+        }
+
+        // 4405 负数结果确认
+        if (proceed && config.negative_result_confirm()) {
+            std::vector<search::AuditEntry> entries;
+            if (!search::query_audit_entries(st->reportConnectionString, rep_no, entries, error)) {
+                failed = true;
+                failure_message = L"读取结果明细失败，请稍后重试。";
+                proceed = false;
+            } else {
+                const auto negatives = search::negative_results(entries);
+                if (!negatives.empty()) {
+                    std::wstring msg = L"确定要审核【" + search::utf8_to_wide(state.oper_no) +
+                                       L"】【" + search::utf8_to_wide(state.name) +
+                                       L"】的检验单吗？\r\n以下项目存在负数结果：\r\n";
+                    for (const auto& negative : negatives) {
+                        msg += L"【" + search::utf8_to_wide(negative.first) + L"】：" +
+                               search::utf8_to_wide(negative.second) + L"\r\n";
+                    }
+                    SetCursor(old_cursor);
+                    if (MessageBoxW(reportOwner(st), msg.c_str(), L"询问",
+                                    MB_YESNO | MB_ICONWARNING) != IDYES) {
+                        return;
+                    }
+                    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                }
+            }
+        }
+
+        // 4507 审核二次确认
+        if (proceed && !failed && config.audit_confirm()) {
+            const std::wstring msg = L"确定要审核【" + search::utf8_to_wide(state.oper_no) +
+                                     L"】【" + search::utf8_to_wide(state.name) +
+                                     L"】的检验单吗？";
+            SetCursor(old_cursor);
+            if (MessageBoxW(reportOwner(st), msg.c_str(), L"询问",
+                            MB_YESNO | MB_ICONWARNING) != IDYES) {
+                return;
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+        }
+
+        // 4804/4242 危急值检查（阶段一：只读检测 + 提示，不写库、不弹登记框）
+        if (proceed && !failed && config.critical_value_check_enabled()) {
+            std::vector<search::CriticalResultItem> critical_items;
+            std::vector<search::CriticalBoundCandidate> critical_bounds;
+            if (!search::query_critical_items(st->reportConnectionString, rep_no, critical_items,
+                                              error) ||
+                !search::query_critical_bounds(st->reportConnectionString, state.mach_code,
+                                               critical_bounds, error)) {
+                failed = true;
+                failure_message = L"读取危急值配置失败，请稍后重试。";
+                proceed = false;
+            } else {
+                const AgeDisplayParts age_parts = regularSplitAgeDisplayText(state.age);
+                const auto hits = search::evaluate_critical_values(
+                    critical_items, critical_bounds, state.samp_code, state.sex, age_parts.value,
+                    age_parts.unit, state.dept_code, config.string_critical_mode());
+                LOG_INFO("regular_report critical check rep_no=" + rep_no + " 4804=" + config.v4804 +
+                         " 4242=" + config.v4242 + " 4247=" + config.v4247 +
+                         " items=" + std::to_string(critical_items.size()) +
+                         " bounds=" + std::to_string(critical_bounds.size()) +
+                         " hits=" + std::to_string(hits.size()));
+                if (!hits.empty()) {
+                    std::wstring critical_message;
+                    for (const auto& hit : hits) {
+                        critical_message +=
+                            L"请注意:[样本号:" + search::utf8_to_wide(state.oper_no) +
+                            L" 病人姓名: " + search::utf8_to_wide(state.name) + L" 项目: " +
+                            search::utf8_to_wide(hit.item_name) + L" " +
+                            search::utf8_to_wide(hit.result) + L"]是危急值结果!危急下限【" +
+                            search::utf8_to_wide(hit.lower) + L"】、危急上限【" +
+                            search::utf8_to_wide(hit.upper) + L"】\r\n";
+                    }
+                    MessageBoxW(reportOwner(st), critical_message.c_str(), L"提示",
+                                MB_ICONWARNING | MB_OK);
+                }
+            }
+        }
+
+        // 4222 危急值报告必须已发送危机值消息
+        if (proceed && !failed && config.crisis_message_required()) {
+            bool is_critical = false;
+            bool has_message = false;
+            if (!search::query_crisis_message_state(st->reportConnectionString, rep_no, is_critical,
+                                                    has_message, error)) {
+                failed = true;
+                failure_message = L"读取危机值消息失败，请稍后重试。";
+                proceed = false;
+            } else if (is_critical && !has_message) {
+                MessageBoxW(reportOwner(st), L"请发送危机值消息", L"提示", MB_ICONWARNING);
+                return;
+            }
+        }
+
+        // 4246 项目阈值规则
+        if (proceed && !failed && config.item_audit_rules_enabled()) {
+            std::vector<search::AuditEntry> entries;
+            std::vector<search::ItemAuditRule> rules;
+            if (!search::query_audit_entries(st->reportConnectionString, rep_no, entries, error) ||
+                !search::query_item_audit_rules(st->reportConnectionString, state.mach_code, rules,
+                                                error)) {
+                failed = true;
+                failure_message = L"读取项目审核规则失败，请稍后重试。";
+                proceed = false;
+            } else {
+                auto previous = [&](const std::string& item_code) -> search::PreviousAuditResult {
+                    search::PreviousAuditResult prev;
+                    std::string prev_error;
+                    if (!search::query_previous_audit_result(st->reportConnectionString,
+                                                             state.reg_no, rep_no, item_code,
+                                                             prev, prev_error)) {
+                        failed = true;
+                        error = prev_error;
+                    }
+                    return prev;
+                };
+                const std::string rule_message = search::evaluate_item_audit_rules(
+                    state.oper_no, rules, entries, previous);
+                if (!failed && !rule_message.empty()) {
+                    const std::wstring wmsg = search::utf8_to_wide(rule_message);
+                    SetCursor(old_cursor);
+                    if (MessageBoxW(reportOwner(st),
+                                    (wmsg + L"是继续审核，取消为不审核").c_str(),
+                                    L"询问", MB_YESNO | MB_ICONWARNING) != IDYES) {
+                        return;
+                    }
+                    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+                }
+                if (failed) {
+                    failure_message = L"读取上次结果失败，请稍后重试。";
+                    proceed = false;
+                }
+            }
+        }
+
+        // 4527 项目数核对
+        if (proceed && !failed && config.item_count_check_enabled() &&
+            !search::trim(state.txm_no).empty()) {
+            int expected = 0;
+            int actual = 0;
+            if (!search::query_item_audit_counts(st->reportConnectionString, rep_no, state.txm_no,
+                                                 state.mach_code, expected, actual, error)) {
+                failed = true;
+                failure_message = L"读取项目数失败，请稍后重试。";
+                proceed = false;
+            } else if (expected != actual) {
+                const std::wstring msg =
+                    L"医嘱匹配的项目数为[" + std::to_wstring(expected) + L"]个，实际项目数为[" +
+                    std::to_wstring(actual) + L"]个！是否继续审核报告?";
+                SetCursor(old_cursor);
+                if (MessageBoxW(reportOwner(st), msg.c_str(), L"询问",
+                                MB_YESNO | MB_ICONWARNING) != IDYES) {
+                    return;
+                }
+                SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            }
+        }
+
+        // 4443 同人检查：2=拦截，1=确认
+        if (proceed && !failed &&
+            search::audit_same_person_effective(state, resolved_auditor, auditor_id)) {
+            if (config.same_person_mode() == 2) {
+                MessageBoxW(reportOwner(st),
+                            search::audit_blocker_message(search::AuditBlocker::same_person_blocked),
+                            L"审核提示", MB_ICONWARNING);
+                return;
+            }
+            if (config.same_person_mode() == 1) {
+                SetCursor(old_cursor);
+                if (MessageBoxW(reportOwner(st), L"检验者与审核者相同，是否继续？", L"审核提示",
+                                MB_YESNO | MB_ICONWARNING) != IDYES) {
+                    return;
+                }
+                SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+            }
+        }
+
+        if (proceed && !failed) {
+            const search::AuditPlan plan = search::build_audit_plan(
+                config, state, resolved_auditor, auditor_name, auditor_id);
+            if (!search::execute_audit(st->reportConnectionString, plan, outcome, error)) {
+                failed = true;
+                failure_message = L"审核写回失败，请稍后重试。";
+            }
+        }
+    }
+    SetCursor(old_cursor);
+
+    if (failed) {
+        LOG_WARN("regular_report audit failed rep_no=" + rep_no + " error=" + error);
+        MessageBoxW(reportOwner(st), failure_message.c_str(), L"审核", MB_ICONWARNING);
+        return;
+    }
+    if (blocker != search::AuditBlocker::none) {
+        MessageBoxW(reportOwner(st), search::audit_blocker_message(blocker), L"审核",
+                    MB_ICONWARNING);
+        return;
+    }
+    if (outcome.report_state_changed) {
+        runReportQuery(st, true);
+        MessageBoxW(reportOwner(st),
+                    L"验单状态已变化，可能已审核或已标记为复查。本次未审核。",
+                    L"审核", MB_ICONINFORMATION);
+        return;
+    }
+
+    LOG_INFO("regular_report audit ok rep_no=" + rep_no + " oper_no=" + state.oper_no +
+             " auditor=" + resolved_auditor + " conf=T");
+    st->pendingAuditAdvance = true;
+    st->pendingAuditRepNo = rep_no;
+    runReportQuery(st, true);
+}
+
 int currentReportIndex(const RegularReportState* st) {
     if (!st) return -1;
     if (st->reportList) {
@@ -2426,6 +3268,77 @@ int currentReportIndex(const RegularReportState* st) {
         st->selectedReportIndex < static_cast<int>(st->reportRows.size()))
         return st->selectedReportIndex;
     return -1;
+}
+
+const wchar_t* cancelAuditMessage(search::CancelAuditStatus status) {
+    using Status = search::CancelAuditStatus;
+    switch (status) {
+        case Status::saved: return L"已取消审核。";
+        case Status::report_changed: return L"验单状态已变化，请刷新后核对。";
+        case Status::unsupported_config: return L"当前配置涉及暂未接入的撤回流程，请在原 Trasen 中处理。";
+        case Status::permission_denied: return L"当前账号没有取消此验单审核的权限。";
+        case Status::expired: return L"报告已超过系统设置的取消审核时限。";
+        case Status::invalid_reason: return L"取消原因或字典设置已变化，请重新选择。";
+        case Status::shared_barcode: return L"同一条码还关联其他已审核或已发送验单，请在原 Trasen 中核对处理。";
+        case Status::sent_director_required: return L"当前设置要求主任组权限才能取消已发送的验单。";
+    }
+    return L"无法取消审核。";
+}
+
+void regularCancelAudit(RegularReportState* st, const std::string& connection,
+                         const std::string& rep_no, const std::string& expected_state,
+                         const std::wstring& label) {
+    const HWND window = st->hwnd;
+    const auto session = app::window_task_detail::sessionGeneration();
+    const auto settings = st->ctx.dbSettings;
+    if (st->ctx.employee_id <= 0 || st->ctx.login_code.empty() ||
+        search::wide_to_utf8(search::build_connection_string_w(settings)) != connection) {
+        MessageBoxW(reportOwner(st), L"无法验证当前验单的登录身份，请刷新后重试。",
+                    L"取消审核", MB_ICONWARNING);
+        return;
+    }
+    search::CancelAuditPreview preview;
+    std::string error;
+    if (!search::query_cancel_audit_preview(connection, rep_no, preview, error)) {
+        LOG_WARN("regular_report cancel audit preview failed: " + error);
+        MessageBoxW(reportOwner(st), L"读取验单或取消原因失败。", L"取消审核", MB_ICONWARNING);
+        return;
+    }
+    if (preview.report_time.empty() || preview.state != expected_state) {
+        runReportQuery(st, true);
+        MessageBoxW(reportOwner(st), cancelAuditMessage(search::CancelAuditStatus::report_changed),
+                    L"取消审核", MB_ICONINFORMATION);
+        return;
+    }
+    if (preview.reason_required && preview.reasons.empty()) {
+        MessageBoxW(reportOwner(st), L"当前设置要求选择取消原因，但原因字典为空。",
+                    L"取消审核", MB_ICONWARNING);
+        return;
+    }
+    const auto loginCode = st->ctx.login_code;
+    const auto employeeId = st->ctx.employee_id;
+    RegularCancelAuditConfirmation confirmation;
+    const auto choice = regularShowCancelAuditDialog(reportOwner(st), preview, settings, label,
+                                                     loginCode, employeeId, confirmation);
+    if (GetPropW(window, REGULAR_REPORT_PROP_STATE) != st ||
+        app::window_task_detail::sessionSuspended() ||
+        app::window_task_detail::sessionGeneration() != session ||
+        st->reportConnectionString != connection) return;
+    if (choice == RegularCancelAuditDialogResult::failed) {
+        MessageBoxW(reportOwner(st), L"无法打开取消审核窗口。", L"取消审核", MB_ICONWARNING);
+        return;
+    }
+    if (choice != RegularCancelAuditDialogResult::confirmed) return;
+
+    search::CancelAuditStatus status{};
+    const bool ok = search::cancel_report_audit(connection, rep_no, preview,
+        std::to_string(employeeId), search::wide_to_utf8(loginCode),
+        search::wide_to_utf8(confirmation.employee_name), confirmation.reason, status, error);
+    if (!ok) LOG_WARN("regular_report cancel audit failed: " + error);
+    const HWND owner = reportOwner(st);
+    runReportQuery(st, true);
+    MessageBoxW(owner, ok ? cancelAuditMessage(status) : L"未能确认取消审核结果，请刷新验单后核对。",
+                L"取消审核", ok ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 
 bool hasSelectedReportRow(const RegularReportState* st) {
@@ -2440,20 +3353,20 @@ std::array<std::wstring, REGULAR_REPORT_COLUMN_COUNT> reportDisplayValues(
     const search::ReportRow& d) {
     auto w = [](const std::string& s) { return search::utf8_to_wide(s); };
     std::array<std::wstring, REGULAR_REPORT_COLUMN_COUNT> v{};
-    v[0] = regularReportHasBarcodeEmergencyLabel(d) ? L"急" : L"";
-    v[1] = w(d.oper_no); v[2] = w(d.name); v[3] = w(d.sex); v[4] = w(d.age);
-    v[5] = w(d.order_text); v[6] = w(d.dept_name); v[7] = w(d.bed_code);
-    v[8] = w(search::display_binary_print_flag(d.zymz_print));
-    v[9] = w(d.patient_type); v[10] = w(d.requester); v[11] = w(d.group_name);
-    v[12] = w(d.rep_no); v[13] = w(d.chk_flag); v[14] = w(d.conf);
-    v[15] = w(d.txm_no); v[16] = w(d.group_name); v[17] = w(d.sample_name);
-    v[18] = w(d.note); v[19] = w(d.dean_oper);
-    v[20] = w(regularSlashDateTimeMinute(d.chk_date));
-    v[21] = w(regularSlashDateTimeMinute(d.collection_time));
-    v[22] = w(regularSlashDate(d.inspect_date));
-    v[23] = w(regularSlashDateTimeMinute(d.rep_time));
-    v[24] = w(d.fee); v[25] = w(d.req_doctor); v[26] = w(d.diag_name);
-    v[27] = w(d.reg_no); v[28] = w(d.create_time); v[29] = w(d.patient_phone);
+    v[REGULAR_RIGHT_REPORT_SAMPLE_COL] = w(d.oper_no); v[REGULAR_RIGHT_REPORT_NAME_COL] = w(d.name);
+    v[2] = w(d.sex); v[3] = w(d.age);
+    v[4] = w(d.order_text); v[5] = w(d.dept_name); v[6] = w(d.bed_code);
+    v[REGULAR_RIGHT_REPORT_PRINT_COL] = w(search::display_binary_print_flag(d.zymz_print));
+    v[8] = w(d.patient_type); v[9] = w(d.requester); v[10] = w(d.group_name);
+    v[11] = w(d.rep_no); v[12] = w(d.chk_flag); v[13] = w(d.conf);
+    v[14] = w(d.txm_no); v[15] = w(d.group_name); v[16] = w(d.sample_name);
+    v[17] = w(d.note); v[18] = w(d.dean_oper);
+    v[19] = w(regularSlashDateTimeMinute(d.chk_date));
+    v[20] = w(regularSlashDateTimeMinute(d.collection_time));
+    v[21] = w(regularSlashDate(d.inspect_date));
+    v[22] = w(regularSlashDateTimeMinute(d.rep_time));
+    v[23] = w(d.fee); v[24] = w(d.req_doctor); v[25] = w(d.diag_name);
+    v[26] = w(d.reg_no); v[27] = w(d.create_time); v[28] = w(d.patient_phone);
     return v;
 }
 
@@ -2487,20 +3400,21 @@ bool sameReportOrder(const std::vector<search::ReportRow>& oldR,
 // Sort helpers
 std::string reportSortValue(const search::ReportRow& r, int col) {
     switch (col) {
-        case 0: return r.barcode_jz_flag; case 1: return r.oper_no;
-        case 2: return r.name; case 3: return r.sex; case 4: return r.age;
-        case 5: return r.order_text; case 6: return r.dept_name;
-        case 7: return r.bed_code; case 8: return r.zymz_print;
-        case 9: return r.patient_type; case 10: return r.requester;
-        case 11: return r.group_name; case 12: return r.rep_no;
-        case 13: return r.chk_flag; case 14: return r.conf; case 15: return r.txm_no;
-        case 16: return r.group_name; case 17: return r.sample_name;
-        case 18: return r.note; case 19: return r.dean_oper;
-        case 20: return r.chk_date; case 21: return r.collection_time;
-        case 22: return r.inspect_date; case 23: return r.rep_time;
-        case 24: return r.fee; case 25: return r.req_doctor;
-        case 26: return r.diag_name; case 27: return r.reg_no;
-        case 28: return r.create_time; case 29: return r.patient_phone;
+        case REGULAR_RIGHT_REPORT_SAMPLE_COL: return r.oper_no;
+        case REGULAR_RIGHT_REPORT_NAME_COL: return r.name;
+        case 2: return r.sex; case 3: return r.age;
+        case 4: return r.order_text; case 5: return r.dept_name;
+        case 6: return r.bed_code; case REGULAR_RIGHT_REPORT_PRINT_COL: return r.zymz_print;
+        case 8: return r.patient_type; case 9: return r.requester;
+        case 10: return r.group_name; case 11: return r.rep_no;
+        case 12: return r.chk_flag; case 13: return r.conf; case 14: return r.txm_no;
+        case 15: return r.group_name; case 16: return r.sample_name;
+        case 17: return r.note; case 18: return r.dean_oper;
+        case 19: return r.chk_date; case 20: return r.collection_time;
+        case 21: return r.inspect_date; case 22: return r.rep_time;
+        case 23: return r.fee; case 24: return r.req_doctor;
+        case 25: return r.diag_name; case 26: return r.reg_no;
+        case 27: return r.create_time; case 28: return r.patient_phone;
         default: return r.id;
     }
 }
@@ -2515,7 +3429,7 @@ bool parseSortNumber(const std::string& v, double& out) {
 int compareReportSortValue(const search::ReportRow& a, const search::ReportRow& b, int col) {
     const std::string lv = search::trim(reportSortValue(a, col));
     const std::string rv = search::trim(reportSortValue(b, col));
-    if (col == 1) {
+    if (col == REGULAR_RIGHT_REPORT_SAMPLE_COL) {
         const int compared = regular_barcode::compare_sample_numbers(lv, rv);
         if (compared != 0) return compared;
     }
@@ -2623,6 +3537,15 @@ std::string referenceRange(const search::ResultRow& r) {
     return d.empty() ? u : d;
 }
 
+bool matchesStoolResultHighlight(const search::ResultRow& row) {
+    constexpr char stoolRoutineGroupCode[] = "62209";
+    constexpr char unseenResult[] = "未见";
+    // Match the displayed reference to limit the rule to the relevant rows within the group.
+    if (row.group_code != stoolRoutineGroupCode || referenceRange(row) != unseenResult) return false;
+    const std::string value = search::trim(row.result);
+    return !value.empty() && value != unseenResult;
+}
+
 const wchar_t* deviationMarker(const search::ResultRow& r) {
     const std::string v = search::trim(r.normal);
     if (v == "1") return L"↑";
@@ -2648,7 +3571,20 @@ void insertResultRow(HWND list, int row, const search::ResultRow& d,
 
 void presentResultRows(RegularReportState* st, bool redraw) {
     if (!st || !st->resultList) return;
-    finishResultEdit(st, false);
+    regularFinishResultEdit(st, RegularResultEditExit::discard);
+    if (st->resultCache.key) {
+        const auto& key = *st->resultCache.key;
+        const auto draft = st->resultDrafts.find({key[0], key[1]});
+        if (draft != st->resultDrafts.end()) {
+            for (auto& row : st->resultRows) {
+                const auto change = draft->second.find(row.entry_id);
+                if (change != draft->second.end()) row.result = change->second.result;
+            }
+        }
+    }
+    std::stable_sort(st->resultRows.begin(), st->resultRows.end(), [](const auto& left, const auto& right) {
+        return left.regular_display_position < right.regular_display_position;
+    });
     SendMessageW(st->resultList, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(st->resultList);
     std::string prevGroup;
@@ -2732,109 +3668,6 @@ void populateLeftPanelFromReport(RegularReportState* st, int sel) {
 }
 
 // ============================================================================
-// Result editing
-// ============================================================================
-
-void finishResultEdit(RegularReportState* st, bool commit, bool moveNext, bool restore) {
-    if (!st || !st->resultEdit) return;
-    const HWND ed = st->resultEdit;
-    const int row = st->resultEditRow;
-    st->resultEdit = nullptr; st->resultEditRow = -1;
-    if (commit && row >= 0 && row < static_cast<int>(st->resultRows.size())) {
-        wchar_t buf[512]{};
-        GetWindowTextW(ed, buf, static_cast<int>(std::size(buf)));
-        st->resultRows[static_cast<size_t>(row)].result = search::wide_to_utf8(buf);
-        setCell(st->resultList, row, REGULAR_RESULT_VALUE_COL, buf);
-        ListView_RedrawItems(st->resultList, row, row);
-    }
-    DestroyWindow(ed);
-    if (restore && st->resultList &&
-        (!st->compactAttached || GetForegroundWindow() == st->compactWindow))
-        SetFocus(st->resultList);
-    if (commit && moveNext && row + 1 < static_cast<int>(st->resultRows.size())) {
-        selectReportRow(st, row + 1);
-        beginResultEdit(st, row + 1);
-    }
-}
-
-LRESULT CALLBACK resultEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
-    switch (msg) {
-        case WM_GETDLGCODE:
-            return DefSubclassProc(hwnd, msg, wp, lp) | DLGC_WANTALLKEYS;
-        case WM_KEYDOWN:
-            if (wp == VK_RETURN) { finishResultEdit(st, true, true); return 0; }
-            if (wp == VK_ESCAPE) { finishResultEdit(st, false); return 0; }
-            break;
-        case WM_KILLFOCUS:
-            if (!app::window_task_detail::sessionSuspended()) finishResultEdit(st, false, false, false);
-            return 0;
-        case WM_NCDESTROY: RemoveWindowSubclass(hwnd, resultEditProc, sid); break;
-    }
-    return DefSubclassProc(hwnd, msg, wp, lp);
-}
-
-void beginResultEdit(RegularReportState* st, int row) {
-    if (!st || !st->resultList || row < 0 ||
-        row >= static_cast<int>(st->resultRows.size())) return;
-    finishResultEdit(st, false);
-    RECT rc{};
-    if (!ListView_GetSubItemRect(st->resultList, row, REGULAR_RESULT_VALUE_COL,
-                                  LVIR_BOUNDS, &rc)) return;
-    RECT cl{}; GetClientRect(st->resultList, &cl);
-    if (rc.right <= cl.left || rc.left >= cl.right ||
-        rc.bottom <= cl.top || rc.top >= cl.bottom) return;
-    rc.left = std::max(rc.left, cl.left); rc.right = std::min(rc.right, cl.right);
-    InflateRect(&rc, -1, -1);
-    const std::wstring txt =
-        search::utf8_to_wide(st->resultRows[static_cast<size_t>(row)].result);
-    st->resultEdit = CreateWindowExW(0, L"EDIT", txt.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        rc.left, rc.top, std::max(24, static_cast<int>(rc.right - rc.left)),
-        std::max(20, static_cast<int>(rc.bottom - rc.top)),
-        st->resultList, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!st->resultEdit) return;
-    st->resultEditRow = row;
-    SendMessageW(st->resultEdit, WM_SETFONT, reinterpret_cast<WPARAM>(st->ctx.uiFont), TRUE);
-    SetWindowSubclass(st->resultEdit, resultEditProc, REGULAR_RESULT_EDIT_SUBCLASS,
-                      reinterpret_cast<DWORD_PTR>(st));
-    SendMessageW(st->resultEdit, EM_SETSEL, 0, -1);
-    SetFocus(st->resultEdit);
-}
-
-bool beginResultEditFromPoint(RegularReportState* st, POINT pt) {
-    if (!st || !st->resultList) return false;
-    LVHITTESTINFO hit{}; hit.pt = pt;
-    const int row = ListView_SubItemHitTest(st->resultList, &hit);
-    if (row >= 0 && hit.iSubItem == REGULAR_RESULT_VALUE_COL) {
-        ListView_SetItemState(st->resultList, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_SetItemState(st->resultList, row, LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
-        beginResultEdit(st, row); return true;
-    } else {
-        finishResultEdit(st, false);
-    }
-    return false;
-}
-
-LRESULT CALLBACK resultListProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                UINT_PTR sid, DWORD_PTR data) {
-    auto* st = reinterpret_cast<RegularReportState*>(data);
-    switch (msg) {
-        case WM_LBUTTONDOWN: {
-            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-            if (beginResultEditFromPoint(st, pt)) return 0;
-            break;
-        }
-        case WM_HSCROLL: case WM_VSCROLL: case WM_MOUSEWHEEL:
-            finishResultEdit(st, false); break;
-        case WM_NCDESTROY: RemoveWindowSubclass(hwnd, resultListProc, sid); break;
-    }
-    return DefSubclassProc(hwnd, msg, wp, lp);
-}
-
-// ============================================================================
 // Sample input
 // ============================================================================
 
@@ -2884,6 +3717,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
         loadComparison(st);
         return;
     }
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
     resetComparison(st);
     if (st) st->resultCache.invalidate();
     if (st && (sel < 0 || sel >= static_cast<int>(st->reportRows.size()) ||
@@ -2893,7 +3727,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
         st->highlightReportRepNo.clear();
     }
     if (!st || sel < 0 || sel >= static_cast<int>(st->reportRows.size())) {
-        if (st) finishResultEdit(st, false);
+        if (st) regularFinishResultEdit(st, RegularResultEditExit::discard);
         if (st && st->resultList) ListView_DeleteAllItems(st->resultList);
         if (st) {
             populateLeftPanelFromReport(st, -1);
@@ -2920,7 +3754,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
         loadComparison(st);
         return;
     }
-    finishResultEdit(st, false);
+    regularFinishResultEdit(st, RegularResultEditExit::discard);
     ListView_DeleteAllItems(st->resultList);
     st->resultRows.clear(); st->selectedReportIndex = sel;
     st->resultQueryLoading = true;
@@ -2934,7 +3768,8 @@ void querySelectedResults(RegularReportState* st, int sel) {
         [conn, repNo, gen] {
             ResultLoadResult result;
             result.generation = gen;
-            result.ok = search::load_result_rows(conn, repNo, result.rows, result.error);
+            result.ok = search::load_result_rows(conn, repNo, result.rows, result.error,
+                                                 search::ResultDisplayPositions::regular_report);
             return result;
         },
         [hwnd](std::optional<ResultLoadResult> result, std::exception_ptr error) {
@@ -2972,6 +3807,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         MessageBoxW(reportOwner(st), search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
     // A successful list refresh is an explicit boundary for result freshness,
     // even when the selected report and its displayed metadata did not change.
     resetComparison(st);
@@ -3012,6 +3848,18 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         }
         if (top >= 0 && top < ListView_GetItemCount(st->reportList))
             ListView_EnsureVisible(st->reportList, top, FALSE);
+    }
+    if (st->pendingAuditAdvance) {
+        if (ps) {
+            const int audited = findReportIndexByRepNo(st, st->pendingAuditRepNo);
+            if (audited >= 0) {
+                rest = audited + 1 < static_cast<int>(st->reportRows.size())
+                           ? audited + 1
+                           : audited;
+            }
+        }
+        st->pendingAuditAdvance = false;
+        st->pendingAuditRepNo.clear();
     }
     if (st->pendingOpenReport) {
         pendingTarget = findReportIndexByRepNo(st, st->pendingOpenRepNo);
@@ -3065,7 +3913,7 @@ void finishResultQuery(RegularReportState* st, HWND hwnd,
                     L"查询项目明细失败", MB_ICONERROR);
         return;
     }
-    finishResultEdit(st, false);
+    regularFinishResultEdit(st, RegularResultEditExit::discard);
     st->resultRows = std::move(result->rows);
     st->resultCache.current = regular_comparison::LoadPhase::Ready;
     presentResultRows(st);
@@ -3095,6 +3943,83 @@ search::BarcodeLabelPayload barcodePayloadForReport(const search::ReportRow& r,
 // ============================================================================
 // Exported wrappers (regular* functions declared in state.h)
 // ============================================================================
+
+void regularSaveEditedResultAndAdvance(RegularReportState* st) {
+    using Status = search::SaveReportResultsStatus;
+    const HWND window = st->hwnd;
+    const int row = st->resultEditRow;
+    if (!st->resultEditKey || row < 0 || row >= static_cast<int>(st->resultRows.size())) return;
+    const auto key = *st->resultEditKey;
+    if (!isCurrentResultReport(window, st, key)) return;
+    const HWND owner = GetAncestor(reportOwner(st), GA_ROOT);
+    const auto id = st->resultRows[row].entry_id;
+    const auto nextId = row + 1 < static_cast<int>(st->resultRows.size())
+        ? st->resultRows[row + 1].entry_id : std::string{};
+    regularFinishResultEdit(st, RegularResultEditExit::confirm);
+    const auto findRow = [st](const std::string& entryId) {
+        const auto it = std::find_if(st->resultRows.begin(), st->resultRows.end(),
+            [&](const auto& item) { return item.entry_id == entryId; });
+        return static_cast<int>(it - st->resultRows.begin());
+    };
+    auto draft = st->resultDrafts.find(key);
+    if (draft == st->resultDrafts.end() || draft->second.find(id) == draft->second.end()) {
+        if (!nextId.empty()) regularBeginResultEdit(st, row + 1);
+        return;
+    }
+    search::SaveReportResultsOutcome outcome;
+    if (!saveResultChanges(st, key, {draft->second.at(id)}, false, outcome)) {
+        if (isCurrentResultReport(window, st, key)) regularBeginResultEdit(st, findRow(id));
+        return;
+    }
+    if (outcome.status != Status::saved) {
+        const wchar_t* message = L"验单已不可用，本次输入仍保留。";
+        if (outcome.status == Status::read_only)
+            message = L"验单已审核或发送，本次输入仍保留。";
+        if (outcome.status == Status::conflict)
+            message = L"数据库中的项目结果已变化，本次输入仍保留。可按 F2 处理冲突。";
+        MessageBoxW(owner, message, L"保存检验结果", MB_ICONWARNING);
+        if (isCurrentResultReport(window, st, key)) regularBeginResultEdit(st, findRow(id));
+        return;
+    }
+
+    // A confirmation dialog can dispatch pending query completions. Look up the
+    // saved draft again and only refresh the report currently on screen.
+    draft = st->resultDrafts.find(key);
+    if (draft != st->resultDrafts.end()) {
+        draft->second.erase(id);
+        if (draft->second.empty()) st->resultDrafts.erase(draft);
+    }
+    if (!isCurrentResultReport(window, st, key)) return;
+    std::vector<search::ResultRow> rows;
+    std::string error;
+    resetComparison(st);
+    if (!search::load_result_rows(key.first, key.second, rows, error,
+                                  search::ResultDisplayPositions::regular_report)) {
+        st->resultCache.current = regular_comparison::LoadPhase::Failed;
+        SetWindowTextW(st->status, L"当前项目已保存，项目明细刷新失败。");
+        MessageBoxW(owner, search::utf8_to_wide(error).c_str(), L"项目已保存，刷新失败", MB_ICONWARNING);
+        return;
+    }
+    st->resultRows = std::move(rows);
+    presentResultRows(st);
+    loadComparison(st);
+    const bool hasDrafts = st->resultDrafts.find(key) != st->resultDrafts.end();
+    SetWindowTextW(st->status, hasDrafts ? L"当前项目已保存，其他结果修改可按 F2 保存。"
+                                        : L"当前项目已保存。");
+    showResultSaveNotice(owner, outcome);
+    if (!isCurrentResultReport(window, st, key)) return;
+    const int next = nextId.empty() ? static_cast<int>(st->resultRows.size()) : findRow(nextId);
+    if (next < static_cast<int>(st->resultRows.size())) {
+        regularBeginResultEdit(st, next);
+    } else {
+        const int saved = findRow(id);
+        if (saved < static_cast<int>(st->resultRows.size())) {
+            ListView_SetItemState(st->resultList, saved, LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(st->resultList, saved, FALSE);
+        }
+    }
+}
 
 bool applyQuickMachineSlot(RegularReportState* st, int slot, bool showMissingMessage) {
     if (!st || slot < 0 || slot >= REGULAR_QUICK_MACHINE_COUNT) return false;
@@ -3169,6 +4094,18 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
     if (!st || !st->reportList || !item || item->iItem < 0 ||
         item->iItem >= static_cast<int>(st->reportRows.size())) return;
 
+    const auto& report = st->reportRows[static_cast<size_t>(item->iItem)];
+    const std::string rep_no = search::trim(report.rep_no);
+    const std::string connection = st->reportConnectionString;
+    const auto cancel_state = search::trim(report.conf);
+    const bool can_cancel_audit = !rep_no.empty() && !connection.empty() &&
+        (cancel_state == "T" || cancel_state == "S");
+    const std::wstring cancel_label = can_cancel_audit
+        ? L"验单号 " + search::utf8_to_wide(rep_no) + L"    样本号 " + search::utf8_to_wide(report.oper_no) +
+          (cancel_state == "S" ? L"    已发送" : L"    已审核未发送")
+        : std::wstring{};
+    const HWND window = st->hwnd;
+    const auto session = app::window_task_detail::sessionGeneration();
     ListView_SetItemState(st->reportList, item->iItem,
                           LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     st->contextReportIndex = item->iItem;
@@ -3186,10 +4123,53 @@ void regularShowReportContextMenu(RegularReportState* st, const NMITEMACTIVATE* 
                     ? (MF_STRING | MF_GRAYED) : MF_STRING,
                 REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES, L"打印勾选条码");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    const UINT inspection_item = (rep_no.empty() || connection.empty())
+        ? (MF_STRING | MF_GRAYED) : MF_STRING;
+    AppendMenuW(menu, inspection_item, REGULAR_IDM_REPORT_MARK_INSPECTION, L"标记为复查");
+    AppendMenuW(menu, inspection_item, REGULAR_IDM_REPORT_CLEAR_INSPECTION, L"取消复查标记");
+    AppendMenuW(menu, can_cancel_audit ? MF_STRING : (MF_STRING | MF_GRAYED),
+                REGULAR_IDM_REPORT_CANCEL_AUDIT, L"取消审核");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, REGULAR_IDM_REPORT_TREND, L"趋势图");
-    TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-                   pt.x, pt.y, 0, st->hwnd, nullptr);
+    const auto command = TrackPopupMenu(menu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+        pt.x, pt.y, 0, reportOwner(st), nullptr);
     DestroyMenu(menu);
+    if (!command || GetPropW(window, REGULAR_REPORT_PROP_STATE) != st) return;
+    if (command != REGULAR_IDM_REPORT_MARK_INSPECTION && command != REGULAR_IDM_REPORT_CLEAR_INSPECTION &&
+        command != REGULAR_IDM_REPORT_CANCEL_AUDIT) {
+        SendMessageW(window, WM_COMMAND, command, 0);
+        return;
+    }
+    if (app::window_task_detail::sessionSuspended() ||
+        session != app::window_task_detail::sessionGeneration() ||
+        connection != st->reportConnectionString) return;
+    if (command == REGULAR_IDM_REPORT_CANCEL_AUDIT) {
+        if (can_cancel_audit) regularCancelAudit(st, connection, rep_no, cancel_state, cancel_label);
+        return;
+    }
+
+    const bool need_inspect = command == REGULAR_IDM_REPORT_MARK_INSPECTION;
+    const wchar_t* title = need_inspect ? L"标记为复查" : L"取消复查标记";
+    bool changed = false;
+    std::string error;
+    if (!search::set_report_need_inspect(connection, rep_no, need_inspect, changed, error)) {
+        LOG_WARN("regular_report inspection flag update failed: " + error);
+        MessageBoxW(reportOwner(st), L"更新复查标记失败，请刷新验单后重试。", title, MB_ICONWARNING);
+        return;
+    }
+    if (changed) {
+        const int row = findReportIndexByRepNo(st, rep_no);
+        if (row >= 0) {
+            st->reportRows[static_cast<size_t>(row)].need_inspect = need_inspect;
+            ListView_RedrawItems(st->reportList, row, row);
+        }
+    }
+    runReportQuery(st, true);
+    const wchar_t* message = changed ? L"操作成功。" : (need_inspect
+        ? L"当前验单已标记为复查，或验单已不可用。"
+        : L"当前验单无需取消复查标记，或验单已不可用。");
+    MessageBoxW(reportOwner(st), message, title, MB_ICONINFORMATION);
 }
 
 std::vector<int> regularCheckedReportIndexes(const RegularReportState* st) {
@@ -4033,7 +5013,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     st->initialQuickMachineTimerActive = false;
                 }
                 regularStopAutoRefreshTimer(st);
-                finishResultEdit(st, false);
+                regularFinishResultEdit(st, RegularResultEditExit::discard);
                 if (IsWindow(st->machinePickerPopup)) DestroyWindow(st->machinePickerPopup);
                 if (IsWindow(st->picturePopup)) DestroyWindow(st->picturePopup);
                 delete st->pictureImage; st->pictureImage = nullptr;
@@ -4059,6 +5039,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // Public entry point
 // ============================================================================
 
+bool regular_report_translate_save_message(MSG* message) {
+    if (!message || message->message != WM_KEYDOWN || message->wParam != VK_F2 ||
+        app::window_task_detail::sessionSuspended()) return false;
+    for (HWND window = message->hwnd; window; window = GetAncestor(window, GA_PARENT)) {
+        auto* state = reinterpret_cast<RegularReportState*>(GetPropW(window, REGULAR_REPORT_PROP_STATE));
+        if (!state) continue;
+        if (state->compactAttached || !IsWindowEnabled(GetAncestor(window, GA_ROOT))) return false;
+        if ((message->lParam & (1LL << 30)) == 0) regularSaveSelectedReportResults(state);
+        return true;
+    }
+    return false;
+}
+
 bool regular_report_translate_compact_message(MSG* message) {
     if (!message || !message->hwnd) return false;
     HWND root = GetAncestor(message->hwnd, GA_ROOT);
@@ -4070,12 +5063,12 @@ bool regular_report_translate_compact_message(MSG* message) {
         app::window_task_detail::sessionSuspended()) return false;
     if (message->message == WM_KEYDOWN) {
         if (message->wParam == VK_F5) {
-            finishResultEdit(st, true, false, false);
+            regularFinishResultEdit(st, RegularResultEditExit::leave, false);
             SendMessageW(root, WM_COMMAND, REGULAR_IDC_COMPACT_REFRESH, 0);
             return true;
         }
         // Let the in-cell editor handle its own Enter/Escape/Tab keys.
-        if (message->hwnd == st->resultEdit) return false;
+        if (message->hwnd == st->resultEdit || message->hwnd == st->resultOptions) return false;
         if (message->wParam == VK_ESCAPE ||
             (message->wParam == VK_F4 && GetKeyState(VK_CONTROL) < 0)) {
             leaveCompactMode(st);

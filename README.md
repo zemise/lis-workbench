@@ -4,7 +4,7 @@ LIS 工作台是基于 C++17、原生 Win32 和 SQL Server ODBC 的 Windows 桌�
 
 ## 功能
 
-- 常规、微生物及检验结果查询，支持历史比较、追踪、趋势图和导出；常规报告支持精简置顶查看。
+- 常规、微生物及检验结果查询，支持历史比较、追踪、趋势图和导出。常规报告还支持检验结果录入、项目增删、单张审核、复查标记、取消审核及精简置顶。
 - 标本签收、条码查询与标签打印；支持按项目覆盖补关联多条码合并报告。
 - 输血查询及备血、大量输血、HIV、急诊、免疫重复项目、TAT 统计。
 - 质控分析、定时结果核查、门诊查询、常用电话和本机设置。
@@ -15,7 +15,7 @@ LIS 工作台是基于 C++17、原生 Win32 和 SQL Server ODBC 的 Windows 桌�
 
 需安装可用的 SQL Server ODBC 驱动，并在程序目录配置 `ClientConfig.ini`。现场打印模板与业务资料按需配置。
 
-登录、精简置顶、查询规则、血库手工标签及 TAT 口径见[使用与配置](docs/USAGE.md)；部署与旧客户端升级见[安装与打包说明](packaging/README_windows_installer.md)。
+登录、常规报告录入、精简置顶、查询规则、血库手工标签及 TAT 口径见[使用与配置](docs/USAGE.md)。部署与旧客户端升级见[安装与打包说明](packaging/README_windows_installer.md)。
 
 ## 构建
 
@@ -48,4 +48,4 @@ ctest --test-dir build/native-tests --output-on-failure --no-tests=error --timeo
 - [变更日志](CHANGELOG.md)：版本与功能变化。
 - 本地设计资料入口：`docs/private/README.md`；不随 Git 或发布包分发，需单独备份。
 
-当前源码版本为 `v2026.11.19`，以 [src/version.h](src/version.h) 为准。构建产物、本机配置和私密排查资料由 `.gitignore` 排除。
+当前源码版本为 `v2026.11.24`，以 [src/version.h](src/version.h) 为准。构建产物、本机配置和私密排查资料由 `.gitignore` 排除。

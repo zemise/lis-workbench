@@ -1,6 +1,8 @@
 #include "regular_report_module.h"
+#include "regular_report_cancel_audit_dialog.h"
 #include "regular_report_state.h"
 #include "main_app.h"
+#include "resource.h"
 #include "search_text.h"
 #include <algorithm>
 
@@ -13,6 +15,26 @@ void check(bool condition, const char* message) {
         std::cerr << "FAILED: " << message << '\n';
         std::exit(1);
     }
+}
+
+void CALLBACK checkCancelAuditDialog(HWND owner, UINT, UINT_PTR timer, DWORD) {
+    const HWND dialog = GetLastActivePopup(owner);
+    const HWND types = GetDlgItem(dialog, IDC_CANCEL_AUDIT_TYPE);
+    if (!types || !IsWindowVisible(dialog)) return;
+    KillTimer(owner, timer);
+
+    check(SendMessageW(types, CB_GETCOUNT, 0, 0) == 2, "both cancel reasons are offered");
+    wchar_t text[64]{};
+    SendMessageW(types, CB_GETLBTEXT, 0, reinterpret_cast<LPARAM>(text));
+    check(std::wstring_view(text) == L"采样问题", "a repeated cancel reason is displayed once");
+    SendMessageW(types, CB_GETLBTEXT, 1, reinterpret_cast<LPARAM>(text));
+    check(std::wstring_view(text) == L"采样问题  标本不合格", "a distinct reason is shown with its type");
+    SendMessageW(types, CB_SETCURSEL, 1, 0);
+    SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDC_CANCEL_AUDIT_TYPE, CBN_SELCHANGE),
+                 reinterpret_cast<LPARAM>(types));
+    GetDlgItemTextW(dialog, IDC_CANCEL_AUDIT_REASON, text, static_cast<int>(std::size(text)));
+    check(std::wstring_view(text) == L"标本不合格", "selecting a type fills the reason text");
+    SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
 }
 struct ControlSnapshot { HWND hwnd; RECT rect; LONG_PTR exStyle; };
 std::vector<ControlSnapshot> normalLayout;
@@ -39,6 +61,81 @@ LRESULT CALLBACK frameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 void enter(RegularReportState* st) {
     SendMessageW(st->compactButton, BM_CLICK, 0, 0);
     check(st->compactWindow && st->compactAttached, "entered compact mode");
+}
+void checkStoolResultColor(RegularReportState* st) {
+    auto textColor = [st](int column) {
+        NMLVCUSTOMDRAW draw{};
+        draw.nmcd.hdr.hwndFrom = st->resultList;
+        draw.nmcd.hdr.idFrom = REGULAR_IDC_RESULT_LIST;
+        draw.nmcd.hdr.code = NM_CUSTOMDRAW;
+        draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT | CDDS_SUBITEM;
+        draw.clrText = RGB(0, 0, 0);
+        draw.iSubItem = column;
+        SendMessageW(GetParent(st->resultList), WM_NOTIFY, draw.nmcd.hdr.idFrom,
+                     reinterpret_cast<LPARAM>(&draw));
+        return draw.clrText;
+    };
+    const int columnCount = Header_GetItemCount(ListView_GetHeader(st->resultList));
+    auto checkRowColor = [&](COLORREF expected, const char* message) {
+        for (int column = 0; column < columnCount; ++column)
+            check(textColor(column) == expected, message);
+    };
+    auto& result = st->resultRows.emplace_back();
+    result.group_code = "62209";
+    result.upbound = "未见";
+    result.result = " 已找到 ";
+    for (const char* itemName : {"肝吸虫卵", "蛲虫卵", "蛔虫卵", "鞭虫卵"}) {
+        result.item_name = itemName;
+        checkRowColor(RGB(220, 0, 0), "matching group row shown in red");
+    }
+    ListView_SetItemState(st->resultList, 0, LVIS_SELECTED, LVIS_SELECTED);
+    checkRowColor(RGB(220, 0, 0), "selected matching row retains the same red");
+    result.result = " 未见 ";
+    checkRowColor(GetSysColor(COLOR_HIGHLIGHTTEXT), "selected excluded row uses the selection text color");
+    ListView_SetItemState(st->resultList, 0, 0, LVIS_SELECTED);
+    checkRowColor(RGB(0, 0, 0), "excluded result keeps its text color");
+    for (const char* value : {"未找到", "未见虫卵", "已找到（待确认）"}) {
+        result.result = value;
+        checkRowColor(RGB(220, 0, 0), "nonempty result differing from the unseen reference shown in red");
+    }
+    result.result = " ";
+    checkRowColor(RGB(0, 0, 0), "blank result keeps its text color");
+
+    const struct {
+        const char* value;
+        const char* reference;
+    } otherStoolResults[] = {
+        {"黄色", "黄褐色"}, {"软便", "软"}, {"阴性", "无"},
+        {"阴性", "阴性"}, {"阴性", "偶见"}, {"阴性", ""}
+    };
+    for (const auto& entry : otherStoolResults) {
+        result.result = entry.value;
+        result.upbound = entry.reference;
+        checkRowColor(RGB(0, 0, 0), "stool results with a different reference keep their text color");
+    }
+    result.upbound.clear();
+    result.downbound = "未见";
+    result.group_code = "62210";
+    result.result = "已找到";
+    checkRowColor(RGB(0, 0, 0), "different group keeps its text color");
+
+    result.group_code = "62209";
+    result.result = "未见";
+    result.entry_id = "101";
+    st->resultCache.current = regular_comparison::LoadPhase::Ready;
+    RECT cell{};
+    check(ListView_GetSubItemRect(st->resultList, 0, REGULAR_RESULT_VALUE_COL, LVIR_BOUNDS, &cell),
+          "result cell bounds available");
+    SendMessageW(st->resultList, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM((cell.left + cell.right) / 2, (cell.top + cell.bottom) / 2));
+    check(st->resultEdit != nullptr, "result editor opened");
+    SetWindowTextW(st->resultEdit, L"已找到");
+    SendMessageW(st->resultEdit, WM_KILLFOCUS, 0, 0);
+    check(!st->resultEdit && result.result == "已找到", "temporary result edit committed");
+    checkRowColor(RGB(220, 0, 0), "edited row shown in red");
+    ListView_SetItemState(st->resultList, 0, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    st->resultRows.clear();
+    st->resultCache.invalidate();
 }
 void restored(RegularReportState* st, HWND middle, HWND right, HWND results, HWND reports, int split) {
     check(!st->compactWindow && !st->compactAttached, "compact mode ended");
@@ -74,6 +171,16 @@ int main() {
                              0, 0, 1420, 840, frame, reinterpret_cast<HMENU>(1), instance, &client);
     check(frame && mdi, "MDI fixture created");
     ShowWindow(frame, SW_SHOW);
+    search::CancelAuditPreview cancelPreview;
+    cancelPreview.reasons = {{"1", "10", "采样问题", "采样问题"},
+                             {"2", "10", "采样问题", "标本不合格"}};
+    RegularCancelAuditConfirmation cancelConfirmation;
+    constexpr UINT_PTR cancelDialogTimer = 6301;
+    check(SetTimer(frame, cancelDialogTimer, 10, checkCancelAuditDialog) != 0,
+          "scheduled the offline cancel audit dialog check");
+    check(regularShowCancelAuditDialog(frame, cancelPreview, {}, L"测试验单", L"fixture", 1,
+                                       cancelConfirmation) == RegularCancelAuditDialogResult::cancelled,
+          "closing the cancel audit dialog exits without authentication");
     HWND other = CreateWindowW(L"STATIC", L"Other application window", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                10, 10, 240, 120, nullptr, nullptr, instance, nullptr);
     check(other != nullptr, "additional application window created");
@@ -103,20 +210,219 @@ int main() {
     st->selectedReportIndex = 0;
     HWND middle = st->middlePanel, right = st->rightPanel;
     HWND results = st->resultList, reports = st->reportList;
+    check(Header_GetItemCount(ListView_GetHeader(reports)) == REGULAR_REPORT_COLUMN_COUNT,
+          "report list has no label column");
+    wchar_t sampleHeader[16]{};
+    LVCOLUMNW sampleColumn{};
+    sampleColumn.mask = LVCF_TEXT;
+    sampleColumn.pszText = sampleHeader;
+    sampleColumn.cchTextMax = static_cast<int>(std::size(sampleHeader));
+    check(ListView_GetColumn(reports, 0, &sampleColumn) && std::wstring_view(sampleHeader) == L"样本号",
+          "sample number is the first report column");
+    const auto checkInspectionColors = [&] {
+        auto drawReport = [&](int column) {
+            NMLVCUSTOMDRAW draw{};
+            draw.nmcd.hdr = {reports, REGULAR_IDC_REPORT_LIST, NM_CUSTOMDRAW};
+            draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT | CDDS_SUBITEM;
+            draw.iSubItem = column;
+            SendMessageW(right, WM_NOTIFY, draw.nmcd.hdr.idFrom, reinterpret_cast<LPARAM>(&draw));
+            return draw;
+        };
+        ListView_SetItemState(reports, 0, 0, LVIS_SELECTED);
+        auto& reportRow = st->reportRows.front();
+        const auto original = reportRow;
+        reportRow.need_inspect = true;
+        reportRow.report_type = "0";
+        reportRow.zymz_print = "1";
+        const auto marked = drawReport(1);
+        check(marked.clrTextBk == RGB(211, 211, 211) && marked.clrText == RGB(0, 0, 0),
+              "report needing inspection is light gray with black text");
+        check(drawReport(REGULAR_RIGHT_REPORT_PRINT_COL).clrTextBk == RGB(166, 236, 154),
+              "printed cell retains its own background");
+        reportRow.chk_flag = "T";
+        reportRow.conf = "T";
+        check(drawReport(1).clrTextBk == REGULAR_COLOR_REPORT_REVIEWED,
+              "reviewed unsent inspection report remains blue");
+        reportRow.chk_flag.clear();
+        reportRow.conf = "F";
+        reportRow.need_inspect = false;
+        const auto cleared = drawReport(1);
+        check(cleared.clrTextBk == REGULAR_COLOR_WHITE && cleared.clrText == RGB(230, 0, 0),
+              "clearing inspection restores normal emergency text and report background");
+        reportRow = original;
+        ListView_SetItemState(reports, 0, LVIS_SELECTED, LVIS_SELECTED);
+    };
+    checkInspectionColors();
+    const HWND addItems = GetDlgItem(middle, REGULAR_IDC_ADD_ITEMS);
+    const HWND deleteItems = GetDlgItem(middle, REGULAR_IDC_DELETE_ITEMS);
+    const HWND saveResults = GetDlgItem(middle, REGULAR_IDC_SAVE_RESULTS);
+    check(addItems && IsWindowVisible(addItems), "add items visible on the results page");
+    check(relativeRect(addItems).bottom <= relativeRect(results).top, "add items sits above result list");
+    check(deleteItems && IsWindowVisible(deleteItems), "delete items visible on the results page");
+    check(relativeRect(deleteItems).left >= relativeRect(addItems).right &&
+          relativeRect(deleteItems).top == relativeRect(addItems).top,
+          "delete items sits to the right of add items");
+    check(saveResults && IsWindowVisible(saveResults) &&
+          relativeRect(saveResults).left >= relativeRect(deleteItems).right &&
+          relativeRect(saveResults).top == relativeRect(deleteItems).top,
+          "save results sits to the right of delete items");
+    const auto selectMiddlePage = [&](int page) {
+        TabCtrl_SetCurSel(st->middleTab, page);
+        NMHDR changed{st->middleTab, REGULAR_IDC_MIDDLE_TAB, TCN_SELCHANGE};
+        SendMessageW(middle, WM_NOTIFY, changed.idFrom, reinterpret_cast<LPARAM>(&changed));
+    };
+    st->selectedReportIndex = -1;
+    selectMiddlePage(1);
+    check(!IsWindowVisible(addItems), "add items hidden on the picture page");
+    check(!IsWindowVisible(deleteItems), "delete items hidden on the picture page");
+    check(!IsWindowVisible(saveResults), "save results hidden on the picture page");
+    selectMiddlePage(0);
+    st->selectedReportIndex = 0;
+    check(IsWindowVisible(addItems), "add items restored on the results page");
+    check(IsWindowVisible(deleteItems), "delete items restored on the results page");
+    check(IsWindowVisible(saveResults), "save results restored on the results page");
     SetWindowTextW(st->machineEdit, L"Offline Analyzer");
     const int split = st->splitterX;
     const int queryGeneration = st->reportQueryGeneration;
-    ListView_SetColumnWidth(reports, 0, 44);
-    ListView_SetColumnWidth(reports, 5, 165);
-    ListView_SetColumnWidth(reports, 6, 91);
-    ListView_SetItemText(reports, 0, 1, const_cast<wchar_t*>(L"123"));
-    ListView_SetItemText(reports, 0, 2, const_cast<wchar_t*>(L"Test Patient"));
-    ListView_SetItemText(reports, 0, 3, const_cast<wchar_t*>(L"M"));
-    ListView_SetItemText(reports, 0, 4, const_cast<wchar_t*>(L"40"));
+    ListView_SetColumnWidth(reports, REGULAR_RIGHT_REPORT_SAMPLE_COL, 58);
+    ListView_SetColumnWidth(reports, 4, 165);
+    ListView_SetColumnWidth(reports, 5, 91);
+    ListView_SetItemText(reports, 0, REGULAR_RIGHT_REPORT_SAMPLE_COL, const_cast<wchar_t*>(L"123"));
+    ListView_SetItemText(reports, 0, REGULAR_RIGHT_REPORT_NAME_COL, const_cast<wchar_t*>(L"Test Patient"));
+    ListView_SetItemText(reports, 0, 2, const_cast<wchar_t*>(L"M"));
+    ListView_SetItemText(reports, 0, 3, const_cast<wchar_t*>(L"40"));
     ListView_SetItemText(results, 0, 2, const_cast<wchar_t*>(L"ALT"));
     ListView_SetItemText(results, 0, 4, const_cast<wchar_t*>(L"52"));
     ListView_SetItemText(results, 0, 6, const_cast<wchar_t*>(L"0~40"));
     ListView_SetItemText(results, 0, 7, const_cast<wchar_t*>(L"U/L"));
+    st->suppressReportSelectionQuery = true;
+    item.iItem = 1;
+    check(ListView_InsertItem(results, &item) == 1, "second editable result inserted");
+    check(ListView_InsertItem(reports, &item) == 1, "second report inserted to catch accidental selection");
+    st->reportRows.push_back(search::ReportRow{});
+    st->resultRows.resize(2);
+    st->resultRows[0].entry_id = "101";
+    st->resultRows[0].result = "52";
+    st->resultRows[0].result_type = "1";
+    st->resultRows[1].entry_id = "102";
+    st->resultRows[1].result = "阴性";
+    ListView_SetItemText(results, 1, REGULAR_RESULT_VALUE_COL, const_cast<wchar_t*>(L"阴性"));
+    st->resultRows[1].result_type = "3";
+    st->resultRows[1].result_options = {{"1", "阴性"}, {"2", "阳性"}};
+    st->reportConnectionString = "offline";
+    st->resultCache.select({"offline", "synthetic", "", "", "", ""});
+    st->resultCache.current = regular_comparison::LoadPhase::Ready;
+    std::array<int, REGULAR_RESULT_VALUE_COL> leadingWidths{};
+    for (int column = 0; column < REGULAR_RESULT_VALUE_COL; ++column) {
+        leadingWidths[column] = ListView_GetColumnWidth(results, column);
+        ListView_SetColumnWidth(results, column, 24);
+    }
+    RECT firstResult{};
+    check(ListView_GetSubItemRect(results, 0, REGULAR_RESULT_VALUE_COL, LVIR_BOUNDS, &firstResult),
+          "first result cell bounds available");
+    SendMessageW(results, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(firstResult.left + 5, (firstResult.top + firstResult.bottom) / 2));
+    check(st->resultEdit != nullptr, "editor opened in the regular results page");
+    SendMessageW(st->resultEdit, WM_CHAR, L'a', 0);
+    check(regularWindowText(st->resultEdit) == L"52", "numeric result blocks a letter");
+    SendMessageW(st->resultEdit, WM_CHAR, L'5', 0);
+    check(regularWindowText(st->resultEdit) == L"5", "numeric result accepts a digit");
+    SetWindowTextW(st->resultEdit, L"53");
+    SendMessageW(st->resultEdit, WM_KILLFOCUS, reinterpret_cast<WPARAM>(saveResults), 0);
+    const auto& firstDraft = st->resultDrafts.at({"offline", "synthetic"}).at("101");
+    check(firstDraft.expected_result == "52" && firstDraft.result == "53",
+          "focus loss stages the current value with its original database value");
+    SendMessageW(results, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(firstResult.left + 5, (firstResult.top + firstResult.bottom) / 2));
+    SetWindowTextW(st->resultEdit, L"52");
+    SendMessageW(st->resultEdit, WM_KEYDOWN, VK_RETURN, 0);
+    check(st->resultEdit && st->resultEditRow == 1 &&
+          ListView_GetNextItem(reports, -1, LVNI_SELECTED) == 0,
+          "Enter on the unchanged result advances without writing or changing the report");
+    check(st->resultOptions && IsWindowVisible(st->resultOptions) &&
+          Header_GetItemCount(ListView_GetHeader(st->resultOptions)) == 2 &&
+          ListView_GetNextItem(st->resultOptions, -1, LVNI_SELECTED) == -1,
+          "entering a dictionary result opens two columns without preselecting a value");
+    wchar_t optionText[32]{};
+    ListView_GetItemText(st->resultOptions, 0, 0, optionText, 32);
+    check(std::wstring(optionText) == L"阴性", "candidate name uses the primary column");
+    ListView_GetItemText(st->resultOptions, 0, 1, optionText, 32);
+    check(std::wstring(optionText) == L"1", "candidate code uses the secondary column");
+    SendMessageW(st->resultEdit, WM_KEYDOWN, VK_DOWN, 0);
+    check(st->resultOptions && IsWindowVisible(st->resultOptions) &&
+          ListView_GetItemCount(st->resultOptions) == 2 &&
+          ListView_GetNextItem(st->resultOptions, -1, LVNI_SELECTED) == 0,
+          "Down opens the dictionary with its first option selected");
+    SetWindowTextW(st->resultEdit, L"阳");
+    check(IsWindowVisible(st->resultOptions) && ListView_GetItemCount(st->resultOptions) == 1,
+          "qualitative result filters the dictionary by name");
+    SetWindowTextW(st->resultEdit, L"2");
+    ListView_GetItemText(st->resultOptions, 0, 0, optionText, 32);
+    check(ListView_GetItemCount(st->resultOptions) == 1 && std::wstring(optionText) == L"阳性",
+          "qualitative result filters the dictionary by code");
+    SetWindowTextW(st->resultEdit, L"");
+    check(IsWindowVisible(st->resultOptions), "clearing the dictionary search exposes all options");
+    SetFocus(results);
+    check(!st->resultEdit && !st->resultOptions && st->resultRows[1].result == "阴性" &&
+          st->resultDrafts.empty(),
+          "leaving an empty dictionary search neither clears the result nor stages a draft");
+    RECT secondResult{};
+    check(ListView_GetSubItemRect(results, 1, REGULAR_RESULT_VALUE_COL, LVIR_BOUNDS, &secondResult),
+          "qualitative result cell bounds available");
+    const auto reopenQualitativeEditor = [&] {
+        SendMessageW(results, WM_LBUTTONDOWN, MK_LBUTTON,
+                     MAKELPARAM(secondResult.left + 5, (secondResult.top + secondResult.bottom) / 2));
+        check(st->resultEdit && regularWindowText(st->resultEdit) == L"阴性",
+              "reopening an abandoned search restores the original result");
+        SendMessageW(st->resultEdit, WM_KEYDOWN, VK_DOWN, 0);
+        check(IsWindowVisible(st->resultOptions) && ListView_GetItemCount(st->resultOptions) == 2,
+              "dictionary can be reopened after an outside click");
+    };
+    reopenQualitativeEditor();
+    NMITEMACTIVATE doubleClick{};
+    doubleClick.hdr = {st->resultOptions, 0, NM_DBLCLK};
+    doubleClick.iItem = 0;
+    SendMessageW(results, WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&doubleClick));
+    check(!st->resultEdit && !st->resultOptions && st->resultDrafts.empty(),
+          "double-clicking the original candidate confirms it without creating a change");
+    reopenQualitativeEditor();
+    SetWindowTextW(st->resultEdit, L"阳");
+    SetFocus(st->resultOptions);
+    check(GetFocus() == st->resultOptions, "candidate list receives focus from the edit control");
+    SetFocus(results);
+    check(!st->resultEdit && !st->resultOptions && st->resultRows[1].result == "阴性" &&
+          st->resultDrafts.empty(),
+          "leaving a focused candidate list discards the search text");
+    reopenQualitativeEditor();
+    SetWindowTextW(st->resultEdit, L"无匹配");
+    check(!IsWindowVisible(st->resultOptions), "nonmatching filter hides the candidate list");
+    SendMessageW(results, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(firstResult.left + 5, (firstResult.top + firstResult.bottom) / 2));
+    check(st->resultEdit && st->resultEditRow == 0 && !st->resultOptions &&
+          st->resultRows[1].result == "阴性" && st->resultDrafts.empty(),
+          "clicking another result discards an unmatched dictionary search");
+    reopenQualitativeEditor();
+    SendMessageW(st->resultEdit, WM_KEYDOWN, VK_ESCAPE, 0);
+    SendMessageW(st->resultEdit, WM_KEYDOWN, VK_ESCAPE, 0);
+    st->resultRows[1].result_options.clear();
+    SendMessageW(results, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(secondResult.left + 5, (secondResult.top + secondResult.bottom) / 2));
+    SetWindowTextW(st->resultEdit, L"58");
+    SendMessageW(st->resultEdit, WM_KILLFOCUS, reinterpret_cast<WPARAM>(saveResults), 0);
+    const auto& draft = st->resultDrafts.at({"offline", "synthetic"});
+    check(!st->resultEdit && !st->resultOptions && draft.count("101") == 0 &&
+          draft.at("102").expected_result == "阴性" && draft.at("102").result == "58",
+          "focus loss preserves free text and closes the result controls");
+    st->resultDrafts.clear();
+    st->reportConnectionString.clear();
+    st->resultRows.clear();
+    st->resultCache.invalidate();
+    st->reportRows.pop_back();
+    ListView_DeleteItem(results, 1);
+    ListView_DeleteItem(reports, 1);
+    ListView_SetItemText(results, 0, REGULAR_RESULT_VALUE_COL, const_cast<wchar_t*>(L"52"));
+    for (int column = 0; column < REGULAR_RESULT_VALUE_COL; ++column)
+        ListView_SetColumnWidth(results, column, leadingWidths[column]);
     std::vector<int> resultWidths;
     for (int column = 0; column < Header_GetItemCount(ListView_GetHeader(results)); ++column)
         resultWidths.push_back(ListView_GetColumnWidth(results, column));
@@ -132,17 +438,22 @@ int main() {
     GetWindowRect(GetDlgItem(st->bottomPanel, 5410), &audit);
     check(entry.left == audit.left && entry.top > audit.top, "entry below audit-print button");
     enter(st);
+    checkInspectionColors();
     HWND floating = st->compactWindow;
     check(!IsWindowVisible(frame) && !IsWindowVisible(other), "only compact window remains visible");
+    check(!IsWindowVisible(addItems), "add items hidden in compact mode");
+    check(!IsWindowVisible(deleteItems), "delete items hidden in compact mode");
+    check(!IsWindowVisible(saveResults), "save results hidden in compact mode");
     check((GetWindowLongPtrW(floating, GWL_EXSTYLE) & WS_EX_APPWINDOW) != 0 &&
           GetWindow(floating, GW_OWNER) == nullptr, "compact host has its own taskbar window");
     for (int column = 0; column < REGULAR_REPORT_COLUMN_COUNT; ++column)
-        check((ListView_GetColumnWidth(reports, column) > 0) == (column >= 1 && column <= 4), "only sample/name/sex/age columns visible");
+        check((ListView_GetColumnWidth(reports, column) > 0) == (column <= 3), "only sample/name/sex/age columns visible");
     RECT defaultReportClient{}, sexColumn{};
     GetClientRect(reports, &defaultReportClient);
-    check(defaultReportClient.right == ListView_GetColumnWidth(reports, 1) + ListView_GetColumnWidth(reports, 2),
+    check(defaultReportClient.right == ListView_GetColumnWidth(reports, REGULAR_RIGHT_REPORT_SAMPLE_COL) +
+          ListView_GetColumnWidth(reports, REGULAR_RIGHT_REPORT_NAME_COL),
           "default report viewport fits exactly sample number and name");
-    ListView_GetSubItemRect(reports, 0, 3, LVIR_BOUNDS, &sexColumn);
+    ListView_GetSubItemRect(reports, 0, 2, LVIR_BOUNDS, &sexColumn);
     check(sexColumn.left >= defaultReportClient.right, "sex and age start outside the initial report viewport");
     for (int column : {0, 3, 8}) {
         check(ListView_GetColumnWidth(results, column) == 0, "leading result column, name and note hidden");
@@ -155,6 +466,7 @@ int main() {
         ListView_GetColumnWidth(results, 2) + ListView_GetColumnWidth(results, 4);
     check(defaultResultClient.right == mainColumnsWidth,
           "default result viewport fits exactly group, English and result columns");
+    checkStoolResultColor(st);
     RECT nextResultColumn{};
     ListView_GetSubItemRect(results, 0, 5, LVIR_BOUNDS, &nextResultColumn);
     check(nextResultColumn.left >= defaultResultClient.right,
@@ -171,8 +483,6 @@ int main() {
             check(EqualRect(&current, &saved.rect) != FALSE, "hidden full-page toolbar geometry unchanged");
         }
     }
-    ListView_SetColumnWidth(reports, 0, 80);
-    check(ListView_GetColumnWidth(reports, 0) == 0, "label column stays hidden");
     check((GetWindowLongPtrW(st->status, GWL_STYLE) & WS_VISIBLE) == 0,
           "compact result status hidden");
     ListView_SetColumnWidth(reports, 6, 80);
@@ -220,6 +530,7 @@ int main() {
     check(st->compactWindow == floating && st->resultList == results, "font broadcast preserves detached controls");
     SendMessageW(floating, WM_CLOSE, 0, 0);
     restored(st, middle, right, results, reports, split);
+    check(IsWindowVisible(addItems) && IsWindowVisible(deleteItems), "result toolbar restored after compact mode");
     check(!IsWindow(floating), "close destroyed floating host");
     for (int column = 0; column < REGULAR_REPORT_COLUMN_COUNT; ++column)
         check(ListView_GetColumnWidth(reports, column) == fullWidths[column], "all custom column widths restored exactly");

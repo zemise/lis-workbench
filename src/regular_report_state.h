@@ -13,7 +13,9 @@
 #include <gdiplus.h>
 
 #include <memory>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -40,6 +42,9 @@ constexpr int REGULAR_IDC_SPLITTER = 5204;
 constexpr int REGULAR_IDC_LEFT_SCROLL = 5205;
 constexpr int REGULAR_IDC_RIGHT_TAB = 5206;
 constexpr int REGULAR_IDC_MIDDLE_TAB = 5207;
+constexpr int REGULAR_IDC_ADD_ITEMS = 5231;
+constexpr int REGULAR_IDC_DELETE_ITEMS = 5232;
+constexpr int REGULAR_IDC_SAVE_RESULTS = 5233;
 constexpr int REGULAR_IDC_MACHINE_PICKER_BUTTON = 5208;
 constexpr int REGULAR_IDC_MACHINE_PICKER_ROOM = 5209;
 constexpr int REGULAR_IDC_MACHINE_PICKER_MACH = 5210;
@@ -65,11 +70,16 @@ constexpr int REGULAR_IDC_BOTTOM_NEXT_REPORT = 5409;
 constexpr int REGULAR_IDM_REPORT_PRINT_BARCODE = 5220;
 constexpr int REGULAR_IDM_REPORT_PRINT_CHECKED_BARCODES = 5221;
 constexpr int REGULAR_IDM_REPORT_TREND = 5222;
+constexpr int REGULAR_IDM_REPORT_MARK_INSPECTION = 5223;
+constexpr int REGULAR_IDM_REPORT_CLEAR_INSPECTION = 5224;
+constexpr int REGULAR_IDM_REPORT_CANCEL_AUDIT = 5225;
 constexpr int REGULAR_IDC_BOTTOM_TREND = 5425;
 
-constexpr int REGULAR_REPORT_COLUMN_COUNT = 30;
+constexpr int REGULAR_REPORT_COLUMN_COUNT = 29;
 constexpr int REGULAR_RESULT_VALUE_COL = 4;
-constexpr int REGULAR_RIGHT_REPORT_PRINT_COL = 8;
+constexpr int REGULAR_RIGHT_REPORT_SAMPLE_COL = 0;
+constexpr int REGULAR_RIGHT_REPORT_NAME_COL = 1;
+constexpr int REGULAR_RIGHT_REPORT_PRINT_COL = 7;
 
 constexpr UINT_PTR REGULAR_LEFT_PANEL_SUBCLASS = 6205;
 constexpr UINT_PTR REGULAR_LEFT_CONTENT_SUBCLASS = 6206;
@@ -79,7 +89,6 @@ constexpr UINT_PTR REGULAR_BOTTOM_PANEL_SUBCLASS = 6209;
 constexpr UINT_PTR REGULAR_SAMPLE_INPUT_SUBCLASS = 6210;
 constexpr UINT_PTR REGULAR_PICTURE_VIEW_SUBCLASS = 6211;
 constexpr UINT_PTR REGULAR_PICTURE_VIEWPORT_SUBCLASS = 6212;
-constexpr UINT_PTR REGULAR_RESULT_EDIT_SUBCLASS = 6213;
 constexpr UINT_PTR REGULAR_RESULT_LIST_SUBCLASS = 6214;
 constexpr UINT_PTR REGULAR_LEFT_TAB_SUBCLASS = 6215;
 constexpr UINT_PTR REGULAR_MACHINE_PICKER_SEARCH_SUBCLASS = 6216;
@@ -152,6 +161,7 @@ constexpr COLORREF REGULAR_COLOR_WHITE = RGB(0xFF, 0xFF, 0xFF);
 constexpr COLORREF REGULAR_COLOR_RESULT_SIDE_BG = RGB(0xF0, 0xF0, 0xF0);
 constexpr COLORREF REGULAR_COLOR_REPORT_REVIEWED = RGB(0x6F, 0x94, 0xE6);
 constexpr COLORREF REGULAR_COLOR_REPORT_SENT = RGB(0x98, 0xBB, 0x8F);
+constexpr COLORREF REGULAR_COLOR_REPORT_NEED_INSPECT = RGB(0xD3, 0xD3, 0xD3);
 constexpr COLORREF REGULAR_COLOR_CRITICAL_PENDING = RGB(0xFA, 0xC0, 0xCB);
 constexpr COLORREF REGULAR_COLOR_CRITICAL_FINAL = RGB(0xFF, 0xFF, 0x39);
 
@@ -343,6 +353,7 @@ struct RegularReportState {
     HWND collectDateEdit = nullptr;
     HWND resultList = nullptr;
     HWND resultEdit = nullptr;
+    HWND resultOptions = nullptr;
     HWND pictureViewport = nullptr;
     HWND pictureView = nullptr;
     HWND pictureHScroll = nullptr;
@@ -356,6 +367,9 @@ struct RegularReportState {
     int pictureScrollX = 0;
     int pictureScrollY = 0;
     int resultEditRow = -1;
+    using ResultDraftKey = std::pair<std::string, std::string>; // Connection and report number.
+    std::optional<ResultDraftKey> resultEditKey;
+    std::map<ResultDraftKey, std::map<std::string, search::ReportResultChange>> resultDrafts;
     int leftContentHeight = REGULAR_LEFT_CONTENT_HEIGHT;
     bool splitterUserSet = false;
     int reportQueryGeneration = 0;
@@ -397,6 +411,9 @@ struct RegularReportState {
     bool pendingOpenReport = false;
     std::string pendingOpenRepNo;
     std::string pendingOpenOperNo;
+    // 审核成功后等待列表刷新，再自动选中下一条报告（用户确认 B10）。
+    bool pendingAuditAdvance = false;
+    std::string pendingAuditRepNo;
     std::vector<search::ReportRow> reportRows;
     std::vector<search::ResultRow> resultRows;
     std::vector<std::string> highlightItemCodes;
@@ -532,7 +549,6 @@ bool regularReportIsSent(const search::ReportRow& report);
 bool regularReportIsReviewed(const search::ReportRow& report);
 bool regularReportIsCriticalReport(const search::ReportRow& report);
 bool regularReportUsesEmergencyTextColor(const search::ReportRow& report);
-bool regularReportHasBarcodeEmergencyLabel(const search::ReportRow& report);
 COLORREF regularReportRowColor(const RegularReportState* st, int row);
 COLORREF regularReportPrintCellColor(const RegularReportState* st, int row);
 COLORREF regularResultTextColor(const search::ResultRow& row);
