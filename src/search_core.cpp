@@ -7088,7 +7088,7 @@ bool recalculate_report_items(SQLHDBC connection, const std::string& rep_no, con
             item.unit = fetch_column(stmt, 7);
             item.english_name = fetch_column(stmt, 8);
             if (!expression.empty()) calculations.push_back({std::move(item), std::move(expression),
-                report_item_id(decimals, 2) ? std::min(12, std::stoi(decimals)) : 2});
+                report_item_id(decimals, 2) ? (std::min)(12, std::stoi(decimals)) : 2});
         }, error)) return false;
     if (calculations.empty()) return true;
 
