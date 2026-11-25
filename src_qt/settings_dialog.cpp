@@ -20,7 +20,7 @@ SettingsDialog::SettingsDialog(const search::DbSettings& settings,
 
     server_ = new QLineEdit(this);
     server_->setText(QString::fromStdWString(settings.server));
-    server_->setPlaceholderText("192.168.1.100\\MSSQLSERVER1");
+    server_->setPlaceholderText("数据库服务器或服务器\\实例");
 
     database_ = new QLineEdit(this);
     database_->setText(QString::fromStdWString(settings.initial_database));
@@ -28,7 +28,7 @@ SettingsDialog::SettingsDialog(const search::DbSettings& settings,
 
     user_ = new QLineEdit(this);
     user_->setText(QString::fromStdWString(settings.user));
-    user_->setPlaceholderText("sa");
+    user_->setPlaceholderText("数据库账号");
 
     password_ = new QLineEdit(this);
     password_->setEchoMode(QLineEdit::Password);

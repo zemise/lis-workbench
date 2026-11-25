@@ -1309,8 +1309,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case IDM_ABOUT: {
       const std::wstring aboutText = L"LIS 工作台\n版本 " +
-                                     search::utf8_to_wide(search::kVersion) +
-                                     L"\n\n作者：Zhao Wang";
+                                     search::utf8_to_wide(search::kVersion);
       MessageBoxW(hwnd, aboutText.c_str(), L"关于", MB_ICONINFORMATION);
       return 0;
     }
@@ -1506,7 +1505,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     MSG msg{};
     while (!sourceSessionEnding && IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-      if (!regular_report_translate_save_message(&msg) &&
+      if (!regular_report_translate_action_message(&msg) &&
           !regular_report_translate_compact_message(&msg) &&
           !TranslateMDISysAccel(g_ctx.mdiClient, &msg)) {
         TranslateMessage(&msg);

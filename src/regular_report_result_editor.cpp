@@ -36,7 +36,6 @@ void regularFinishResultEdit(RegularReportState* st, RegularResultEditExit exit,
             if (!inserted) entry->second.result = text;
             if (entry->second.expected_result == text) draft.erase(entry);
             if (draft.empty()) st->resultDrafts.erase(*key);
-            else SetWindowTextW(st->status, L"有未保存的结果修改，请按 F2 保存。");
         }
         item.result = std::move(text);
         auto display = search::utf8_to_wide(item.result);

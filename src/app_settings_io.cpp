@@ -321,6 +321,11 @@ std::wstring load_module_str(const wchar_t* module, const wchar_t* key, const wc
     return decode_module_value(std::wstring(buf));
 }
 
+std::wstring trasen_install_directory() {
+    auto directory = load_module_str(L"Authentication", L"SourceDirectory", L"");
+    return directory.empty() ? LR"(D:\TS-HIS)" : directory;
+}
+
 }  // namespace search
 
 #endif

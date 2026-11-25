@@ -500,7 +500,7 @@ struct DbContext {
 };
 
 
-std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
+std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col, bool trim_text = true) {
     std::wstring buffer(2048, L'\0');
     SQLLEN indicator = 0;
     const SQLRETURN rc = SQLGetData(stmt, col, SQL_C_WCHAR, buffer.data(),
@@ -509,7 +509,8 @@ std::string fetch_column(SQLHSTMT stmt, SQLUSMALLINT col) {
         return "";
     }
     buffer.resize(wcslen(buffer.c_str()));
-    return trim(wide_to_utf8(buffer));
+    auto text = wide_to_utf8(buffer);
+    return trim_text ? trim(std::move(text)) : text;
 }
 
 bool fetch_binary_column(SQLHSTMT stmt, SQLUSMALLINT col, std::vector<unsigned char>& out, std::string& error) {
@@ -1314,6 +1315,8 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         << " isnull(cast(r.ROOM_CODE as varchar(20)),''),"
         << " isnull(LTRIM(RTRIM(cast(r.GROUP_CODE as varchar(20)))), '')"
         << ", CASE WHEN r.NeedInspect=1 THEN '1' ELSE '0' END"
+        << ", CONVERT(varchar(23),r.REP_TIME,121),CAST(r.REP_OPER AS varchar(20))"
+        << (filters.include_manual_review ? ",r.sgfc" : "")
         << " FROM LS_AS_REPORT r"
         << " LEFT JOIN LS_AS_PATTYPE p ON r.TYPE = p.TYPE AND p.DELETE_BIT=0"
         << " LEFT JOIN LS_AS_SEX sx ON sx.SEX_CODE = r.SEX"
@@ -1413,6 +1416,9 @@ bool query_reports(const QueryFilters& filters, std::vector<ReportRow>& rows, st
         row.room_code = fetch_column(stmt, 37);
         row.group_code = fetch_column(stmt, 38);
         row.need_inspect = fetch_column(stmt, 39) == "1";
+        row.send_review_time = fetch_column(stmt, 40);
+        row.send_reviewer_id = fetch_column(stmt, 41);
+        if (filters.include_manual_review) row.manual_review = fetch_column(stmt, 42, false);
         rows.push_back(row);
     }
 
@@ -7381,6 +7387,37 @@ bool query_cancel_audit_preview(const std::string& connection_string, const std:
 #endif
 }
 
+#ifdef _WIN32
+namespace {
+template <typename ReadOutcome>
+bool read_report_write_outcome(SQLHDBC connection, const std::string& sql, SQLSMALLINT expected_columns,
+                               const wchar_t* first_column, ReadOutcome read, std::string& error) {
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    if (!exec_query(connection, sql, stmt, error)) return false;
+    // Stored procedures and triggers can emit intermediate result sets.
+    bool found = false;
+    SQLRETURN rc = SQL_SUCCESS;
+    do {
+        SQLSMALLINT columns = 0;
+        if (!SQL_SUCCEEDED(SQLNumResultCols(stmt, &columns))) { rc = SQL_ERROR; break; }
+        if (columns != expected_columns) continue;
+        SQLWCHAR name[32]{};
+        if (!SQL_SUCCEEDED(SQLDescribeColW(stmt, 1, name, 32, nullptr, nullptr, nullptr, nullptr, nullptr))) {
+            rc = SQL_ERROR;
+            break;
+        }
+        if (std::wstring(reinterpret_cast<const wchar_t*>(name)) != first_column) continue;
+        if (found || !SQL_SUCCEEDED(SQLFetch(stmt)) || !read(stmt)) { rc = SQL_ERROR; break; }
+        found = true;
+    } while (SQL_SUCCEEDED(rc = SQLMoreResults(stmt)));
+    if (rc != SQL_NO_DATA) error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
+    else if (!found) error = "missing report write outcome";
+    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    return rc == SQL_NO_DATA && found;
+}
+}
+#endif
+
 bool cancel_report_audit(const std::string& connection_string, const std::string& rep_no,
                          const CancelAuditPreview& preview, const std::string& employee_id,
                          const std::string& login_code, const std::string& employee_name,
@@ -7414,34 +7451,12 @@ bool cancel_report_audit(const std::string& connection_string, const std::string
     ;
     DbContext db;
     if (!connect(connection_string, db, error, request.log_callback())) return false;
-    SQLHSTMT stmt = SQL_NULL_HSTMT;
-    if (!exec_query(db.dbc, variables + sql, stmt, error)) return false;
-    // A trigger or the inpatient procedure can emit an intermediate result set.
-    bool found = false;
-    SQLRETURN rc = SQL_SUCCESS;
-    do {
-        SQLSMALLINT columns = 0;
-        if (!SQL_SUCCEEDED(SQLNumResultCols(stmt, &columns))) { rc = SQL_ERROR; break; }
-        if (columns != 1) continue;
-        SQLWCHAR name[32]{};
-        if (!SQL_SUCCEEDED(SQLDescribeColW(stmt, 1, name, 32, nullptr, nullptr, nullptr, nullptr, nullptr))) {
-            rc = SQL_ERROR;
-            break;
-        }
-        if (std::wstring(reinterpret_cast<const wchar_t*>(name)) != L"cancel_status") continue;
-        if (!SQL_SUCCEEDED(SQLFetch(stmt))) { rc = SQL_ERROR; break; }
+    return read_report_write_outcome(db.dbc, variables + sql, 1, L"cancel_status", [&](SQLHSTMT stmt) {
         const auto value = fetch_column(stmt, 1);
-        if (value.size() != 1 || value[0] < '0' || value[0] > '8' || value[0] == '2' || found) {
-            rc = SQL_ERROR;
-            break;
-        }
-        status = static_cast<CancelAuditStatus>(value[0]-'0');
-        found = true;
-    } while (SQL_SUCCEEDED(rc = SQLMoreResults(stmt)));
-    if (rc != SQL_NO_DATA) error = querydiag::odbc_error(querydiag::Operation::fetch, SQL_HANDLE_STMT, stmt);
-    else if (!found) error = "missing cancel audit outcome";
-    SQLFreeHandle(SQL_HANDLE_STMT, stmt);
-    return rc == SQL_NO_DATA && found;
+        if (value.size() != 1 || value[0] < '0' || value[0] > '8' || value[0] == '2') return false;
+        status = static_cast<CancelAuditStatus>(value[0] - '0');
+        return true;
+    }, error);
 #else
     (void)connection_string;
     (void)rep_no;
@@ -7450,6 +7465,157 @@ bool cancel_report_audit(const std::string& connection_string, const std::string
     (void)login_code;
     (void)employee_name;
     (void)reason;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool save_manual_review(const std::string& connection_string, const std::string& rep_no,
+                        const std::string& expected_text, const std::string& text,
+                        ManualReviewStatus& status, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    status = ManualReviewStatus::unavailable;
+#ifdef _WIN32
+    if (!report_item_id(rep_no) || expected_text.find('\0') != std::string::npos ||
+        text.find('\0') != std::string::npos) {
+        error = "invalid manual review input";
+        return false;
+    }
+    const std::string variables =
+        "DECLARE @report decimal(10,0)=" + rep_no +
+        ", @expectedText nvarchar(max)=" + report_item_literal(expected_text) +
+        ", @reviewText nvarchar(max)=" + report_item_literal(text) + ";\n";
+    static constexpr auto sql =
+#include "regular_report_manual_review_sql.inc"
+    ;
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    return read_report_write_outcome(db.dbc, variables + sql, 1, L"manual_review_status", [&](SQLHSTMT stmt) {
+        const auto value = fetch_column(stmt, 1);
+        if (value.size() != 1 || value[0] < '0' || value[0] > '5') return false;
+        status = static_cast<ManualReviewStatus>(value[0] - '0');
+        return true;
+    }, error);
+#else
+    (void)rep_no;
+    (void)connection_string;
+    (void)expected_text;
+    (void)text;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool send_regular_report(const std::string& connection_string, const ReportRow& report,
+                         std::int64_t employee_id, const std::string& login_code,
+                         ReportSendStatus& status, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    status = ReportSendStatus::report_changed;
+#ifdef _WIN32
+    if (!report_item_id(report.rep_no) || employee_id <= 0 || login_code.empty() ||
+        (!report.send_reviewer_id.empty() && !report_item_id(report.send_reviewer_id, 19))) {
+        error = "invalid report send input";
+        return false;
+    }
+    const std::string variables =
+        "DECLARE @report decimal(10,0)=" + report.rep_no +
+        ", @expectedTime datetime=" + (report.send_review_time.empty() ? "NULL" :
+             "CONVERT(datetime," + report_item_literal(report.send_review_time) + ",121)") +
+        ", @expectedReviewer bigint=" + (report.send_reviewer_id.empty() ? "0" : report.send_reviewer_id) +
+        ", @employee bigint=" + std::to_string(employee_id) +
+        ", @login nvarchar(128)=" + report_item_literal(login_code) + ";\n";
+    static constexpr auto sql =
+#include "regular_report_send_sql.inc"
+    ;
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    return read_report_write_outcome(db.dbc, variables + sql, 1, L"report_send_status", [&](SQLHSTMT stmt) {
+        const auto value = fetch_column(stmt, 1);
+        if (value.size() != 1 || value[0] < '0' || value[0] > '5') return false;
+        status = static_cast<ReportSendStatus>(value[0] - '0');
+        return true;
+    }, error);
+#else
+    (void)connection_string;
+    (void)report;
+    (void)employee_id;
+    (void)login_code;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool advance_after_report_send(const std::string& connection_string, const std::string& rep_no,
+                               std::int64_t employee_id, const std::string& default_patient_type,
+                               std::string& next_report, bool& unavailable, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    next_report.clear();
+    unavailable = false;
+#ifdef _WIN32
+    if (!report_item_id(rep_no) || employee_id <= 0 || default_patient_type.size() > 1) {
+        error = "invalid next report input";
+        return false;
+    }
+    const std::string variables =
+        "DECLARE @report decimal(10,0)=" + rep_no +
+        ", @employee bigint=" + std::to_string(employee_id) +
+        ", @defaultType char(1)=" + report_item_literal(default_patient_type) + ";\n";
+    static constexpr auto sql =
+#include "regular_report_send_next_sql.inc"
+    ;
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    return read_report_write_outcome(db.dbc, variables + sql, 2, L"next_report_status", [&](SQLHSTMT stmt) {
+        const auto value = fetch_column(stmt, 1);
+        if (value != "0" && value != "1") return false;
+        unavailable = value == "1";
+        next_report = fetch_column(stmt, 2);
+        return true;
+    }, error);
+#else
+    (void)connection_string;
+    (void)rep_no;
+    (void)employee_id;
+    (void)default_patient_type;
+    error = querydiag::safe_error(querydiag::Operation::platform);
+    return false;
+#endif
+}
+
+bool query_report_notification(const std::string& connection_string, const std::string& rep_no,
+                               ReportNotification& notification, std::string& error) {
+    querydiag::RequestScope request(__func__, error);
+    notification = {};
+#ifdef _WIN32
+    if (!report_item_id(rep_no)) {
+        error = "invalid report number";
+        return false;
+    }
+    DbContext db;
+    if (!connect(connection_string, db, error, request.log_callback())) return false;
+    const std::string sql = R"SQL(
+SELECT DISTINCT TOP (1025) RTRIM(u.LOGIN_IP),ISNULL(u.LOGIN_PORT,0),
+    CONCAT(d.NAME,N'  ',r.BED_CODE,N' 床 ',r.NAME,N'  ',r.GROUP_NO,N'  检验报告单')
+FROM dbo.LS_AS_REPORT r
+JOIN dbo.JC_DEPT_PROPERTY d ON d.DEPT_ID=r.DEPT_CODE
+JOIN dbo.Pub_User u ON u.LOGIN_DEPT=d.DEPT_ID AND u.LOGIN_BIT=1
+JOIN dbo.Pub_System s ON s.SYSTEM_ID=u.LOGIN_SYSTEM
+WHERE ((d.MZ_FLAG=1 AND s.MODULE_ID=3) OR (d.ZY_FLAG=1 AND s.MODULE_ID=6))
+  AND NULLIF(RTRIM(u.LOGIN_IP),'') IS NOT NULL
+  AND r.DELETE_BIT=0 AND r.CONF='S' AND r.CHK_FLAG='T' AND r.REP_NO=
+)SQL" + rep_no;
+    if (!read_report_item_rows(db.dbc, sql, [&](SQLHSTMT stmt) {
+        notification.recipients.emplace_back(fetch_column(stmt, 1), fetch_column(stmt, 2));
+        if (notification.summary.empty()) notification.summary = fetch_column(stmt, 3);
+    }, error)) return false;
+    if (notification.recipients.size() > 1024) {
+        error = "too many report notification recipients";
+        return false;
+    }
+    return true;
+#else
+    (void)connection_string;
+    (void)rep_no;
     error = querydiag::safe_error(querydiag::Operation::platform);
     return false;
 #endif
