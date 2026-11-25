@@ -8,6 +8,7 @@ namespace search {
 
 std::wstring module_dir();
 std::wstring default_ini_path();
+std::wstring trasen_install_directory();
 AppSettings load_settings(const std::wstring& ini_path);
 bool save_settings(const std::wstring& ini_path, const AppSettings& settings);
 

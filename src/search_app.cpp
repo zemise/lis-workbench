@@ -21,6 +21,7 @@ QueryFilters make_query_filters(const DbSettings& settings, const QueryInput& in
     filters.item_code = input.item_code;
     filters.limit = input.limit;
     filters.skip_order_text = input.skip_order_text;
+    filters.include_manual_review = input.include_manual_review;
     return filters;
 }
 

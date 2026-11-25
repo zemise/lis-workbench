@@ -51,7 +51,7 @@ cmake --build build/main-app --config Release --target regular_report_compact_te
 ctest --test-dir build/main-app -C Release -R "^regular_report_compact_tests$" --output-on-failure
 ```
 
-回归覆盖窗口置顶、隐藏和恢复本程序其他窗口、关闭/Esc及直接销毁宿主、原页签与选择恢复、完整自定义列宽恢复、控件位置及窗口样式恢复、反复切换、左侧首列（行号）及项目名称/说明隐藏与恢复、默认视口恰好容纳组合项目/英文/结果三列、右侧默认视口容纳样本号/姓名两列、性别和年龄横向滚动查看、固定右侧宽度、缩小窗口、隐藏日期按钮与查询总数、仪器和日期摘要、字体广播、暂停阻止进入，以及关闭模块和会话结束后的窗口清理。该目标纳入 `lis_tests` 和正式 Windows 发布门禁；交叉编译仅验证构建，不能替代 Windows 实际运行。
+回归覆盖窗口置顶、隐藏和恢复本程序其他窗口、关闭/Esc及直接销毁宿主、原页签与选择恢复、完整自定义列宽恢复、控件位置及窗口样式恢复、反复切换、左侧首列（行号）及项目名称/说明隐藏与恢复、默认视口恰好容纳组合项目/英文/结果三列、右侧默认视口容纳样本号/姓名两列、性别和年龄横向滚动查看、固定右侧宽度、缩小窗口、隐藏日期按钮、结果列表底部留白、仪器和日期摘要、字体广播、暂停阻止进入，以及关闭模块和会话结束后的窗口清理。该目标纳入 `lis_tests` 和正式 Windows 发布门禁；交叉编译仅验证构建，不能替代 Windows 实际运行。
 
 窗口可见性和焦点相关测试须运行在已登录的用户桌面。Parallels CLI 使用 `prlctl exec <虚拟机名称> --current-user ...`，服务桌面会导致可见性断言失败。当前版已用 Windows 11 登录桌面验证默认的右侧两列布局、隐藏期间缩放主窗口、MDI 最大化和完整查询栏恢复。生产数据库联动仍需现场验收。
 
@@ -66,17 +66,19 @@ ctest --test-dir build/main-app -C Release -R "^regular_report_compact_tests$" -
 - `src/search_core.cpp` 按组合的 `LS_AS_GROUP.orderby` 和项目的 `LS_AS_ITEM.SEQ_NO` 提供常规结果的展示顺序。录入类型取自 `LS_AS_ITEM.TYPE`，候选来自当前项目在 `LS_AS_RESULT` 中的有效记录，并按数字编号排序。
 - 单项保存与 F2 共用事务。写入前检查 `CONF`、验单号、结果记录 ID 和旧值，按配置执行参考范围判断、重算、历史记录及复检或危急值处理。初审完成标记由整单保存路径处理。项目删除在事务内复核范围，将相应明细标记为 `DELETE_BIT=1`。
 
-`regular_report_compact_tests` 同时覆盖结果区三个按钮、数字字符限制、回车定位、候选两列、按名称和编号筛选、双击确认、点击外部后的草稿与重新打开。测试使用合成数据，运行方式同上。2026-11-24 的 MinGW 主程序构建、Parallels Windows 11 登录桌面回归和常规报告 5 项原生核心测试通过。
+`regular_report_compact_tests` 同时覆盖结果区按钮、发送按钮在完整和精简页面的布局、数字字符限制、回车定位、候选两列、按名称和编号筛选、双击确认、点击外部后的草稿与重新打开。测试使用合成数据，运行方式同上。
 
 数据库联动验收使用测试验单，核对增删范围、回车单项保存和 F2 整单保存、并发修改拦截、审核状态切换，以及按现场配置触发的重算和提示。窗口离线回归不连接 LIS 数据库。故障可关联日志中的 `regular_report add items failed`、`regular_report delete items failed` 和 `regular_report save results failed`。
 
-## 常规报告复查与取消审核
+## 常规报告发送、手工复查与取消审核
 
+- 发送写入在同一事务内校验审核快照、复查标记和发送权限，再更新报告、关联条码和住院医嘱，并按配置记录 TAT 发送时间。医生站通知和下一样本处理在发送提交后执行，各自有失败提示。
+- `src/regular_report_manual_review.cpp` 管理第三个页签、同一验单刷新时的草稿和本机模板。模板读取兼容旧版 GB2312，保存使用 UTF-8 XML，通过临时文件替换原文件。说明写入使用 `LS_AS_REPORT.sgfc`，按当前说明和审核状态校验更新范围。
 - `src/regular_report_module.cpp` 管理右键目标、取消前的报告快照、会话复核和操作后的列表刷新。复查标记使用 `LS_AS_REPORT.NeedInspect`，F3 的审核写入条件也检查该字段。
 - `src/regular_report_cancel_audit_dialog.cpp` 管理原因字典项、预设原因回填和当前账号密码复核。原因类型与预设原因相同时合并显示，选项仍按字典项 ID 和类型保存。
 - `src/regular_report_cancel_audit_sql.inc` 在同一个 SQL Server 事务内锁定并复核报告，检查权限、时限、原因和共享条码。提交时同步处理报告、关联条码、按配置启用的住院医嘱回退、危急值清理及日志。API 返回状态后才显示相应的操作结果。
 
-`regular_report_compact_tests` 使用离线窗口和合成理由，覆盖右侧首列、复查行着色、原因类型文字和预设原因回填。隔离数据库回归使用以下命令，测试容器须标记为 `lis-workbench.cancel-audit-test=true`。
+`regular_report_compact_tests` 使用离线窗口和合成理由，覆盖底栏按钮启用状态、手工复查页签、草稿保护、旧版中文模板、复查行着色和取消原因回填。隔离数据库回归覆盖取消审核、发送、联动失败回滚、下一样本取号、说明清空和 300 字节字段限制。使用以下命令，测试容器须标记为 `lis-workbench.cancel-audit-test=true`。
 
 ```sh
 python3 tests/regular_report_cancel_audit_db.py <测试容器>
@@ -84,7 +86,7 @@ python3 tests/regular_report_cancel_audit_db.py <测试容器>
 
 脚本创建兼容级别 100 的独立合成库，执行与工作台相同的 SQL 批次，覆盖已审核、已发送和危急值验单、复查标记保留、共享条码、并发发送及失败后整笔回滚。
 
-现场验收仍需用测试验单走完 Windows ODBC 写回。危急值通知表缺少报告号索引，需按代表性数据量测量清理耗时和锁影响。原 Trasen 的发送写入仅以报告号为条件，发送前已通过界面检查的操作仍可覆盖先提交的取消。混用部署需验证发送端提交时也检查验单审核状态。启用工作台暂未接入的外部撤回接口时，使用原 Trasen 处理。
+本版本通过 MinGW Windows 构建、Windows 11 登录桌面回归、医生站消息格式本机回环、隔离 SQL Server 回归及 20 项原生测试。现场验收仍需用测试验单核对 Windows ODBC 写回、真实医生站弹窗及该工作站的模板文件。危急值通知表缺少报告号索引，需按代表性数据量测量清理耗时和锁影响。原 Trasen 的发送写入仅以报告号为条件，发送前已通过界面检查的操作仍可覆盖先提交的取消。混用部署需验证发送端提交时也检查验单审核状态。启用工作台暂未接入的外部撤回接口时，使用原 Trasen 处理。
 
 ## LIS 启动更新验收
 

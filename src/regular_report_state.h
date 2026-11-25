@@ -6,6 +6,7 @@
 #include "search_app.h"
 #include "search_core.h"
 #include "regular_report_comparison.h"
+#include "regular_report_manual_review.h"
 #include "window_task.h"
 
 #include <windows.h>
@@ -45,6 +46,7 @@ constexpr int REGULAR_IDC_MIDDLE_TAB = 5207;
 constexpr int REGULAR_IDC_ADD_ITEMS = 5231;
 constexpr int REGULAR_IDC_DELETE_ITEMS = 5232;
 constexpr int REGULAR_IDC_SAVE_RESULTS = 5233;
+constexpr int REGULAR_IDC_SEND_REPORT = 5234;
 constexpr int REGULAR_IDC_MACHINE_PICKER_BUTTON = 5208;
 constexpr int REGULAR_IDC_MACHINE_PICKER_ROOM = 5209;
 constexpr int REGULAR_IDC_MACHINE_PICKER_MACH = 5210;
@@ -59,6 +61,7 @@ constexpr int REGULAR_IDC_REPORT_AUTO_REFRESH_CHECK = 5217;
 constexpr int REGULAR_IDC_REPORT_AUTO_REFRESH_SECONDS = 5218;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_1 = 5401;
 constexpr int REGULAR_IDC_BOTTOM_REFRESH = 5402;
+constexpr int REGULAR_IDC_BOTTOM_AUDIT = 5404;
 constexpr int REGULAR_IDC_BOTTOM_PRINT_BARCODE = 5406;
 constexpr int REGULAR_IDC_BOTTOM_MACHINE_2 = 5411;
 constexpr int REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE = 5416;
@@ -105,9 +108,7 @@ constexpr int REGULAR_COMPACT_BUTTON_H = 28;
 constexpr int REGULAR_BOTTOM_PANEL_H = 102;
 constexpr int REGULAR_MIDDLE_TOOLBAR_Y = 32;
 constexpr int REGULAR_MIDDLE_LIST_Y = 66;
-constexpr int REGULAR_MIDDLE_LIST_BOTTOM_MARGIN = 88;
-constexpr int REGULAR_MIDDLE_STATUS_BOTTOM = 22;
-constexpr int REGULAR_MIDDLE_STATUS_H = 18;
+constexpr int REGULAR_MIDDLE_PICTURE_BOTTOM_MARGIN = 88;
 constexpr int REGULAR_PICTURE_FIXED_W = 1560;
 constexpr int REGULAR_PICTURE_FIXED_H = 1050;
 constexpr int REGULAR_PICTURE_POPUP_DEFAULT_W = 980;
@@ -173,11 +174,6 @@ struct ColumnDef {
     int index;
     const wchar_t* title;
     int width;
-};
-
-struct ButtonDef {
-    int id;
-    const wchar_t* text;
 };
 
 // Drawn on leftContent instead of real GROUPBOX windows so sibling clipping can
@@ -297,6 +293,7 @@ struct RegularReportState {
     HWND bottomPanel = nullptr;
     HWND splitter = nullptr;
     HWND middleTab = nullptr;
+    RegularManualReviewPage manualReview;
     HWND rightTab = nullptr;
     HWND comparisonMode = nullptr;
     HWND comparisonTitle = nullptr;
@@ -360,7 +357,6 @@ struct RegularReportState {
     HWND pictureVScroll = nullptr;
     HWND picturePopup = nullptr;
     HWND reportList = nullptr;
-    HWND status = nullptr;
     int splitterX = 0;
     int pendingSplitterX = 0;
     int leftScrollY = 0;
@@ -414,6 +410,8 @@ struct RegularReportState {
     // 审核成功后等待列表刷新，再自动选中下一条报告（用户确认 B10）。
     bool pendingAuditAdvance = false;
     std::string pendingAuditRepNo;
+    std::string pendingSentNextRepNo;
+    app::WindowTask reportSendTask;
     std::vector<search::ReportRow> reportRows;
     std::vector<search::ResultRow> resultRows;
     std::vector<std::string> highlightItemCodes;

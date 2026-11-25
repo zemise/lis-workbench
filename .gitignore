@@ -7,6 +7,9 @@ Thumbs.db
 
 /ClientConfig.ini
 /result_search.ini
+.env
+.env.*
+!.env.example
 
 # 本地设计资料：统一存放于 docs/private，不进入版本管理或发布包。
 /docs/private/

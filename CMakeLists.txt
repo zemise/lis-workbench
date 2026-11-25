@@ -184,7 +184,9 @@ set(LIS_REGULAR_REPORT_SOURCES
     src/regular_report_barcode_range.cpp
     src/regular_report_cancel_audit_dialog.cpp
     src/regular_report_comparison.cpp
+    src/regular_report_manual_review.cpp
     src/regular_report_module.cpp
+    src/regular_report_notification.cpp
     src/regular_report_result_editor.cpp
     src/regular_report_tracking.cpp
     src/regular_report_tracking_window.cpp
@@ -235,7 +237,7 @@ add_executable(main_app WIN32
 set_target_properties(main_app PROPERTIES OUTPUT_NAME lis_workbench)
 target_include_directories(main_app PRIVATE src resource)
 target_compile_definitions(main_app PRIVATE UNICODE _UNICODE NOMINMAX ${LIS_WIN7_COMPAT_DEFINITIONS})
-target_link_libraries(main_app PRIVATE login_source_runtime search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp)
+target_link_libraries(main_app PRIVATE login_source_runtime search_ui_core search_core update_core sqlite3_amalgamation comctl32 comdlg32 gdiplus shell32 ole32 uxtheme iphlpapi ws2_32 winspool dbghelp shlwapi xmllite)
 if(WIN32)
     target_link_libraries(main_app PRIVATE dwmapi)
 endif()
@@ -453,7 +455,7 @@ if(BUILD_TESTING)
             src/search_splitter.cpp
             resource/app.rc
         )
-        target_link_libraries(regular_report_compact_tests PRIVATE search_ui_core uxtheme winspool iphlpapi)
+        target_link_libraries(regular_report_compact_tests PRIVATE search_ui_core uxtheme winspool iphlpapi shlwapi xmllite)
         if(MSVC)
             target_link_options(regular_report_compact_tests PRIVATE /MANIFEST:NO)
         endif()

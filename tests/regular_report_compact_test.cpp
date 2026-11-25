@@ -1,4 +1,5 @@
 #include "regular_report_module.h"
+#include "barcode_label_printing.h"
 #include "regular_report_cancel_audit_dialog.h"
 #include "regular_report_state.h"
 #include "main_app.h"
@@ -7,6 +8,7 @@
 #include <algorithm>
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -15,6 +17,36 @@ void check(bool condition, const char* message) {
         std::cerr << "FAILED: " << message << '\n';
         std::exit(1);
     }
+}
+
+void checkManualReviewTemplates() {
+    wchar_t directory[MAX_PATH]{}, name[MAX_PATH]{};
+    check(GetTempPathW(MAX_PATH, directory) != 0 && GetTempFileNameW(directory, L"sgt", 0, name) != 0,
+          "manual-review template fixture path allocated");
+    const std::filesystem::path path(name);
+    const std::wstring original = LR"(<?xml version="1.0" encoding="gb2312"?>
+<root><node zjf="复查" sgfc="第一行&#xD;&#xA;第二行&amp;&quot;" /></root>)";
+    const int bytes = WideCharToMultiByte(936, 0, original.data(), static_cast<int>(original.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    check(bytes > 0, "fixture can be encoded using the legacy template code page");
+    std::string encoded(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(936, 0, original.data(), static_cast<int>(original.size()),
+                        encoded.data(), bytes, nullptr, nullptr);
+    {
+        std::ofstream output(path, std::ios::binary);
+        output.write(encoded.data(), bytes);
+        check(static_cast<bool>(output), "legacy template fixture written");
+    }
+    std::vector<ManualReviewTemplate> rows;
+    check(regularLoadManualReviewTemplates(path, rows), "legacy encoded template opens");
+    check(rows.size() == 1 && rows[0].mnemonic == L"复查", "legacy template mnemonic reads correctly");
+    check(rows[0].text == L"第一行\r\n第二行&\"", "legacy template XML escapes and newline read correctly");
+    check(regularAppendManualReviewTemplate(path, {L"复查", L"另一个 \"模板\"\r\n下一行"}),
+          "template can be appended without altering earlier template rows");
+    check(regularLoadManualReviewTemplates(path, rows) && rows.size() == 2 &&
+          rows[0].text == L"第一行\r\n第二行&\"" && rows[1].text == L"另一个 \"模板\"\r\n下一行",
+          "XML output preserves escapes, multiline text and duplicate mnemonic order");
+    DeleteFileW(path.c_str());
 }
 
 void CALLBACK checkCancelAuditDialog(HWND owner, UINT, UINT_PTR timer, DWORD) {
@@ -146,8 +178,10 @@ void restored(RegularReportState* st, HWND middle, HWND right, HWND results, HWN
     check(st->splitterX == split, "full-page divider preserved");
     check(IsWindowVisible(GetAncestor(st->hwnd, GA_ROOT)), "main frame restored");
     checkRestoredLayout();
-    check((GetWindowLongPtrW(st->status, GWL_STYLE) & WS_VISIBLE) != 0,
-          "normal-page result status restored");
+    RECT middleClient{};
+    GetClientRect(middle, &middleClient);
+    check(middleClient.bottom - relativeRect(results).bottom == regularS(st->hwnd, REGULAR_PAD),
+          "normal-page result list uses the former status area");
     for (int column = 0; column < REGULAR_REPORT_COLUMN_COUNT; ++column)
         check(ListView_GetColumnWidth(reports, column) > 0, "full-page columns restored");
     check(ListView_GetItemCount(results) == 1 && ListView_GetItemCount(reports) == 1 &&
@@ -156,6 +190,7 @@ void restored(RegularReportState* st, HWND middle, HWND right, HWND results, HWN
 }
 
 int main() {
+    checkManualReviewTemplates();
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES | ICC_DATE_CLASSES};
     check(InitCommonControlsEx(&controls) != FALSE, "common controls initialized");
     HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -256,6 +291,7 @@ int main() {
     const HWND addItems = GetDlgItem(middle, REGULAR_IDC_ADD_ITEMS);
     const HWND deleteItems = GetDlgItem(middle, REGULAR_IDC_DELETE_ITEMS);
     const HWND saveResults = GetDlgItem(middle, REGULAR_IDC_SAVE_RESULTS);
+    const HWND sendReport = GetDlgItem(middle, REGULAR_IDC_SEND_REPORT);
     check(addItems && IsWindowVisible(addItems), "add items visible on the results page");
     check(relativeRect(addItems).bottom <= relativeRect(results).top, "add items sits above result list");
     check(deleteItems && IsWindowVisible(deleteItems), "delete items visible on the results page");
@@ -266,16 +302,52 @@ int main() {
           relativeRect(saveResults).left >= relativeRect(deleteItems).right &&
           relativeRect(saveResults).top == relativeRect(deleteItems).top,
           "save results sits to the right of delete items");
+    check(sendReport && IsWindowVisible(sendReport) &&
+          relativeRect(sendReport).left >= relativeRect(saveResults).right &&
+          relativeRect(sendReport).top == relativeRect(saveResults).top,
+          "send sits immediately to the right of save");
     const auto selectMiddlePage = [&](int page) {
         TabCtrl_SetCurSel(st->middleTab, page);
         NMHDR changed{st->middleTab, REGULAR_IDC_MIDDLE_TAB, TCN_SELCHANGE};
         SendMessageW(middle, WM_NOTIFY, changed.idFrom, reinterpret_cast<LPARAM>(&changed));
     };
+    check(TabCtrl_GetItemCount(st->middleTab) == 3, "manual review follows results and picture");
+    st->reportConnectionString = "offline";
+    st->reportRows[0].chk_flag = "C";
+    st->reportRows[0].manual_review = "首行\n第二行";
+    selectMiddlePage(REGULAR_MANUAL_REVIEW_TAB);
+    auto& manual = st->manualReview;
+    check(IsWindowVisible(manual.text) && !IsWindowVisible(results) && IsWindowEnabled(manual.save),
+          "preliminary review report allows entering a manual review note");
+    check(regularWindowText(manual.text) == L"首行\r\n第二行", "manual review displays multiple lines");
+    wchar_t title[24]{};
+    TCITEMW tabItem{};
+    tabItem.mask = TCIF_TEXT;
+    tabItem.pszText = title;
+    tabItem.cchTextMax = static_cast<int>(std::size(title));
+    check(TabCtrl_GetItem(st->middleTab, REGULAR_MANUAL_REVIEW_TAB, &tabItem) &&
+          std::wstring_view(title) == L"手工复查[有]", "saved note changes the tab caption");
+    SetWindowTextW(manual.text, L"未保存草稿");
+    st->reportRows[0].manual_review = "其他工作站的修改";
+    regularSyncManualReviewPage(st, 0);
+    check(regularWindowText(manual.text) == L"未保存草稿" && manual.expectedText == "首行\n第二行",
+          "refresh preserves the draft and its original database snapshot");
+    regularSyncManualReviewPage(st, -1);
+    st->reportRows[0].chk_flag = "T";
+    regularSyncManualReviewPage(st, 0);
+    check(regularWindowText(manual.text) == L"其他工作站的修改" && !IsWindowEnabled(manual.save) &&
+          (GetWindowLongPtrW(manual.text, GWL_STYLE) & ES_READONLY),
+          "audited notes remain visible and read-only after returning to a report");
+    st->reportRows[0] = row;
+    st->reportConnectionString.clear();
+    regularSyncManualReviewPage(st, -1);
     st->selectedReportIndex = -1;
     selectMiddlePage(1);
     check(!IsWindowVisible(addItems), "add items hidden on the picture page");
     check(!IsWindowVisible(deleteItems), "delete items hidden on the picture page");
+    check(!IsWindowVisible(sendReport), "send hidden on the picture page");
     check(!IsWindowVisible(saveResults), "save results hidden on the picture page");
+    check(!IsWindowVisible(manual.text), "manual review is hidden on the picture page");
     selectMiddlePage(0);
     st->selectedReportIndex = 0;
     check(IsWindowVisible(addItems), "add items restored on the results page");
@@ -433,6 +505,25 @@ int main() {
                          st->rightDateTodayButton, st->rightDatePrevButton, st->rightDateNextButton,
                          st->rightAutoRefreshEdit})
         normalLayout.push_back({control, relativeRect(control), GetWindowLongPtrW(control, GWL_EXSTYLE)});
+    for (const int id : {5403, 5405, 5407, 5410, 5412, 5413, 5414, 5415, 5417,
+                         5418, 5419, 5422, 5423, 5426, 5427, 5428, 5429}) {
+        const HWND button = GetDlgItem(st->bottomPanel, id);
+        check(button && IsWindowVisible(button) && !IsWindowEnabled(button),
+              "unimplemented bottom action remains visible and disabled");
+    }
+    for (const int id : {REGULAR_IDC_BOTTOM_MACHINE_1, REGULAR_IDC_BOTTOM_MACHINE_2,
+                         REGULAR_IDC_BOTTOM_MACHINE_3, REGULAR_IDC_BOTTOM_REFRESH,
+                         REGULAR_IDC_BOTTOM_AUDIT, REGULAR_IDC_BOTTOM_PREV_REPORT,
+                         REGULAR_IDC_BOTTOM_NEXT_REPORT, REGULAR_IDC_BOTTOM_TRACKING,
+                         REGULAR_IDC_BOTTOM_GRAPH, REGULAR_IDC_BOTTOM_TREND, REGULAR_IDC_COMPACT}) {
+        const HWND button = GetDlgItem(st->bottomPanel, id);
+        check(button && IsWindowEnabled(button), "implemented bottom action remains enabled");
+    }
+    for (const int id : {REGULAR_IDC_BOTTOM_PRINT_BARCODE, REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE}) {
+        const HWND button = GetDlgItem(st->bottomPanel, id);
+        check(button && (IsWindowEnabled(button) != FALSE) == search::barcode_label_printing_available(),
+              "barcode buttons reflect build-time printer support");
+    }
     RECT entry{}, audit{};
     GetWindowRect(st->compactButton, &entry);
     GetWindowRect(GetDlgItem(st->bottomPanel, 5410), &audit);
@@ -444,6 +535,8 @@ int main() {
     check(!IsWindowVisible(addItems), "add items hidden in compact mode");
     check(!IsWindowVisible(deleteItems), "delete items hidden in compact mode");
     check(!IsWindowVisible(saveResults), "save results hidden in compact mode");
+    check(IsWindowVisible(sendReport) && relativeRect(sendReport).bottom < relativeRect(results).top,
+          "send remains available above results in compact mode");
     check((GetWindowLongPtrW(floating, GWL_EXSTYLE) & WS_EX_APPWINDOW) != 0 &&
           GetWindow(floating, GW_OWNER) == nullptr, "compact host has its own taskbar window");
     for (int column = 0; column < REGULAR_REPORT_COLUMN_COUNT; ++column)
@@ -483,8 +576,10 @@ int main() {
             check(EqualRect(&current, &saved.rect) != FALSE, "hidden full-page toolbar geometry unchanged");
         }
     }
-    check((GetWindowLongPtrW(st->status, GWL_STYLE) & WS_VISIBLE) == 0,
-          "compact result status hidden");
+    RECT compactMiddleClient{};
+    GetClientRect(middle, &compactMiddleClient);
+    check(compactMiddleClient.bottom - relativeRect(results).bottom == regularS(floating, REGULAR_PAD),
+          "compact result list reaches the panel bottom padding");
     ListView_SetColumnWidth(reports, 6, 80);
     check(ListView_GetColumnWidth(reports, 6) == 0, "hidden columns cannot be resized open");
     check((GetWindowLongPtrW(st->rightSearchEdit, GWL_STYLE) & WS_VISIBLE) == 0,

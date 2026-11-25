@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
-#include <optional>
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "regular_report_audit.h"
@@ -38,6 +40,7 @@ struct QueryFilters {
     std::string lis_blood_exclude_machines;
     int limit = 300;
     bool skip_order_text = false;
+    bool include_manual_review = false;
 };
 
 struct ReportRow {
@@ -81,6 +84,9 @@ struct ReportRow {
     std::string group_code;           // LS_AS_REPORT.GROUP_CODE，报告项目代码
     std::string view_machine_code;    // Virtual report view; mach_code retains database identity.
     bool need_inspect = false;
+    std::string manual_review;
+    std::string send_review_time;      // REP_TIME at full datetime precision for guarded sends.
+    std::string send_reviewer_id;
 };
 
 struct RoomOption {
@@ -1156,6 +1162,45 @@ bool cancel_report_audit(const std::string& connection_string, const std::string
                          const CancelAuditPreview& preview, const std::string& employee_id,
                          const std::string& login_code, const std::string& employee_name,
                          const CancelAuditReason& reason, CancelAuditStatus& status, std::string& error);
+
+enum class ManualReviewStatus {
+    // Values returned by regular_report_manual_review_sql.inc.
+    saved = 0,
+    unavailable = 1,
+    read_only = 2,
+    conflict = 3,
+    too_long = 4,
+    unrepresentable = 5
+};
+
+bool save_manual_review(const std::string& connection_string, const std::string& rep_no,
+                        const std::string& expected_text, const std::string& text,
+                        ManualReviewStatus& status, std::string& error);
+
+enum class ReportSendStatus {
+    sent = 0,
+    report_changed = 1,
+    needs_review = 2,
+    permission_denied = 3,
+    external_interface = 4,
+    shared_barcode = 5
+};
+
+bool send_regular_report(const std::string& connection_string, const ReportRow& report,
+                         std::int64_t employee_id, const std::string& login_code,
+                         ReportSendStatus& status, std::string& error);
+
+bool advance_after_report_send(const std::string& connection_string, const std::string& rep_no,
+                               std::int64_t employee_id, const std::string& default_patient_type,
+                               std::string& next_report, bool& unavailable, std::string& error);
+
+struct ReportNotification {
+    std::string summary;
+    std::vector<std::pair<std::string, std::string>> recipients;
+};
+
+bool query_report_notification(const std::string& connection_string, const std::string& rep_no,
+                               ReportNotification& notification, std::string& error);
 
 bool query_audit_config(const std::string& connection_string, AuditConfig& config,
                         std::string& error, LogFn log = {});

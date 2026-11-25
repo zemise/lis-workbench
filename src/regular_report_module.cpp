@@ -10,6 +10,7 @@
 #include "regular_report_barcode_range.h"
 #include "regular_report_cancel_audit_dialog.h"
 #include "regular_report_machine.h"
+#include "regular_report_notification.h"
 #include "regular_report_result_editor.h"
 #include "regular_report_tracking_window.h"
 #include "resource.h"
@@ -33,6 +34,7 @@
 #include <cstring>
 #include <cwchar>
 #include <exception>
+#include <filesystem>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -87,6 +89,7 @@ void populateLeftPanelFromReport(RegularReportState* st, int selected);
 void selectReportRow(RegularReportState* st, int index);
 void selectAdjacentReportRow(RegularReportState* st, int delta);
 void regularAuditSelectedReport(RegularReportState* st);
+void regularSendSelectedReport(RegularReportState* st);
 void regularAddSelectedReportItems(RegularReportState* st);
 void regularDeleteSelectedReportItems(RegularReportState* st);
 void regularSaveSelectedReportResults(RegularReportState* st);
@@ -122,9 +125,10 @@ HWND reportOwner(const RegularReportState* st) {
     return st ? (st->compactWindow ? st->compactWindow : st->hwnd) : nullptr;
 }
 
-HWND makeButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h) {
+HWND makeButton(HWND parent, int id, const wchar_t* text, int x, int y, int w, int h,
+                bool enabled = true) {
     return CreateWindowExW(0, L"BUTTON", text,
-                           WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+                           WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS | (enabled ? 0 : WS_DISABLED),
                            x, y, w, h, parent, win32_control_id(id),
                            GetModuleHandleW(nullptr), nullptr);
 }
@@ -912,7 +916,6 @@ void loadComparison(RegularReportState* st) {
         st->selectedReportIndex = index;
         st->resultQueryLoading = true;
         st->resultCache.current = Phase::Loading;
-        SetWindowTextW(st->status, L"正在查询项目及历史结果...");
     }
     st->resultCache.comparison = Phase::Loading;
     SetWindowTextW(st->comparisonStatus, L"正在查询历史结果...");
@@ -931,10 +934,7 @@ void loadComparison(RegularReportState* st) {
                 const auto text = result && !result->currentError.empty()
                     ? L"项目及历史结果查询失败：" + search::utf8_to_wide(result->currentError)
                     : std::wstring(L"历史结果后台任务异常");
-                if (!reuseCurrent) {
-                    state->resultCache.current = Phase::Failed;
-                    SetWindowTextW(state->status, text.c_str());
-                }
+                if (!reuseCurrent) state->resultCache.current = Phase::Failed;
                 SetWindowTextW(state->comparisonStatus, text.c_str());
                 return;
             }
@@ -952,8 +952,6 @@ void loadComparison(RegularReportState* st) {
             } else SetWindowTextW(state->comparisonStatus,
                 search::utf8_to_wide(result->error).c_str());
             if (!reuseCurrent) {
-                SetWindowTextW(state->status,
-                    search::utf8_to_wide(search::make_query_count_status(state->reportRows.size())).c_str());
                 SendMessageW(state->resultList, WM_SETREDRAW, TRUE, 0);
                 if (TabCtrl_GetCurSel(state->middleTab) != 0) ShowWindow(state->resultList, SW_HIDE);
             }
@@ -967,7 +965,6 @@ void loadComparison(RegularReportState* st) {
         if (!reuseCurrent) {
             st->resultQueryLoading = false;
             st->resultCache.current = Phase::Failed;
-            SetWindowTextW(st->status, L"无法启动项目及历史结果后台任务");
         }
         SetWindowTextW(st->comparisonStatus, L"无法启动历史结果后台任务");
     }
@@ -1150,8 +1147,10 @@ void showMiddleResultPage(RegularReportState* st) {
     if (!st || !st->middleTab) return;
     const int page = TabCtrl_GetCurSel(st->middleTab);
     const bool showRes = page == 0, showPic = page == 1;
+    regularShowManualReviewPage(st, page == REGULAR_MANUAL_REVIEW_TAB && !st->compactAttached);
+    const HWND sendButton = GetDlgItem(st->middlePanel, REGULAR_IDC_SEND_REPORT);
     for (HWND c : st->middleResultControls)
-        if (IsWindow(c)) ShowWindow(c, showRes && (!st->compactAttached || c == st->resultList)
+        if (IsWindow(c)) ShowWindow(c, showRes && (!st->compactAttached || c == st->resultList || c == sendButton)
                                           ? SW_SHOW : SW_HIDE);
     for (HWND c : st->middlePictureControls)
         if (IsWindow(c)) ShowWindow(c, showPic ? SW_SHOW : SW_HIDE);
@@ -1167,6 +1166,7 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     auto* st = reinterpret_cast<RegularReportState*>(data);
     switch (msg) {
         case WM_COMMAND:
+            if (st && regularManualReviewCommand(st, wp)) return 0;
             if (st && LOWORD(wp) == REGULAR_IDC_ADD_ITEMS && HIWORD(wp) == BN_CLICKED) {
                 regularAddSelectedReportItems(st);
                 return 0;
@@ -1177,6 +1177,10 @@ LRESULT CALLBACK middlePanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             }
             if (st && LOWORD(wp) == REGULAR_IDC_SAVE_RESULTS && HIWORD(wp) == BN_CLICKED) {
                 regularSaveSelectedReportResults(st);
+                return 0;
+            }
+            if (st && LOWORD(wp) == REGULAR_IDC_SEND_REPORT && HIWORD(wp) == BN_CLICKED) {
+                regularSendSelectedReport(st);
                 return 0;
             }
             break;
@@ -1260,7 +1264,7 @@ LRESULT CALLBACK bottomPanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (st && LOWORD(wp) == REGULAR_IDC_COMPACT) {
                 enterCompactMode(st); return 0;
             }
-            if (st && LOWORD(wp) == 5404) {
+            if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_AUDIT) {
                 regularAuditSelectedReport(st); return 0;
             }
             if (st && LOWORD(wp) == REGULAR_IDC_BOTTOM_MACHINE_1) {
@@ -1889,13 +1893,11 @@ void regularSaveSelectedReportResults(RegularReportState* st) {
     switch (outcome.status) {
         case Status::saved: {
             st->resultDrafts.erase(key);
-            SetWindowTextW(st->status, L"保存成功，正在刷新验单…");
             runReportQuery(st, true);
             showResultSaveNotice(owner, outcome);
             return;
         }
         case Status::unchanged:
-            SetWindowTextW(st->status, L"没有需要保存的修改。");
             return;
         case Status::read_only:
             MessageBoxW(owner, L"验单已审核或发送，不能保存结果修改。", L"保存检验结果", MB_ICONINFORMATION);
@@ -2113,7 +2115,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         S(parent, REGULAR_PAD), S(parent, 0), S(parent, 520), S(parent, REGULAR_TAB_H),
         p, win32_control_id(REGULAR_IDC_MIDDLE_TAB), GetModuleHandleW(nullptr), nullptr);
-    const wchar_t* mTabs[] = {L"项目结果", L"结果图"};
+    const wchar_t* mTabs[] = {L"项目结果", L"结果图", L"手工复查"};
     insertTabs(st->middleTab, mTabs, static_cast<int>(sizeof(mTabs) / sizeof(mTabs[0])));
 
     constexpr int item_button_width = 85;
@@ -2126,6 +2128,9 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
     aR(makeButton(p, REGULAR_IDC_SAVE_RESULTS, L"保存(F2)",
                   S(parent, REGULAR_PAD + 2 * (item_button_width + REGULAR_GAP)), S(parent, REGULAR_MIDDLE_TOOLBAR_Y),
                   S(parent, item_button_width), S(parent, REGULAR_COMPACT_BUTTON_H)));
+    aR(makeButton(p, REGULAR_IDC_SEND_REPORT, L"发送(F9)",
+                  S(parent, REGULAR_PAD + 3 * (item_button_width + REGULAR_GAP)), S(parent, REGULAR_MIDDLE_TOOLBAR_Y),
+                  S(parent, item_button_width), S(parent, REGULAR_COMPACT_BUTTON_H)));
     st->resultList = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
         S(parent, REGULAR_PAD), S(parent, REGULAR_MIDDLE_LIST_Y),
@@ -2136,10 +2141,6 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
     SetWindowSubclass(st->resultList, regularResultListProc, REGULAR_RESULT_LIST_SUBCLASS,
                       reinterpret_cast<DWORD_PTR>(st));
     aR(st->resultList);
-    st->status = makeStatic(p, L"结果列表右键功能：项目复制；参数设置。[项目总数：7]",
-        S(parent, REGULAR_PAD), S(parent, 424), S(parent, 520),
-        S(parent, REGULAR_MIDDLE_STATUS_H));
-    aR(st->status);
 
     st->pictureViewport = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"",
         WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
@@ -2165,6 +2166,7 @@ void createMiddlePanel(HWND parent, RegularReportState* st) {
         S(parent, GetSystemMetrics(SM_CXVSCROLL)), S(parent, 350),
         p, nullptr, GetModuleHandleW(nullptr), nullptr);
     aP(st->pictureViewport); aP(st->pictureHScroll); aP(st->pictureVScroll);
+    regularCreateManualReviewPage(st);
     regularUpdatePictureViewport(st);
     showMiddleResultPage(st);
 }
@@ -2260,31 +2262,38 @@ void createRightPanel(HWND parent, RegularReportState* st) {
 }
 
 void createBottomPanel(HWND parent, RegularReportState* st) {
+    struct ButtonDef {
+        int id;
+        const wchar_t* text;
+        bool enabled = true;
+    };
+
     HWND p = st->bottomPanel;
+    const bool canPrint = search::barcode_label_printing_available() && !st->barcodePrintTask.active();
     const ButtonDef row1[] = {
         {REGULAR_IDC_BOTTOM_MACHINE_1, L"1"}, {REGULAR_IDC_BOTTOM_REFRESH, L"⟳ 刷新(F5)"},
-        {5403, L"▣ 保存(F1)"}, {5404, L"✓ 审核(F3)"}, {5405, L"预览(V)"},
-        {REGULAR_IDC_BOTTOM_PRINT_BARCODE, L"打印条码"},
-        {5407, L"✕ 删除(D)"}, {REGULAR_IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"},
-        {REGULAR_IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印"},
+        {5403, L"▣ 保存(F1)", false}, {REGULAR_IDC_BOTTOM_AUDIT, L"✓ 审核(F3)"}, {5405, L"预览(V)", false},
+        {REGULAR_IDC_BOTTOM_PRINT_BARCODE, L"打印条码", canPrint},
+        {5407, L"✕ 删除(D)", false}, {REGULAR_IDC_BOTTOM_PREV_REPORT, L"⇧ 上一个"},
+        {REGULAR_IDC_BOTTOM_NEXT_REPORT, L"⇩ 下一个"}, {5410, L"审核打印", false},
     };
     const ButtonDef row2[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核"}, {5413, L"批取消"},
-        {5414, L"批录入"}, {5415, L"批调整"},
-        {REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码"}, {5417, L"批删除"},
-        {5418, L"医嘱"}, {5419, L"汇总(F6)"}, {REGULAR_IDC_COMPACT, L"精简置顶"},
+        {REGULAR_IDC_BOTTOM_MACHINE_2, L"2"}, {5412, L"批审核", false}, {5413, L"批取消", false},
+        {5414, L"批录入", false}, {5415, L"批调整", false},
+        {REGULAR_IDC_BOTTOM_BATCH_PRINT_BARCODE, L"批打印条码", canPrint}, {5417, L"批删除", false},
+        {5418, L"医嘱", false}, {5419, L"汇总(F6)", false}, {REGULAR_IDC_COMPACT, L"精简置顶"},
     };
     const ButtonDef row3[] = {
-        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {REGULAR_IDC_BOTTOM_TRACKING, L"追踪(Z)"}, {5422, L"计算(F8)"},
-        {5423, L"合并(U)"}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
-        {5426, L"日统计"}, {5427, L"设置"}, {5428, L"审核规则"}, {5429, L"批修改"},
+        {REGULAR_IDC_BOTTOM_MACHINE_3, L"3"}, {REGULAR_IDC_BOTTOM_TRACKING, L"追踪(Z)"}, {5422, L"计算(F8)", false},
+        {5423, L"合并(U)", false}, {REGULAR_IDC_BOTTOM_GRAPH, L"图形(T)"}, {REGULAR_IDC_BOTTOM_TREND, L"趋势图"},
+        {5426, L"日统计", false}, {5427, L"设置", false}, {5428, L"审核规则", false}, {5429, L"批修改", false},
     };
     auto cr = [&](const ButtonDef* row, int cnt, int y) {
         int x = S(parent, REGULAR_PAD);
         for (int i = 0; i < cnt; ++i) {
             int w = (i == 0) ? S(parent, 42) : S(parent, 98);
             makeButton(p, row[i].id, row[i].text, x, S(parent, y), w,
-                       S(parent, REGULAR_COMPACT_BUTTON_H));
+                       S(parent, REGULAR_COMPACT_BUTTON_H), row[i].enabled);
             x += w + S(parent, REGULAR_PAD);
         }
     };
@@ -2370,13 +2379,16 @@ void layoutCompactPage(RegularReportState* st) {
     MoveWindow(st->middlePanel, 0, summaryH, leftW, height, TRUE);
     MoveWindow(st->rightPanel, leftW + gap, summaryH, rightW, height, TRUE);
     ShowWindow(st->splitter, SW_HIDE);
-    ShowWindow(st->status, SW_HIDE);
 
     RECT middle{}, right{};
     GetClientRect(st->middlePanel, &middle);
     GetClientRect(st->rightPanel, &right);
-    MoveWindow(st->resultList, pad, pad, std::max(1, int(middle.right) - pad * 2),
-               std::max(1, int(middle.bottom) - pad * 2), TRUE);
+    const int sendWidth = S(hwnd, 85), sendHeight = S(hwnd, REGULAR_COMPACT_BUTTON_H);
+    const int resultsTop = pad * 2 + sendHeight;
+    HWND sendButton = GetDlgItem(st->middlePanel, REGULAR_IDC_SEND_REPORT);
+    MoveWindow(sendButton, pad, pad, sendWidth, sendHeight, TRUE);
+    MoveWindow(st->resultList, pad, resultsTop, std::max(1, int(middle.right) - pad * 2),
+               std::max(1, int(middle.bottom) - resultsTop - pad), TRUE);
     const int contentW = std::max(1, int(right.right) - pad * 2);
     const int buttonY = int(right.bottom) - pad - S(hwnd, REGULAR_RIGHT_DATE_BUTTON_H + 34);
     MoveWindow(st->reportList, pad, pad, contentW, std::max(1, buttonY - pad - gap), TRUE);
@@ -2426,16 +2438,31 @@ void layout(HWND hwnd, RegularReportState* st) {
     ShowWindow(st->splitter, SW_SHOW);
     MoveWindow(st->rightPanel, rightX, 0, rightW, topH, TRUE);
 
+    const int buttonPad = S(hwnd, REGULAR_PAD);
+    const int buttonGap = S(hwnd, REGULAR_GAP);
+    const int buttonWidth = std::clamp((centerW - 2 * buttonPad - 3 * buttonGap) / 4,
+                                      1, S(hwnd, 85));
+    int buttonX = buttonPad;
+    for (const int id : {REGULAR_IDC_ADD_ITEMS, REGULAR_IDC_DELETE_ITEMS,
+                         REGULAR_IDC_SAVE_RESULTS, REGULAR_IDC_SEND_REPORT}) {
+        MoveWindow(GetDlgItem(st->middlePanel, id), buttonX, S(hwnd, REGULAR_MIDDLE_TOOLBAR_Y),
+                   buttonWidth, S(hwnd, REGULAR_COMPACT_BUTTON_H), TRUE);
+        buttonX += buttonWidth + buttonGap;
+    }
+
     const int resultY = REGULAR_MIDDLE_LIST_Y;
-    const int resultMargin = REGULAR_MIDDLE_LIST_BOTTOM_MARGIN;
+    RECT middleClient{};
+    GetClientRect(st->middlePanel, &middleClient);
+    regularLayoutManualReviewPage(st, middleClient.right, middleClient.bottom);
+    const int resultHeight = std::max(1, int(middleClient.bottom) - S(hwnd, resultY) - buttonPad);
     MoveWindow(st->middleTab, S(hwnd, REGULAR_PAD), S(hwnd, 0),
                centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_TAB_H), TRUE);
     MoveWindow(st->resultList, S(hwnd, REGULAR_PAD), S(hwnd, resultY),
                centerW - S(hwnd, REGULAR_PAD * 2),
-               std::max(1, topH - S(hwnd, resultMargin)), TRUE);
+               resultHeight, TRUE);
     const int phX = S(hwnd, REGULAR_PAD), phY = S(hwnd, REGULAR_MIDDLE_LIST_Y);
     const int phW = std::max(1, centerW - S(hwnd, REGULAR_PAD * 2));
-    const int phH = std::max(1, topH - S(hwnd, REGULAR_MIDDLE_LIST_BOTTOM_MARGIN));
+    const int phH = std::max(1, topH - S(hwnd, REGULAR_MIDDLE_PICTURE_BOTTOM_MARGIN));
     const int pscW = GetSystemMetrics(SM_CXVSCROLL), pscH = GetSystemMetrics(SM_CYHSCROLL);
     const int pcW = S(hwnd, REGULAR_PICTURE_FIXED_W), pcH = S(hwnd, REGULAR_PICTURE_FIXED_H);
     bool nv = pcH > phH, nh = pcW > (phW - (nv ? pscW : 0));
@@ -2449,8 +2476,6 @@ void layout(HWND hwnd, RegularReportState* st) {
     ShowWindow(st->pictureHScroll, showPicture && nh ? SW_SHOW : SW_HIDE);
     ShowWindow(st->pictureVScroll, showPicture && nv ? SW_SHOW : SW_HIDE);
     regularUpdatePictureViewport(st);
-    MoveWindow(st->status, S(hwnd, REGULAR_PAD), topH - S(hwnd, REGULAR_MIDDLE_STATUS_BOTTOM),
-               centerW - S(hwnd, REGULAR_PAD * 2), S(hwnd, REGULAR_MIDDLE_STATUS_H), TRUE);
 
     const int riX = S(hwnd, REGULAR_PAD);
     RECT rightClient{};
@@ -2826,6 +2851,7 @@ search::QueryInput buildReportQueryInput(RegularReportState* st) {
     input.room_code = st->selectedRoomCode;
     input.mach_code = st->selectedMachineCode;
     input.limit = 0;
+    input.include_manual_review = true;
     return input;
 }
 
@@ -2846,6 +2872,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         ListView_DeleteAllItems(st->reportList);
         ListView_DeleteAllItems(st->resultList);
         st->reportRows.clear(); st->resultRows.clear();
+        regularSyncManualReviewPage(st, -1);
         updateCompactSummary(st);
         InvalidateRect(st->rightPanel, nullptr, TRUE);
         st->pictureQueryLoading = false; st->pictureRepNo.clear();
@@ -2853,7 +2880,6 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         regularClearPictureView(st, L"");
         st->selectedReportIndex = -1; st->contextReportIndex = -1;
     }
-    SetWindowTextW(st->status, preserveState ? L"正在刷新样本列表..." : L"正在查询样本列表...");
     st->reportQueryLoading = true;
     const int gen = ++st->reportQueryGeneration;
     const auto settings = st->ctx.dbSettings;
@@ -2877,7 +2903,6 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
             if (!state) return;
             if (error || !result) {
                 state->reportQueryLoading = false;
-                SetWindowTextW(state->status, L"样本列表后台任务异常");
                 LOG_ERROR("Regular report query task failed");
                 return;
             }
@@ -2886,7 +2911,7 @@ void runReportQuery(RegularReportState* st, bool preserveState) {
         });
     if (!queued) {
         st->reportQueryLoading = false;
-        SetWindowTextW(st->status, L"无法启动样本列表后台任务");
+        LOG_ERROR("Could not start regular report query task");
     }
 }
 
@@ -3268,6 +3293,125 @@ int currentReportIndex(const RegularReportState* st) {
         st->selectedReportIndex < static_cast<int>(st->reportRows.size()))
         return st->selectedReportIndex;
     return -1;
+}
+
+struct ReportSendResult {
+    bool confirmed = false;
+    search::ReportSendStatus status{};
+    bool notificationFailed = false;
+    bool nextFailed = false;
+    std::string nextReport;
+};
+
+void regularSendSelectedReport(RegularReportState* st) {
+    if (!st || app::window_task_detail::sessionSuspended() || st->reportSendTask.active()) return;
+    const int index = currentReportIndex(st);
+    const HWND owner = reportOwner(st);
+    if (index < 0 || st->reportConnectionString.empty()) {
+        MessageBoxW(owner, L"请选择要发送的报告。", L"发送", MB_ICONINFORMATION);
+        return;
+    }
+    const auto report = st->reportRows[static_cast<size_t>(index)];
+    regularFinishResultEdit(st, RegularResultEditExit::leave, false);
+    if (st->resultDrafts.count({st->reportConnectionString, report.rep_no})) {
+        MessageBoxW(owner, L"当前验单有未保存的结果修改，请先核对。", L"发送", MB_ICONINFORMATION);
+        return;
+    }
+    const wchar_t* eligibility = nullptr;
+    if (st->ctx.employee_id <= 0 || st->ctx.login_code.empty())
+        eligibility = L"当前登录身份不完整，无法发送。";
+    else if (report.conf == "S") eligibility = L"当前验单已经发送。";
+    else if (report.conf != "T" || report.chk_flag != "T") eligibility = L"请先审核当前验单。";
+    else if (report.need_inspect) eligibility = L"当前验单需要复查，无法发送。";
+    if (eligibility) {
+        MessageBoxW(owner, eligibility, L"发送", MB_ICONINFORMATION);
+        return;
+    }
+
+    const auto connection = st->reportConnectionString;
+    const auto queryDate = st->reportQueryDate;
+    const auto machine = st->selectedMachineCode;
+    const auto room = st->selectedRoomCode;
+    const auto login = search::wide_to_utf8(st->ctx.login_code);
+    const auto employee = st->ctx.employee_id;
+    const auto sender = st->ctx.employee_name;
+    const HWND hwnd = st->hwnd;
+    const std::filesystem::path install(search::trasen_install_directory());
+    wchar_t patientType[8]{};
+    if (install.is_absolute())
+        GetPrivateProfileStringW(L"window", L"Check", L"", patientType, 8, (install / L"jy.ini").c_str());
+    const auto defaultType = search::wide_to_utf8(patientType);
+    EnableWindow(GetDlgItem(st->middlePanel, REGULAR_IDC_SEND_REPORT), FALSE);
+    const bool queued = st->reportSendTask.start<ReportSendResult>(
+        [connection, report, employee, login, sender, defaultType](app::WindowTaskContext task) {
+            ReportSendResult result;
+            std::string error;
+            result.confirmed = search::send_regular_report(connection, report, employee, login,
+                                                            result.status, error);
+            if (!result.confirmed) LOG_WARN("regular_report send: " + error);
+            if (!result.confirmed || result.status != search::ReportSendStatus::sent || task.cancelled())
+                return result;
+            search::ReportNotification notification;
+            result.notificationFailed = !search::query_report_notification(connection, report.rep_no,
+                                                                               notification, error) ||
+                                         !regularNotifyDoctorStations(notification, sender);
+            if (result.notificationFailed) LOG_WARN("regular_report doctor station notification failed");
+            if (task.cancelled()) return result;
+            bool nextUnavailable = false;
+            if (!search::advance_after_report_send(connection, report.rep_no, employee, defaultType,
+                                                    result.nextReport, nextUnavailable, error)) {
+                LOG_WARN("regular_report next sample: " + error);
+                result.nextFailed = true;
+            } else {
+                result.nextFailed = nextUnavailable;
+            }
+            return result;
+        },
+        [hwnd, connection, queryDate, machine, room, repNo = report.rep_no](
+            std::optional<ReportSendResult> result, std::exception_ptr) {
+            auto* state = reinterpret_cast<RegularReportState*>(GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
+            if (!state) return;
+            EnableWindow(GetDlgItem(state->middlePanel, REGULAR_IDC_SEND_REPORT), TRUE);
+            const bool sameView = state->reportConnectionString == connection &&
+                state->reportQueryDate == queryDate && state->selectedMachineCode == machine &&
+                state->selectedRoomCode == room && inspectDateMatchesCurrentQuery(state);
+            const int selected = currentReportIndex(state);
+            using Status = search::ReportSendStatus;
+            if (!result || !result->confirmed) {
+                if (sameView) runReportQuery(state, true);
+                MessageBoxW(reportOwner(state), L"未能确认发送结果，请刷新后核对验单状态。",
+                            L"发送", MB_ICONWARNING);
+                return;
+            }
+            if (result->status == Status::sent) {
+                if (sameView) {
+                    if (selected >= 0 && state->reportRows[static_cast<size_t>(selected)].rep_no == repNo)
+                        state->pendingSentNextRepNo = result->nextReport;
+                    runReportQuery(state, true);
+                }
+                if (result->notificationFailed || result->nextFailed) {
+                    std::wstring message = L"验单已发送。";
+                    if (result->notificationFailed) message += L"医生站即时通知提交失败。";
+                    if (result->nextFailed) message += L"未能定位或创建下一样本，请刷新后核对。";
+                    MessageBoxW(reportOwner(state), message.c_str(), L"发送", MB_ICONWARNING);
+                }
+                return;
+            }
+            const wchar_t* message = L"验单审核状态已变化，请刷新后核对。";
+            switch (result->status) {
+                case Status::report_changed: if (sameView) runReportQuery(state, true); break;
+                case Status::needs_review: message = L"当前验单需要复查，无法发送。"; break;
+                case Status::permission_denied: message = L"当前账号没有发送权限。"; break;
+                case Status::external_interface: message = L"当前验单涉及外部发送接口，请在原 Trasen 中处理。"; break;
+                case Status::shared_barcode: message = L"同一条码关联其他验单，请在原 Trasen 中核对后发送。"; break;
+                case Status::sent: break;
+            }
+            MessageBoxW(reportOwner(state), message, L"发送", MB_ICONINFORMATION);
+        });
+    if (!queued) {
+        EnableWindow(GetDlgItem(st->middlePanel, REGULAR_IDC_SEND_REPORT), TRUE);
+        MessageBoxW(owner, L"未能启动发送任务，请稍后重试。", L"发送", MB_ICONWARNING);
+    }
 }
 
 const wchar_t* cancelAuditMessage(search::CancelAuditStatus status) {
@@ -3707,6 +3851,7 @@ int findReportIndexByRepNo(const RegularReportState* st, const std::string& repN
 // ============================================================================
 
 void querySelectedResults(RegularReportState* st, int sel) {
+    if (st) regularSyncManualReviewPage(st, sel);
     // Selection notifications can be repeated while a report load is pending.
     if (st && sel >= 0 && sel < static_cast<int>(st->reportRows.size()) &&
         st->resultQueryLoading && st->resultCache.key &&
@@ -3759,7 +3904,6 @@ void querySelectedResults(RegularReportState* st, int sel) {
     st->resultRows.clear(); st->selectedReportIndex = sel;
     st->resultQueryLoading = true;
     st->resultCache.current = regular_comparison::LoadPhase::Loading;
-    SetWindowTextW(st->status, L"正在查询项目明细...");
     const int gen = ++st->resultQueryGeneration;
     const HWND hwnd = st->hwnd;
     const std::string conn = st->reportConnectionString;
@@ -3780,7 +3924,6 @@ void querySelectedResults(RegularReportState* st, int sel) {
                 state->resultQueryLoading = false;
                 state->resultCache.current = regular_comparison::LoadPhase::Failed;
                 if (TabCtrl_GetCurSel(state->rightTab) == 1) loadComparison(state);
-                SetWindowTextW(state->status, L"项目明细后台任务异常");
                 LOG_ERROR("Regular report result task failed");
                 return;
             }
@@ -3790,7 +3933,7 @@ void querySelectedResults(RegularReportState* st, int sel) {
     if (!queued) {
         st->resultQueryLoading = false;
         st->resultCache.current = regular_comparison::LoadPhase::Failed;
-        SetWindowTextW(st->status, L"无法启动项目明细后台任务");
+        LOG_ERROR("Could not start regular report result task");
     }
 }
 
@@ -3803,7 +3946,7 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
     if (!st || !result || result->generation != st->reportQueryGeneration) return;
     st->reportQueryLoading = false;
     if (!result->ok) {
-        SetWindowTextW(st->status, L"样本列表查询失败");
+        st->pendingSentNextRepNo.clear();
         MessageBoxW(reportOwner(st), search::utf8_to_wide(result->error).c_str(), L"查询失败", MB_ICONERROR);
         return;
     }
@@ -3861,6 +4004,11 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
         st->pendingAuditAdvance = false;
         st->pendingAuditRepNo.clear();
     }
+    if (!st->pendingSentNextRepNo.empty()) {
+        const int next = ps ? findReportIndexByRepNo(st, st->pendingSentNextRepNo) : -1;
+        if (next >= 0) rest = next;
+        st->pendingSentNextRepNo.clear();
+    }
     if (st->pendingOpenReport) {
         pendingTarget = findReportIndexByRepNo(st, st->pendingOpenRepNo);
         if (pendingTarget < 0 && !st->pendingOpenOperNo.empty()) {
@@ -3898,8 +4046,6 @@ void finishReportQuery(RegularReportState* st, HWND hwnd,
     } else {
         querySelectedResults(st, -1);
     }
-    SetWindowTextW(st->status,
-        search::utf8_to_wide(search::make_query_count_status(st->reportRows.size())).c_str());
 }
 
 void finishResultQuery(RegularReportState* st, HWND hwnd,
@@ -3918,8 +4064,6 @@ void finishResultQuery(RegularReportState* st, HWND hwnd,
     st->resultCache.current = regular_comparison::LoadPhase::Ready;
     presentResultRows(st);
     loadComparison(st);
-    SetWindowTextW(st->status,
-        search::utf8_to_wide(search::make_query_count_status(st->reportRows.size())).c_str());
 }
 
 // ============================================================================
@@ -3996,16 +4140,12 @@ void regularSaveEditedResultAndAdvance(RegularReportState* st) {
     if (!search::load_result_rows(key.first, key.second, rows, error,
                                   search::ResultDisplayPositions::regular_report)) {
         st->resultCache.current = regular_comparison::LoadPhase::Failed;
-        SetWindowTextW(st->status, L"当前项目已保存，项目明细刷新失败。");
         MessageBoxW(owner, search::utf8_to_wide(error).c_str(), L"项目已保存，刷新失败", MB_ICONWARNING);
         return;
     }
     st->resultRows = std::move(rows);
     presentResultRows(st);
     loadComparison(st);
-    const bool hasDrafts = st->resultDrafts.find(key) != st->resultDrafts.end();
-    SetWindowTextW(st->status, hasDrafts ? L"当前项目已保存，其他结果修改可按 F2 保存。"
-                                        : L"当前项目已保存。");
     showResultSaveNotice(owner, outcome);
     if (!isCurrentResultReport(window, st, key)) return;
     const int next = nextId.empty() ? static_cast<int>(st->resultRows.size()) : findRow(nextId);
@@ -4086,7 +4226,6 @@ void regularOpenReportTarget(RegularReportState* st, const RegularReportOpenTarg
     st->suppressInspectDateQuery = true;
     DateTime_SetSystemtime(st->inspectDatePicker, GDT_VALID, &date);
     st->suppressInspectDateQuery = false;
-    SetWindowTextW(st->status, L"正在跳转到目标报告...");
     runReportQuery(st, false);
 }
 
@@ -4241,14 +4380,10 @@ std::wstring startBarcodeBatch(RegularReportState* st,
         return L"打印条码功能不可用：构建时未找到 LabelPrint 项目。";
 
     const std::wstring printer = search::configured_barcode_printer_name();
-    const int total = static_cast<int>(payloads.size());
     const HWND hwnd = st->hwnd;
     setBarcodePrintControlsEnabled(st, false);
-    SetWindowTextW(st->status,
-                   (L"正在提交条码到打印队列：0 / " +
-                    std::to_wstring(total)).c_str());
     const bool started = st->barcodePrintTask.start<BarcodeBatchResult>(
-        [payloads = std::move(payloads), printer, hwnd](app::WindowTaskContext task) {
+        [payloads = std::move(payloads), printer](app::WindowTaskContext task) {
             BarcodeBatchResult result;
             result.total = static_cast<int>(payloads.size());
             for (const auto& payload : payloads) {
@@ -4256,17 +4391,6 @@ std::wstring startBarcodeBatch(RegularReportState* st,
                 try {
                     search::print_barcode_label(payload, printer);
                     ++result.sent;
-                    const int sent = result.sent;
-                    const int count = result.total;
-                    task.post([hwnd, sent, count] {
-                        auto* state = reinterpret_cast<RegularReportState*>(
-                            GetPropW(hwnd, REGULAR_REPORT_PROP_STATE));
-                        if (state && state->status)
-                            SetWindowTextW(state->status,
-                                (L"正在提交条码到打印队列：" +
-                                 std::to_wstring(sent) + L" / " +
-                                 std::to_wstring(count)).c_str());
-                    });
                 } catch (const std::exception& ex) {
                     result.failed_sample = payload.sample_no;
                     result.error = ex.what();
@@ -4282,7 +4406,6 @@ std::wstring startBarcodeBatch(RegularReportState* st,
             if (!state) return;
             setBarcodePrintControlsEnabled(state, true);
             if (error || !result) {
-                SetWindowTextW(state->status, L"批量条码打印任务异常终止。");
                 MessageBoxW(reportOwner(state), L"批量条码打印任务异常终止。", L"常规报告",
                             MB_ICONERROR);
                 return;
@@ -4299,9 +4422,6 @@ std::wstring startBarcodeBatch(RegularReportState* st,
                            std::to_wstring(result->total - result->sent - 1);
                 message += L"\n已入队的条码不会自动重试。";
             }
-            SetWindowTextW(state->status,
-                           result->error.empty() ? L"批量条码已全部提交到打印队列。"
-                                                 : L"批量条码在中途停止。");
             MessageBoxW(reportOwner(state), message.c_str(), L"常规报告",
                         result->error.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
         });
@@ -5007,6 +5127,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 st->resultQueryTask.cancel();
                 st->pictureQueryTask.cancel();
                 st->barcodePrintTask.cancel();
+                st->reportSendTask.cancel();
                 st->comparisonTask.cancel();
                 if (st->initialQuickMachineTimerActive) {
                     KillTimer(hwnd, IDT_REPORT_INITIAL_QUICK_MACHINE);
@@ -5039,14 +5160,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // Public entry point
 // ============================================================================
 
-bool regular_report_translate_save_message(MSG* message) {
-    if (!message || message->message != WM_KEYDOWN || message->wParam != VK_F2 ||
+bool regular_report_translate_action_message(MSG* message) {
+    if (!message || message->message != WM_KEYDOWN || (message->wParam != VK_F2 && message->wParam != VK_F9) ||
         app::window_task_detail::sessionSuspended()) return false;
     for (HWND window = message->hwnd; window; window = GetAncestor(window, GA_PARENT)) {
         auto* state = reinterpret_cast<RegularReportState*>(GetPropW(window, REGULAR_REPORT_PROP_STATE));
         if (!state) continue;
         if (state->compactAttached || !IsWindowEnabled(GetAncestor(window, GA_ROOT))) return false;
-        if ((message->lParam & (1LL << 30)) == 0) regularSaveSelectedReportResults(state);
+        if ((message->lParam & (1LL << 30)) == 0) {
+            if (message->wParam == VK_F9) regularSendSelectedReport(state);
+            else regularSaveSelectedReportResults(state);
+        }
         return true;
     }
     return false;
@@ -5062,6 +5186,10 @@ bool regular_report_translate_compact_message(MSG* message) {
     if (!st || !st->compactAttached || !IsWindowEnabled(root) ||
         app::window_task_detail::sessionSuspended()) return false;
     if (message->message == WM_KEYDOWN) {
+        if (message->wParam == VK_F9) {
+            if ((message->lParam & (1LL << 30)) == 0) regularSendSelectedReport(st);
+            return true;
+        }
         if (message->wParam == VK_F5) {
             regularFinishResultEdit(st, RegularResultEditExit::leave, false);
             SendMessageW(root, WM_COMMAND, REGULAR_IDC_COMPACT_REFRESH, 0);
